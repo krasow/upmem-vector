@@ -14,6 +14,7 @@ DPU_TARGET := ${BUILDDIR}/runtime.dpu
 TEST_TARGET := ${TEST_DIR}/vectordpu_test
 
 COMMON_INCLUDES := common
+HOST_INCLUDES := host
 HOST_SOURCES := $(wildcard ${HOST_DIR}/*.cc)
 DPU_SOURCES := $(wildcard ${DPU_DIR}/*.c)
 TEST_SOURCES := $(wildcard ${TEST_DIR}/*.cc)
@@ -36,7 +37,7 @@ ${DPU_TARGET}: ${DPU_SOURCES} ${COMMON_INCLUDES}
 	dpu-upmem-dpurte-clang ${DPU_FLAGS} -o $@ ${DPU_SOURCES}
 
 $(TEST_TARGET): all
-	$(CXX) -o $@ $(TEST_SOURCES) -L$(BUILDDIR) -lvectordpu $(HOST_FLAGS)
+	$(CXX) -o $@ $(TEST_SOURCES) -I$(HOST_INCLUDES) -L$(BUILDDIR) -lvectordpu $(HOST_FLAGS)
 
 clean:
 	$(RM) -r $(BUILDDIR) $(TEST_TARGET)

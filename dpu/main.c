@@ -4,7 +4,7 @@
 #include <mram.h>
 #include <stdint.h>
 
-#include "../common/common.h"
+#include <common.h>
 
 __host DPU_LAUNCH_ARGS args;
 

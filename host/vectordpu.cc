@@ -18,13 +18,16 @@ template <typename T>
 dpu_vector<T>::~dpu_vector()
 {
     auto& runtime = DpuRuntime::get();
-    runtime.get_allocator().deallocate_upmem_vector(data_, sizes_);
+    runtime.get_allocator().deallocate_upmem_vector(data_);
 }
 
 template <typename T>
-T* dpu_vector<T>::data()
+vector<uint32_t> dpu_vector<T>::data()
 {
-    return reinterpret_cast<T*>(data_.data());
+    // data_ is vector_desc std::pair<vector<uint32_t>, vector<uint32_t>>
+    // where first element is vector of pointers to DPU memory per DPU
+    // and second element is vector of sizes per DPU
+    return reinterpret_cast<T*>(data_.first);
 }
 
 template <typename T>
@@ -34,7 +37,7 @@ uint32_t dpu_vector<T>::size() const
 }
 
 template <typename T>
-dpu_vector<T> dpu_vector<T>::from_cpu(T val)
+dpu_vector<T> dpu_vector<T>::from_cpu(vector<T>& cpu_data)
 {
     dpu_vector<T> vec(1);
     // TODO: implement transfer to DPU memory
@@ -42,7 +45,7 @@ dpu_vector<T> dpu_vector<T>::from_cpu(T val)
 }
 
 template <typename T>
-vector<T> dpu_vector<T>::to_cpu(T val)
+vector<T> dpu_vector<T>::to_cpu()
 {
     vector<T> res;
     // TODO: implement transfer from DPU memory
@@ -72,6 +75,9 @@ dpu_vector<T> launch_binop(const dpu_vector<T>& lhs,
     }
 
     dpu_set_t& dpu_set = runtime.dpu_set();
+    dpu_set_t dpu;
+    uint32_t idx_dpu = 0;
+
     DPU_FOREACH(dpu_set, dpu, idx_dpu) {
         DPU_ASSERT(dpu_prepare_xfer(dpu, &args[idx_dpu]));
     }
@@ -103,6 +109,9 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a,
     }
 
     dpu_set_t& dpu_set = runtime.dpu_set();
+    dpu_set_t dpu;
+    uint32_t idx_dpu = 0;
+
     DPU_FOREACH(dpu_set, dpu, idx_dpu) {
         DPU_ASSERT(dpu_prepare_xfer(dpu, &args[idx_dpu]));
     }

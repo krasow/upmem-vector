@@ -7,10 +7,9 @@
 #include <common.h>
 #include <dpu.h>
 
-#include "runtime.inl"
 #include "allocator.h"
+#include "runtime.inl"
 
-using std::vector;
 
 // ============================
 // DPU Vector
@@ -18,18 +17,18 @@ using std::vector;
 template <typename T>
 class dpu_vector {
 public:
-    vector<uint32_t> data_;
-    vector<uint32_t> sizes_;
+    vector_desc data_;
     uint32_t size_;
 
     explicit dpu_vector(uint32_t n);
     ~dpu_vector();
 
-    T* data();
+    vector<uint32_t> data();
     uint32_t size() const;
 
-    static dpu_vector<T> from_cpu(T val);
-    static vector<T> to_cpu(T val);
+    vector<T> to_cpu();
+
+    static dpu_vector<T> from_cpu(vector<T>& cpu_data);
 };
 
 // ============================

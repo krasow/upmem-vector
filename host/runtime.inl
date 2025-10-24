@@ -30,7 +30,7 @@ public:
             printf("DPU runtime initialized with %u DPUs\n", num_dpus_);
 
             initialized_ = true;
-            allocator_ = new allocator();
+            allocator_ = new allocator(0, 64 * 1024 * 1024, num_dpus_); 
         }
     }
 
@@ -41,4 +41,5 @@ public:
     dpu_set_t& dpu_set() { return dpu_set_; }
     uint32_t num_dpus() const { return num_dpus_; }
     uint32_t num_tasklets() const { return NR_TASKLETS; }
+    allocator& get_allocator() { return *allocator_; }
 };

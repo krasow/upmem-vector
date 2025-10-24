@@ -10,11 +10,12 @@
 */
 
 
-#include <vector_dpu.h>
+#include <vectordpu.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <cassert>
 
-typedef test_error uint32_t;
+using test_error = uint32_t;
 
 #define TEST_UNIMPLIMENTED 2
 #define TEST_ERROR 1
@@ -54,6 +55,6 @@ test_error upmem_driver_test() {
 
 
 int main(void) {
-    @assert upmem_driver_test() == TEST_SUCCESS;
+    assert(upmem_driver_test() == TEST_SUCCESS);
     return 0;
 }
