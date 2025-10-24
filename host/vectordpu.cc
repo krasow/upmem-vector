@@ -1,86 +1,53 @@
-#include <cstdint>
-#include <vector>
-#include <cstdio>
-#include <cassert>
+#include "vectordpu.h"
 
-extern "C" {
-    #include "dpu.h" // DPU API
-    #include "../common/common.h"
+#include <cassert>
+#include <cstdio>
+
+// ============================
+// DPU Vector
+// ============================
+template <typename T>
+dpu_vector<T>::dpu_vector(uint32_t n)
+    : size_(n)
+{
+    auto& runtime = DpuRuntime::get();
+    data_ = runtime.get_allocator().allocate_upmem_vector(n * sizeof(T), runtime.num_dpus());
 }
 
-#include "runtime.inl"
-#include "allocator.h"
-
+template <typename T>
+dpu_vector<T>::~dpu_vector()
+{
+    auto& runtime = DpuRuntime::get();
+    runtime.get_allocator().deallocate_upmem_vector(data_, sizes_);
+}
 
 template <typename T>
-class dpu_vector {
-public:
-    // data offsets&sizes for each DPU
-    vector<uint32_t> data_;
-    vector<uint32_t> sizes_;
-
-    uint32_t size_;
-
-    dpu_vector(uint32_t n) : size_(n) {
-        auto& runtime = DpuRuntime::get();
-        data_ = runtime.get_allocator().allocate_upmem_vector(n * sizeof(T), runtime.num_dpus());
-    }
-
-    ~dpu_vector() {
-        auto& runtime = DpuRuntime::get();
-        runtime.get_allocator().deallocate_upmem_vector(data_, sizes_);
-    }
-
-    T* data() { return data_; }
-    uint32_t size() const { return size_; }
-
-    static dpu_vector<T> from_cpu(T val) {
-       
-    }
-
-    static vector<T> to_cpu(T val) {
-       
-    }
-};
-
-
+T* dpu_vector<T>::data()
+{
+    return reinterpret_cast<T*>(data_.data());
+}
 
 template <typename T>
-struct BinaryKernelSelector;
-
-// float specialization
-template <>
-struct BinaryKernelSelector<float> {
-    static KernelID add() { return KernelID::K_BINARY_FLOAT_ADD; }
-    static KernelID sub() { return KernelID::K_BINARY_FLOAT_SUB; }
-};
-
-// int specialization
-template <>
-struct BinaryKernelSelector<int> {
-    static KernelID add() { return KernelID::K_BINARY_INT_ADD; }
-    static KernelID sub() { return KernelID::K_BINARY_INT_SUB; }
-};
-
+uint32_t dpu_vector<T>::size() const
+{
+    return size_;
+}
 
 template <typename T>
-struct UnaryKernelSelector;
+dpu_vector<T> dpu_vector<T>::from_cpu(T val)
+{
+    dpu_vector<T> vec(1);
+    // TODO: implement transfer to DPU memory
+    return vec;
+}
 
-// float specialization
-template <>
-struct UnaryKernelSelector<float> {
-    static KernelID negate() { return KernelID::K_UNARY_FLOAT_NEGATE; }
-    static KernelID abs()    { return KernelID::K_UNARY_FLOAT_ABS; }
-};
-
-// int specialization
-template <>
-struct UnaryKernelSelector<int> {
-    static KernelID negate() { return KernelID::K_UNARY_INT_NEGATE; }
-    static KernelID abs()    { return KernelID::K_UNARY_INT_ABS; }
-};
-
-
+template <typename T>
+vector<T> dpu_vector<T>::to_cpu(T val)
+{
+    vector<T> res;
+    // TODO: implement transfer from DPU memory
+    return res;
+}
 
 template <typename T>
 dpu_vector<T> launch_binop(const dpu_vector<T>& lhs,

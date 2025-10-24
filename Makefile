@@ -3,17 +3,20 @@
 
 DPU_DIR := dpu
 HOST_DIR := host
+TEST_DIR := test
 BUILDDIR ?= bin
 NR_DPUS ?= 16
 NR_TASKLETS ?= 16
 
 
-HOST_TARGET := ${BUILDDIR}/libvectordpu.so
+HOST_TARGET := ${BUILDDIR}/libvectordpu
 DPU_TARGET := ${BUILDDIR}/runtime.dpu
+TEST_TARGET := ${TEST_DIR}/vectordpu_test
 
 COMMON_INCLUDES := common
 HOST_SOURCES := $(wildcard ${HOST_DIR}/*.cc)
 DPU_SOURCES := $(wildcard ${DPU_DIR}/*.c)
+TEST_SOURCES := $(wildcard ${TEST_DIR}/*.cc)
 
 .PHONY: all clean test
 
@@ -32,8 +35,11 @@ ${HOST_TARGET}: ${HOST_SOURCES} ${COMMON_INCLUDES}
 ${DPU_TARGET}: ${DPU_SOURCES} ${COMMON_INCLUDES}
 	dpu-upmem-dpurte-clang ${DPU_FLAGS} -o $@ ${DPU_SOURCES}
 
-clean:
-	$(RM) -r $(BUILDDIR)
+$(TEST_TARGET): all
+	$(CXX) -o $@ $(TEST_SOURCES) -L$(BUILDDIR) -lvectordpu $(HOST_FLAGS)
 
-test: all
-	./${HOST_TARGET}
+clean:
+	$(RM) -r $(BUILDDIR) $(TEST_TARGET)
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
