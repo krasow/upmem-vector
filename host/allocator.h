@@ -18,9 +18,7 @@ class allocator {
 public:
     allocator(uint32_t start_addr, std::size_t total_size, std::size_t num_dpus);
 
-    // Allocate a vector of size n across DPUs dynamically
-    vector_desc allocate_upmem_vector(std::size_t n, std::size_t num_dpus);
-
+    vector_desc allocate_upmem_vector(std::size_t n);
     // Deallocate all memory for a vector (reset allocator)
     void deallocate_upmem_vector(vector_desc &data);
 

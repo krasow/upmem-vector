@@ -30,14 +30,14 @@ DPU_FLAGS := ${COMMON_FLAGS} -O2 -DNR_TASKLETS=${NR_TASKLETS}
 all: ${HOST_TARGET} ${DPU_TARGET}
 
 ${HOST_TARGET}: ${HOST_SOURCES} ${COMMON_INCLUDES}
-	$(CC) -shared -fPIC -o $@.so ${HOST_SOURCES} ${HOST_FLAGS}
+	$(CXX) -shared -fPIC -o $@.so ${HOST_SOURCES} ${HOST_FLAGS} -Wl,-rpath,$(abspath $(dir $@))
 
 
 ${DPU_TARGET}: ${DPU_SOURCES} ${COMMON_INCLUDES}
 	dpu-upmem-dpurte-clang ${DPU_FLAGS} -o $@ ${DPU_SOURCES}
 
 $(TEST_TARGET): all
-	$(CXX) -o $@ $(TEST_SOURCES) -I$(HOST_INCLUDES) -L$(BUILDDIR) -lvectordpu $(HOST_FLAGS)
+	$(CXX) -o $@ $(TEST_SOURCES) -I$(HOST_INCLUDES) ${COMMON_FLAGS} -O3 -L$(BUILDDIR) -lvectordpu
 
 clean:
 	$(RM) -r $(BUILDDIR) $(TEST_TARGET)

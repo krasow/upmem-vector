@@ -13,11 +13,8 @@ allocator::allocator(uint32_t start_addr, std::size_t total_size, std::size_t nu
     allocations_.clear();
 }
 
-vector_desc allocator::allocate_upmem_vector(std::size_t n, std::size_t num_dpus) {
-    if (num_dpus != num_dpus_) {
-        throw std::runtime_error("allocate_upmem_vector: num_dpus mismatch with allocator");
-    }
-
+vector_desc allocator::allocate_upmem_vector(std::size_t n) {
+    std::size_t num_dpus = this->num_dpus_;
     vector<uint32_t> vec_ptrs(num_dpus);
     vector<uint32_t> vec_sizes(num_dpus);
 

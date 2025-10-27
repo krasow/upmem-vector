@@ -1,4 +1,5 @@
 #include "vectordpu.h"
+#include "runtime.inl"
 
 #include <cassert>
 #include <cstdio>
@@ -11,7 +12,13 @@ dpu_vector<T>::dpu_vector(uint32_t n)
     : size_(n)
 {
     auto& runtime = DpuRuntime::get();
-    data_ = runtime.get_allocator().allocate_upmem_vector(n * sizeof(T), runtime.num_dpus());
+    
+    if(runtime.is_initialized() == false) {
+        // throw std::runtime_error("DPU runtime not initialized!");
+        runtime.init(16);
+    }
+
+    data_ = runtime.get_allocator().allocate_upmem_vector(n * sizeof(T));
 }
 
 template <typename T>
@@ -22,12 +29,12 @@ dpu_vector<T>::~dpu_vector()
 }
 
 template <typename T>
-vector<uint32_t> dpu_vector<T>::data()
+vector<uint32_t> dpu_vector<T>::data() const
 {
     // data_ is vector_desc std::pair<vector<uint32_t>, vector<uint32_t>>
     // where first element is vector of pointers to DPU memory per DPU
     // and second element is vector of sizes per DPU
-    return reinterpret_cast<T*>(data_.first);
+    return data_.first;
 }
 
 template <typename T>
@@ -82,7 +89,7 @@ dpu_vector<T> launch_binop(const dpu_vector<T>& lhs,
         DPU_ASSERT(dpu_prepare_xfer(dpu, &args[idx_dpu]));
     }
     DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
-                             "DPU_LAUNCH_ARGS", 0, sizeof(args[0]),
+                             "args", 0, sizeof(args[0]),
                              DPU_XFER_DEFAULT));
     DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
 
@@ -116,7 +123,7 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a,
         DPU_ASSERT(dpu_prepare_xfer(dpu, &args[idx_dpu]));
     }
     DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
-                             "DPU_LAUNCH_ARGS", 0, sizeof(args[0]),
+                             "args", 0, sizeof(args[0]),
                              DPU_XFER_DEFAULT));
     DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
 
@@ -150,3 +157,11 @@ dpu_vector<T> abs(const dpu_vector<T>& a)
 {
     return launch_unary(a, UnaryKernelSelector<T>::abs());
 }
+
+
+// Explicit instantiation
+template class dpu_vector<int>;
+template dpu_vector<int> operator+<int>(const dpu_vector<int>&, const dpu_vector<int>&);
+
+template class dpu_vector<float>;
+template dpu_vector<float> operator+<float>(const dpu_vector<float>&, const dpu_vector<float>&);

@@ -1,4 +1,6 @@
 #include "allocator.h"
+#include <dpu>
+
 class DpuRuntime {
 private:
     DpuRuntime() : initialized_(false), allocator_(nullptr) {}
@@ -23,11 +25,10 @@ public:
         if (!initialized_) {
             num_dpus_ = num_dpus;
 
-            // Allocate or acquire DPUs
+            printf("Initializing DPU runtime with %u DPUs...\n", num_dpus_);
             DPU_ASSERT(dpu_alloc(num_dpus_, "backend=simulator", &dpu_set_));
             DPU_ASSERT(dpu_load(dpu_set_, DPU_RUNTIUME, NULL));
-
-            printf("DPU runtime initialized with %u DPUs\n", num_dpus_);
+            printf("%u DPUs loaded with Runtime\n", num_dpus_);
 
             initialized_ = true;
             allocator_ = new allocator(0, 64 * 1024 * 1024, num_dpus_); 
@@ -37,6 +38,8 @@ public:
     ~DpuRuntime() {
         delete allocator_;
     }
+
+    bool is_initialized() const { return initialized_; }
 
     dpu_set_t& dpu_set() { return dpu_set_; }
     uint32_t num_dpus() const { return num_dpus_; }

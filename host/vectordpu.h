@@ -3,13 +3,8 @@
 
 #include <cstdint>
 #include <vector>
-
 #include <common.h>
-#include <dpu.h>
-
 #include "allocator.h"
-#include "runtime.inl"
-
 
 // ============================
 // DPU Vector
@@ -23,7 +18,7 @@ public:
     explicit dpu_vector(uint32_t n);
     ~dpu_vector();
 
-    vector<uint32_t> data();
+    vector<uint32_t> data() const;
     uint32_t size() const;
 
     vector<T> to_cpu();
