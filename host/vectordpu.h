@@ -1,20 +1,20 @@
 #pragma once
 
-#include <cstdint>
+#include <common.h>
+
 #include <iostream>
 #include <source_location>
 #include <string_view>
 #include <type_traits>
 #include <vector>
 
-#include <common.h>
 #include "allocator.h"
 
 using std::vector;
 
 #define LOGGER_ARGS_WITH_DEFAULTS \
   std::string_view name = "",     \
-  std::source_location loc = std::source_location::current()
+                   std::source_location loc = std::source_location::current()
 
 // ============================q
 // DPU Vector

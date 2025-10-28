@@ -1,6 +1,12 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#ifdef __cplusplus
+#include <cstdint>
+#else
+#include <stdint.h>
+#endif
+
 #define DPU_RUNTIUME "/home/david/upmem-driver-test/library/bin/runtime.dpu"
 
 #define BLOCK_SIZE_LOG2 5              // e.g., 32 elements per block

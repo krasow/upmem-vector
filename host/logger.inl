@@ -1,10 +1,10 @@
 #pragma once
 
-#include <cstdint>
+#include <common.h>
+
 #include <iomanip>
 #include <iostream>
 
-#include <common.h>
 #include "allocator.h"
 
 inline const char* kernel_id_to_string(KernelID id) {
