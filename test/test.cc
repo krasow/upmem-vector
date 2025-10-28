@@ -148,6 +148,44 @@ test_error test_float_abs() {
     return compare_cpu_unary(a, res, [](float x){ return std::fabs(x); });
 }
 
+test_error test_chained_operations() {
+    const uint32_t N = 1024 * 1024;
+
+    vector<int> a(N), b(N);
+    for (uint32_t i = 0; i < N; i++) {
+        a[i] = rand() % 200 - 100;
+        b[i] = rand() % 200 - 100;
+    }
+
+    dpu_vector<int> da = dpu_vector<int>::from_cpu(a);
+    dpu_vector<int> db = dpu_vector<int>::from_cpu(b);
+
+    // Chain operations on DPU: ((a + b) - a) -> negate -> abs
+    dpu_vector<int> res = da + db;   // a + b
+    res = res - da;                  // (a + b) - a
+    res = -res;                      // negate
+    res = abs(res);                  // abs
+
+    // Compute same operations on CPU
+    vector<int> cpu_res(N);
+    for (uint32_t i = 0; i < N; i++) {
+        cpu_res[i] = std::abs(-( (a[i] + b[i]) - a[i] ));
+    }
+
+    // Transfer back and compare
+    vector<int> final_res = res.to_cpu();
+    for (uint32_t i = 0; i < N; i++) {
+        if (final_res[i] != cpu_res[i]) {
+            std::cout << "[error] mismatch at index " << i << ": " 
+                      << final_res[i] << " != " << cpu_res[i] << std::endl;
+            return TEST_ERROR;
+        }
+    }
+
+    return TEST_SUCCESS;
+}
+
+
 int main(void) {
     assert(test_int_add()    == TEST_SUCCESS);
     assert(test_int_sub()    == TEST_SUCCESS);
@@ -157,6 +195,7 @@ int main(void) {
     assert(test_int_abs()    == TEST_SUCCESS);
     assert(test_float_negate() == TEST_SUCCESS);
     assert(test_float_abs()  == TEST_SUCCESS);
+    assert(test_chained_operations() == TEST_SUCCESS);
 
     std::cout << "All DPU vector tests passed successfully." << std::endl;
     return 0;
