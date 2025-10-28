@@ -8,6 +8,7 @@ BUILDDIR ?= bin
 NR_DPUS ?= 16
 NR_TASKLETS ?= 16
 
+CONFIG_FLAGS ?= -DENABLE_DPU_LOGGING=2 
 
 HOST_TARGET := ${BUILDDIR}/libvectordpu
 DPU_TARGET := ${BUILDDIR}/runtime.dpu
@@ -24,7 +25,7 @@ TEST_SOURCES := $(wildcard ${TEST_DIR}/*.cc)
 __dirs := $(shell mkdir -p ${BUILDDIR})
 
 COMMON_FLAGS := -Wall -Wextra -g -I${COMMON_INCLUDES}
-HOST_FLAGS := ${COMMON_FLAGS} -O3 `dpu-pkg-config --cflags --libs dpu` -DNR_TASKLETS=${NR_TASKLETS} -DNR_DPUS=${NR_DPUS}
+HOST_FLAGS := ${COMMON_FLAGS} -O3 `dpu-pkg-config --cflags --libs dpu` -DNR_TASKLETS=${NR_TASKLETS} -DNR_DPUS=${NR_DPUS} ${CONFIG_FLAGS}
 DPU_FLAGS := ${COMMON_FLAGS} -O2 -DNR_TASKLETS=${NR_TASKLETS}
 
 all: ${HOST_TARGET} ${DPU_TARGET}

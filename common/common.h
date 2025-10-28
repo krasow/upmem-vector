@@ -1,3 +1,6 @@
+#ifndef COMMON_H
+#define COMMON_H
+
 #define DPU_RUNTIUME "/home/david/upmem-driver-test/library/bin/runtime.dpu"
 
 #define BLOCK_SIZE_LOG2 5              // e.g., 32 elements per block
@@ -40,3 +43,6 @@ typedef struct {
     uint8_t is_binary;     // 1
     uint8_t pad[7];        // pad struct to 32 bytes
 } __attribute__((aligned(8))) DPU_LAUNCH_ARGS;
+
+
+#endif // COMMON_H

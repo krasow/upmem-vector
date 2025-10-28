@@ -2,3 +2,6 @@ bin
 bin/*
 *.dpu
 *.so
+.localenv
+build/
+build/*

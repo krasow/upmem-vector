@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "logger.inl"
+
 allocator::allocator(uint32_t start_addr, std::size_t total_size, std::size_t num_dpus)
     : start_addr_(start_addr), total_size_(total_size), num_dpus_(num_dpus)
 {
@@ -13,7 +15,7 @@ allocator::allocator(uint32_t start_addr, std::size_t total_size, std::size_t nu
     allocations_.clear();
 }
 
-vector_desc allocator::allocate_upmem_vector(std::size_t n) {
+vector_desc allocator::allocate_upmem_vector(std::size_t n, std::size_t size_type) {
     std::size_t num_dpus = this->num_dpus_;
     vector<uint32_t> vec_ptrs(num_dpus);
     vector<uint32_t> vec_sizes(num_dpus);
@@ -22,8 +24,9 @@ vector_desc allocator::allocate_upmem_vector(std::size_t n) {
     size_t remainder = n % num_dpus;
 
     for (size_t i = 0; i < num_dpus; i++) {
-        size_t alloc_size = size_per_dpu + (i < remainder ? 1 : 0);
+        size_t alloc_size = (size_per_dpu + (i < remainder ? 1 : 0)) * size_type;
         uint32_t addr = allocate(i, alloc_size);  // use bump/free-list allocator
+
         vec_ptrs[i] = addr;
         vec_sizes[i] = alloc_size;
     }

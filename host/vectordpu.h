@@ -1,5 +1,4 @@
-#ifndef DPU_VECTOR_H
-#define DPU_VECTOR_H
+#pragma once
 
 #include <cstdint>
 #include <vector>
@@ -17,13 +16,12 @@ public:
 
     explicit dpu_vector(uint32_t n);
     ~dpu_vector();
-
     vector<uint32_t> data() const;
     uint32_t size() const;
-
     vector<T> to_cpu();
-
     static dpu_vector<T> from_cpu(vector<T>& cpu_data);
+    
+    vector_desc data_desc() const { return data_; }
 };
 
 // ============================
@@ -93,5 +91,3 @@ dpu_vector<T> operator-(const dpu_vector<T>& a);
 
 template <typename T>
 dpu_vector<T> abs(const dpu_vector<T>& a);
-
-#endif // DPU_VECTOR_H

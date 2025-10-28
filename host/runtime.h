@@ -1,4 +1,7 @@
+#pragma once
+
 #include "allocator.h"
+#include <iostream>
 #include <dpu>
 
 class DpuRuntime {
@@ -24,12 +27,10 @@ public:
     void init(uint32_t num_dpus) {
         if (!initialized_) {
             num_dpus_ = num_dpus;
-
-            printf("Initializing DPU runtime with %u DPUs...\n", num_dpus_);
+            std::cout << "[runtime] Initializing DPU runtime with " << num_dpus_ << " DPUs..." << std::endl;
             DPU_ASSERT(dpu_alloc(num_dpus_, "backend=simulator", &dpu_set_));
             DPU_ASSERT(dpu_load(dpu_set_, DPU_RUNTIUME, NULL));
-            printf("%u DPUs loaded with Runtime\n", num_dpus_);
-
+            std::cout << "[runtime] DPU runtime initialized." << std::endl;\
             initialized_ = true;
             allocator_ = new allocator(0, 64 * 1024 * 1024, num_dpus_); 
         }

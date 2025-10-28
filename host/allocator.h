@@ -1,5 +1,4 @@
-#ifndef ALLOCATOR_HH
-#define ALLOCATOR_HH
+#pragma once
 
 #include <vector>
 #include <cstdint>
@@ -18,7 +17,7 @@ class allocator {
 public:
     allocator(uint32_t start_addr, std::size_t total_size, std::size_t num_dpus);
 
-    vector_desc allocate_upmem_vector(std::size_t n);
+    vector_desc allocate_upmem_vector(std::size_t n, std::size_t size_type);
     // Deallocate all memory for a vector (reset allocator)
     void deallocate_upmem_vector(vector_desc &data);
 
@@ -42,5 +41,3 @@ private:
     // Get vector_desc (pointers and sizes per DPU)
     vector_desc get_vector_desc() const;
 };
-
-#endif // ALLOCATOR_HH

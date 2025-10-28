@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <cassert>
+#include <iostream>
 
 using test_error = uint32_t;
 
