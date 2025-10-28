@@ -1,9 +1,25 @@
 #pragma once
 
-#include <cstdint>
 #include <vector>
+#include <cstdint>
+#include <string_view>
+#include <source_location>
+#include <type_traits>
+#include <iostream>
+
+
 #include <common.h>
 #include "allocator.h"
+
+using std::vector;
+
+#define LOGGER_ARGS_WITH_DEFAULTS \
+    std::string_view name = "", \
+    std::source_location loc = std::source_location::current()
+
+#define LOGGER_ARGS \
+    std::string_view name, \
+    std::source_location loc
 
 // ============================
 // DPU Vector
@@ -11,17 +27,25 @@
 template <typename T>
 class dpu_vector {
 public:
-    vector_desc data_;
-    uint32_t size_;
-
-    explicit dpu_vector(uint32_t n);
+    dpu_vector(uint32_t n, LOGGER_ARGS_WITH_DEFAULTS);
+    
     ~dpu_vector();
+
     vector<uint32_t> data() const;
     uint32_t size() const;
+
     vector<T> to_cpu();
-    static dpu_vector<T> from_cpu(vector<T>& cpu_data);
-    
+
+    static dpu_vector<T> from_cpu(std::vector<T>& cpu_vec, LOGGER_ARGS_WITH_DEFAULTS);
+
     vector_desc data_desc() const { return data_; }
+
+private:
+    vector_desc data_;
+    uint32_t size_;
+    const char* debug_name = nullptr;
+    const char* debug_file = nullptr;
+    int         debug_line = -1;
 };
 
 // ============================

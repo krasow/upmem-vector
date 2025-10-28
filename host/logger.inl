@@ -29,11 +29,25 @@ inline void print_vector_desc(vector_desc desc) {
     }
 }
 
+inline void log_allocation(const std::type_info& type,
+                           uint32_t n,
+                           std::string_view debug_name,
+                           const char* debug_file,
+                           int debug_line) {
+    std::cout << "[mem-logger] Allocated dpu_vector<" << type.name() << "> of size "
+              << n;                         
+    if (!debug_name.empty()) {
+        std::cout << " (name=\"" << debug_name << "\")";
+    }               
+    if (debug_file != nullptr && debug_line >= 0) {
+        std::cout << " at " << debug_file << ":" << debug_line;
+    }
+    std::cout << std::endl;
+}
 
-inline void log_dpu_launch_args(const DPU_LAUNCH_ARGS* args, uint32_t nr_of_dpus) {
 #ifdef ENABLE_DPU_LOGGING
+inline void log_dpu_launch_args(const DPU_LAUNCH_ARGS* args, uint32_t nr_of_dpus) {
     std::cout << "[task-logger] kernel=" << kernel_id_to_string(static_cast<KernelID>(args->kernel)) << " nr_of_dpus=" << nr_of_dpus << std::endl;
-#endif
 #if ENABLE_DPU_LOGGING >= 2
     for (uint32_t i = 0; i < nr_of_dpus; i++) {
         std::cout << "[task-logger] DPU[" << i << "]\t"
@@ -59,3 +73,4 @@ inline void log_dpu_launch_args(const DPU_LAUNCH_ARGS* args, uint32_t nr_of_dpus
     }
 #endif
 }
+#endif
