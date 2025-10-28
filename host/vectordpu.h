@@ -1,51 +1,48 @@
 #pragma once
 
-#include <vector>
-#include <cstdint>
-#include <string_view>
-#include <source_location>
-#include <type_traits>
-#include <iostream>
-
-
 #include <common.h>
+
+#include <cstdint>
+#include <iostream>
+#include <source_location>
+#include <string_view>
+#include <type_traits>
+#include <vector>
+
 #include "allocator.h"
 
 using std::vector;
 
 #define LOGGER_ARGS_WITH_DEFAULTS \
-    std::string_view name = "", \
-    std::source_location loc = std::source_location::current()
-
-#define LOGGER_ARGS \
-    std::string_view name, \
-    std::source_location loc
+  std::string_view name = "",     \
+                   std::source_location loc = std::source_location::current()
 
 // ============================
 // DPU Vector
 // ============================
 template <typename T>
 class dpu_vector {
-public:
-    dpu_vector(uint32_t n, LOGGER_ARGS_WITH_DEFAULTS);
-    
-    ~dpu_vector();
+ public:
+  dpu_vector(uint32_t n, LOGGER_ARGS_WITH_DEFAULTS);
 
-    vector<uint32_t> data() const;
-    uint32_t size() const;
+  ~dpu_vector();
 
-    vector<T> to_cpu();
+  vector<uint32_t> data() const;
+  uint32_t size() const;
 
-    static dpu_vector<T> from_cpu(std::vector<T>& cpu_vec, LOGGER_ARGS_WITH_DEFAULTS);
+  vector<T> to_cpu();
 
-    vector_desc data_desc() const { return data_; }
+  static dpu_vector<T> from_cpu(std::vector<T>& cpu_vec,
+                                LOGGER_ARGS_WITH_DEFAULTS);
 
-private:
-    vector_desc data_;
-    uint32_t size_;
-    const char* debug_name = nullptr;
-    const char* debug_file = nullptr;
-    int         debug_line = -1;
+  vector_desc data_desc() const { return data_; }
+
+ private:
+  vector_desc data_;
+  uint32_t size_;
+  const char* debug_name = nullptr;
+  const char* debug_file = nullptr;
+  int debug_line = -1;
 };
 
 // ============================
@@ -57,17 +54,16 @@ struct BinaryKernelSelector;
 // float specialization
 template <>
 struct BinaryKernelSelector<float> {
-    static KernelID add() { return KernelID::K_BINARY_FLOAT_ADD; }
-    static KernelID sub() { return KernelID::K_BINARY_FLOAT_SUB; }
+  static KernelID add() { return KernelID::K_BINARY_FLOAT_ADD; }
+  static KernelID sub() { return KernelID::K_BINARY_FLOAT_SUB; }
 };
 
 // int specialization
 template <>
 struct BinaryKernelSelector<int> {
-    static KernelID add() { return KernelID::K_BINARY_INT_ADD; }
-    static KernelID sub() { return KernelID::K_BINARY_INT_SUB; }
+  static KernelID add() { return KernelID::K_BINARY_INT_ADD; }
+  static KernelID sub() { return KernelID::K_BINARY_INT_SUB; }
 };
-
 
 template <typename T>
 struct UnaryKernelSelector;
@@ -75,40 +71,35 @@ struct UnaryKernelSelector;
 // float specialization
 template <>
 struct UnaryKernelSelector<float> {
-    static KernelID negate() { return KernelID::K_UNARY_FLOAT_NEGATE; }
-    static KernelID abs()    { return KernelID::K_UNARY_FLOAT_ABS; }
+  static KernelID negate() { return KernelID::K_UNARY_FLOAT_NEGATE; }
+  static KernelID abs() { return KernelID::K_UNARY_FLOAT_ABS; }
 };
 
 // int specialization
 template <>
 struct UnaryKernelSelector<int> {
-    static KernelID negate() { return KernelID::K_UNARY_INT_NEGATE; }
-    static KernelID abs()    { return KernelID::K_UNARY_INT_ABS; }
+  static KernelID negate() { return KernelID::K_UNARY_INT_NEGATE; }
+  static KernelID abs() { return KernelID::K_UNARY_INT_ABS; }
 };
-
 
 // ============================
 // DPU Launch helpers
 // ============================
 template <typename T>
-dpu_vector<T> launch_binop(const dpu_vector<T>& lhs,
-                            const dpu_vector<T>& rhs,
-                            KernelID kernel_id);
+dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
+                           KernelID kernel_id);
 
 template <typename T>
-dpu_vector<T> launch_unary(const dpu_vector<T>& a,
-                            KernelID kernel_id);
+dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id);
 
 // ============================
 // Operators
 // ============================
 template <typename T>
-dpu_vector<T> operator+(const dpu_vector<T>& lhs,
-                        const dpu_vector<T>& rhs);
+dpu_vector<T> operator+(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs);
 
 template <typename T>
-dpu_vector<T> operator-(const dpu_vector<T>& lhs,
-                        const dpu_vector<T>& rhs);
+dpu_vector<T> operator-(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs);
 
 template <typename T>
 dpu_vector<T> operator-(const dpu_vector<T>& a);
