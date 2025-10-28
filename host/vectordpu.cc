@@ -16,7 +16,7 @@ dpu_vector<T>::dpu_vector(uint32_t n)
     
     if(runtime.is_initialized() == false) {
         // throw std::runtime_error("DPU runtime not initialized!");
-        runtime.init(16);
+        runtime.init(NR_DPUS);
     }
 
     data_ = runtime.get_allocator().allocate_upmem_vector(n, sizeof(T));
@@ -78,7 +78,7 @@ dpu_vector<T> dpu_vector<T>::from_cpu(vector<T>& cpu_data)
     DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, DPU_MRAM_HEAP_POINTER_NAME, 
                             mram_location, xfer_size, DPU_XFER_DEFAULT));
 
-    #if ENABLE_DPU_LOGGING == 1
+    #ifdef ENABLE_DPU_LOGGING
         std::cout << "[debug-help] Transferred " << cpu_data.size() << " elements to DPUs" << std::endl;
     #endif 
     return vec;
