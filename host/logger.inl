@@ -31,9 +31,10 @@ inline void print_vector_desc(vector_desc desc) {
 
 
 inline void log_dpu_launch_args(const DPU_LAUNCH_ARGS* args, uint32_t nr_of_dpus) {
-#if ENABLE_DPU_LOGGING == 1
-    std::cout << "[task-logger] kernel=" << kernel_id_to_string(static_cast<KernelID>(args->kernel)) << std::endl;;
-#elif ENABLE_DPU_LOGGING == 2
+#ifdef ENABLE_DPU_LOGGING
+    std::cout << "[task-logger] kernel=" << kernel_id_to_string(static_cast<KernelID>(args->kernel)) << " nr_of_dpus=" << nr_of_dpus << std::endl;
+#endif
+#if ENABLE_DPU_LOGGING >= 2
     for (uint32_t i = 0; i < nr_of_dpus; i++) {
         std::cout << "[task-logger] DPU[" << i << "]\t"
                   << "kernel=" << kernel_id_to_string(static_cast<KernelID>(args[i].kernel))

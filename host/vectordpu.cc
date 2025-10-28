@@ -79,7 +79,7 @@ dpu_vector<T> dpu_vector<T>::from_cpu(vector<T>& cpu_data)
                             mram_location, xfer_size, DPU_XFER_DEFAULT));
 
     #if ENABLE_DPU_LOGGING == 1
-        std::cout << "[debug-help] Transferred " << cpu_data.size() << " elements to DPU." << std::endl;
+        std::cout << "[debug-help] Transferred " << cpu_data.size() << " elements to DPUs" << std::endl;
     #endif 
     return vec;
 }
@@ -117,8 +117,8 @@ vector<T> dpu_vector<T>::to_cpu()
     DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU, DPU_MRAM_HEAP_POINTER_NAME,
                              mram_location, xfer_size, DPU_XFER_DEFAULT));
 
-    #if ENABLE_DPU_LOGGING == 1
-        std::cout << "[debug-help] Retrieved " << cpu_data.size() << " elements from DPU." << std::endl;
+    #ifdef ENABLE_DPU_LOGGING
+        std::cout << "[debug-help] Retrieved " << cpu_data.size() << " elements from DPUs" << std::endl;
     #endif
     return cpu_data;
 }

@@ -5,3 +5,4 @@ bin/*
 .localenv
 build/
 build/*
+vectordpu_test
