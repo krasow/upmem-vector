@@ -53,7 +53,10 @@ dpu_vector<T> dpu_vector<T>::from_cpu(vector<T>& cpu_data)
     // the first element is vector of pointers to DPU memory per DPU
     // the second element is vector of sizes per DPU
     auto desc = vec.data_desc();
-    print_vector_desc(desc);
+
+    #if ENABLE_DPU_LOGGING >= 2
+        print_vector_desc(desc);
+    #endif
     
     auto& runtime = DpuRuntime::get();
 
@@ -75,7 +78,9 @@ dpu_vector<T> dpu_vector<T>::from_cpu(vector<T>& cpu_data)
     DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, DPU_MRAM_HEAP_POINTER_NAME, 
                             mram_location, xfer_size, DPU_XFER_DEFAULT));
 
-    std::cout << "[debug-help] Transferred " << cpu_data.size() << " elements to DPU." << std::endl;
+    #if ENABLE_DPU_LOGGING == 1
+        std::cout << "[debug-help] Transferred " << cpu_data.size() << " elements to DPU." << std::endl;
+    #endif 
     return vec;
 }
 
@@ -83,7 +88,10 @@ template <typename T>
 vector<T> dpu_vector<T>::to_cpu()
 {
     auto desc = this->data_desc();  // pair< vector<uint32_t>, vector<uint32_t> >
-    print_vector_desc(desc);
+    
+    #if ENABLE_DPU_LOGGING >= 2
+        print_vector_desc(desc);
+    #endif
 
     auto& runtime = DpuRuntime::get();
     dpu_set_t& dpu_set = runtime.dpu_set();
@@ -109,8 +117,9 @@ vector<T> dpu_vector<T>::to_cpu()
     DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU, DPU_MRAM_HEAP_POINTER_NAME,
                              mram_location, xfer_size, DPU_XFER_DEFAULT));
 
-    std::cout << "[debug-help] Retrieved " << cpu_data.size() << " elements from DPU." << std::endl;
-
+    #if ENABLE_DPU_LOGGING == 1
+        std::cout << "[debug-help] Retrieved " << cpu_data.size() << " elements from DPU." << std::endl;
+    #endif
     return cpu_data;
 }
 

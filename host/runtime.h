@@ -27,10 +27,18 @@ public:
     void init(uint32_t num_dpus) {
         if (!initialized_) {
             num_dpus_ = num_dpus;
+
+        #if ENABLE_DPU_LOGGING == 1 
             std::cout << "[runtime] Initializing DPU runtime with " << num_dpus_ << " DPUs..." << std::endl;
+        #endif
+
             DPU_ASSERT(dpu_alloc(num_dpus_, "backend=simulator", &dpu_set_));
             DPU_ASSERT(dpu_load(dpu_set_, DPU_RUNTIUME, NULL));
-            std::cout << "[runtime] DPU runtime initialized." << std::endl;\
+
+        #if ENABLE_DPU_LOGGING == 1
+            std::cout << "[runtime] DPU runtime initialized." << std::endl;
+        #endif
+        
             initialized_ = true;
             allocator_ = new allocator(0, 64 * 1024 * 1024, num_dpus_); 
         }
