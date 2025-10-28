@@ -6,3 +6,6 @@ bin/*
 build/
 build/*
 vectordpu_test
+.vscode/
+.vscode/*
+*.o
