@@ -170,7 +170,7 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a,
         args[i].is_binary = false;
         args[i].num_elements = a.size();
         args[i].size_type = sizeof(T);
-        args[i].unary.lhs_offset = reinterpret_cast<uint32_t>(a.data()[i]);
+        args[i].unary.rhs_offset = reinterpret_cast<uint32_t>(a.data()[i]);
         args[i].unary.res_offset = reinterpret_cast<uint32_t>(res.data()[i]);
     }
 
@@ -221,10 +221,21 @@ dpu_vector<T> abs(const dpu_vector<T>& a)
     return launch_unary(a, UnaryKernelSelector<T>::abs());
 }
 
-
 // Explicit instantiation
-template class dpu_vector<int>;
 template dpu_vector<int> operator+<int>(const dpu_vector<int>&, const dpu_vector<int>&);
+template dpu_vector<int> operator-<int>(const dpu_vector<int>&, const dpu_vector<int>&);
 
-template class dpu_vector<float>;
 template dpu_vector<float> operator+<float>(const dpu_vector<float>&, const dpu_vector<float>&);
+template dpu_vector<float> operator-<float>(const dpu_vector<float>&, const dpu_vector<float>&);
+
+template dpu_vector<int> operator-<int>(const dpu_vector<int>&);
+template dpu_vector<int> abs<int>(const dpu_vector<int>&);
+
+template dpu_vector<float> operator-<float>(const dpu_vector<float>&);
+template dpu_vector<float> abs<float>(const dpu_vector<float>&);
+
+template dpu_vector<int> dpu_vector<int>::from_cpu(std::vector<int>&);
+template std::vector<int> dpu_vector<int>::to_cpu();
+
+template dpu_vector<float> dpu_vector<float>::from_cpu(std::vector<float>&);
+template std::vector<float> dpu_vector<float>::to_cpu();

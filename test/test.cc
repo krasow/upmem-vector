@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <cassert>
 #include <iostream>
+#include <cassert>
+#include <cmath>
 
 using test_error = uint32_t;
 
@@ -22,40 +24,140 @@ using test_error = uint32_t;
 #define TEST_ERROR 1
 #define TEST_SUCCESS 0
 
-
-test_error compare_cpu(vector<int>& a, vector<int>& b, dpu_vector<int>& res) {
-    vector<int> cpu_res = res.to_cpu();
-    for (uint32_t i = 0; i < res.size(); i++) {
-        if (cpu_res[i] == a[i] + b[i]) {
-            continue;
-        } else {
-            return TEST_ERROR;
-        }
+template <typename T, typename F>
+test_error compare_cpu_unary(vector<T>& a, dpu_vector<T>& res, F func) {
+    vector<T> cpu_res = res.to_cpu();
+    for (uint32_t i = 0; i < a.size(); i++) {
+        if (cpu_res[i] == func(a[i])) continue;
+        else return TEST_ERROR;
     }
     return TEST_SUCCESS;
 }
 
-test_error our_driver_test() {
-    return TEST_UNIMPLIMENTED;
+template <typename T, typename F>
+test_error compare_cpu_binary(vector<T>& a, vector<T>& b, dpu_vector<T>& res, F func) {
+    vector<T> cpu_res = res.to_cpu();
+    for (uint32_t i = 0; i < a.size(); i++) {
+        if (cpu_res[i] == func(a[i], b[i])) continue;
+        else return TEST_ERROR;
+    }
+    return TEST_SUCCESS;
 }
 
-test_error upmem_driver_test() {
-    const uint32_t N = 1024 * 1024; // 1M elements
-    vector<int> a(N);           
-    vector<int> b(N); 
+test_error test_int_add() {
+    const uint32_t N = 1024 * 1024;
+    vector<int> a(N), b(N);
     for (uint32_t i = 0; i < N; i++) {
         a[i] = rand() % 100;
         b[i] = rand() % 100;
     }
+
     dpu_vector<int> da = dpu_vector<int>::from_cpu(a);
     dpu_vector<int> db = dpu_vector<int>::from_cpu(b);
     dpu_vector<int> res = da + db;
 
-    return compare_cpu(a, b, res);
+    return compare_cpu_binary(a, b, res, [](int x, int y){ return x + y; });
 }
 
+test_error test_int_sub() {
+    const uint32_t N = 1024 * 1024;
+    vector<int> a(N), b(N);
+    for (uint32_t i = 0; i < N; i++) {
+        a[i] = rand() % 100;
+        b[i] = rand() % 100;
+    }
+
+    dpu_vector<int> da = dpu_vector<int>::from_cpu(a);
+    dpu_vector<int> db = dpu_vector<int>::from_cpu(b);
+    dpu_vector<int> res = da - db;
+
+    return compare_cpu_binary(a, b, res, [](int x, int y){ return x - y; });
+}
+
+test_error test_float_add() {
+    const uint32_t N = 1024 * 1024;
+    vector<float> a(N), b(N);
+    for (uint32_t i = 0; i < N; i++) {
+        a[i] = (float)rand() / RAND_MAX;
+        b[i] = (float)rand() / RAND_MAX;
+    }
+
+    dpu_vector<float> da = dpu_vector<float>::from_cpu(a);
+    dpu_vector<float> db = dpu_vector<float>::from_cpu(b);
+    dpu_vector<float> res = da + db;
+
+    return compare_cpu_binary(a, b, res, [](float x, float y){ return x + y; });
+}
+
+test_error test_float_sub() {
+    const uint32_t N = 1024 * 1024;
+    vector<float> a(N), b(N);
+    for (uint32_t i = 0; i < N; i++) {
+        a[i] = (float)rand() / RAND_MAX;
+        b[i] = (float)rand() / RAND_MAX;
+    }
+
+    dpu_vector<float> da = dpu_vector<float>::from_cpu(a);
+    dpu_vector<float> db = dpu_vector<float>::from_cpu(b);
+    dpu_vector<float> res = da - db;
+
+    return compare_cpu_binary(a, b, res, [](float x, float y){ return x - y; });
+}
+
+test_error test_int_negate() {
+    const uint32_t N = 1024 * 1024;
+    vector<int> a(N);
+    for (uint32_t i = 0; i < N; i++) a[i] = rand() % 200 - 100;
+
+    dpu_vector<int> da = dpu_vector<int>::from_cpu(a);
+    dpu_vector<int> res = -da;
+
+    return compare_cpu_unary(a, res, [](int x){ return -x; });
+}
+
+test_error test_int_abs() {
+    const uint32_t N = 1024 * 1024;
+    vector<int> a(N);
+    for (uint32_t i = 0; i < N; i++) a[i] = rand() % 200 - 100;
+
+    dpu_vector<int> da = dpu_vector<int>::from_cpu(a);
+    dpu_vector<int> res = abs(da);
+
+    return compare_cpu_unary(a, res, [](int x){ return std::abs(x); });
+}
+
+test_error test_float_negate() {
+    const uint32_t N = 1024 * 1024;
+    vector<float> a(N);
+    for (uint32_t i = 0; i < N; i++) a[i] = (float)rand() / RAND_MAX - 0.5f;
+
+    dpu_vector<float> da = dpu_vector<float>::from_cpu(a);
+    dpu_vector<float> res = -da;
+
+    return compare_cpu_unary(a, res, [](float x){ return -x; });
+}
+
+test_error test_float_abs() {
+    const uint32_t N = 1024 * 1024;
+    vector<float> a(N);
+    for (uint32_t i = 0; i < N; i++) a[i] = (float)rand() / RAND_MAX - 0.5f;
+
+    dpu_vector<float> da = dpu_vector<float>::from_cpu(a);
+    dpu_vector<float> res = abs(da);
+
+    return compare_cpu_unary(a, res, [](float x){ return std::fabs(x); });
+}
 
 int main(void) {
-    assert(upmem_driver_test() == TEST_SUCCESS);
+    assert(test_int_add()    == TEST_SUCCESS);
+    assert(test_int_sub()    == TEST_SUCCESS);
+    assert(test_float_add()  == TEST_SUCCESS);
+    assert(test_float_sub()  == TEST_SUCCESS);
+    assert(test_int_negate() == TEST_SUCCESS);
+    assert(test_int_abs()    == TEST_SUCCESS);
+    assert(test_float_negate() == TEST_SUCCESS);
+    assert(test_float_abs()  == TEST_SUCCESS);
+
+    std::cout << "All DPU vector tests passed successfully." << std::endl;
     return 0;
 }
