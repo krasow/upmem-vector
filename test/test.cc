@@ -165,11 +165,8 @@ test_error test_chained_operations() {
   dpu_vector<int> db = dpu_vector<int>::from_cpu(b);
 
   // Chain operations on DPU: ((a + b) - a) -> negate -> abs
-  dpu_vector<int> res = da + db;  // a + b
-  res = res - da;                 // (a + b) - a
-  res = -res;                     // negate
-  res = abs(res);                 // abs
-
+  dpu_vector<int> res = abs(-((da + db) - da));
+  
   // Compute same operations on CPU
   vector<int> cpu_res(N);
   for (uint32_t i = 0; i < N; i++) {
