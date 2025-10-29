@@ -150,16 +150,12 @@ vector<T> dpu_vector<T>::to_cpu() {
 }
 
 template <typename T>
-dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
+dpu_vector<T> internal_launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
                            KernelID kernel_id) {
   assert(lhs.size() == rhs.size());
   dpu_vector<T> res(lhs.size());
 
   auto& runtime = DpuRuntime::get();
-
-  // TODO have some sort of dependency analysis
-  auto& event_queue = runtime.get_event_queue();
-  event_queue.process_events();
   
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
@@ -193,14 +189,36 @@ dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
 }
 
 template <typename T>
-dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
+std::future<dpu_vector<T>> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
+                           KernelID kernel_id) {
+
+    std::promise<dpu_vector<T>> prom;
+    auto future = prom.get_future();
+
+    auto bound_cb = [lhs = std::ref(lhs), rhs = std::ref(rhs), kernel_id, p = std::move(prom)]() mutable {
+        try {
+            auto res = internal_launch_binop(lhs, rhs, kernel_id);
+            p.set_value(std::move(res));
+        } catch (...) {
+            p.set_exception(std::current_exception());
+        }
+    };
+
+  auto& runtime = DpuRuntime::get();
+  auto& event_queue = runtime.get_event_queue();
+  event_queue.submit(EventQueue::OperationType::COMPUTE, bound_cb);
+
+  // TODO have some sort of dependency analysis
+  event_queue.process_events();
+  return future;
+}
+
+
+template <typename T>
+dpu_vector<T> internal_launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
   dpu_vector<T> res(a.size());
 
   auto& runtime = DpuRuntime::get();
-
-  // TODO have some sort of dependency analysis
-  auto& event_queue = runtime.get_event_queue();
-  event_queue.process_events();
 
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
@@ -230,4 +248,27 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
   DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
 
   return res;
+}
+
+template <typename T>
+std::future<dpu_vector<T>> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
+
+  std::promise<dpu_vector<T>> prom;
+  auto future = prom.get_future();
+
+  auto bound_cb = [a = std::ref(a), kernel_id, p = std::move(prom)]() mutable {
+        try {
+            auto res = internal_launch_unary(a, kernel_id);
+            p.set_value(std::move(res));
+        } catch (...) {
+            p.set_exception(std::current_exception());
+        }
+  };
+  
+
+  auto& runtime = DpuRuntime::get();
+  auto& event_queue = runtime.get_event_queue();
+  auto prom = event_queue.submit(EventQueue::OperationType::COMPUTE, bound_cb);
+
+  return future;
 }
