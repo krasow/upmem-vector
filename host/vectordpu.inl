@@ -48,12 +48,54 @@ uint32_t dpu_vector<T>::size() const {
   return size_;
 }
 
+void vec_xfer_to_dpu(char* cpu_vec, vector_desc& desc) {
+    auto& runtime = DpuRuntime::get();
+    dpu_set_t& dpu_set = runtime.dpu_set();
+    dpu_set_t dpu;
+
+    uint32_t idx_dpu = 0;
+    size_t element = 0;
+
+    DPU_FOREACH(dpu_set, dpu, idx_dpu) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &(cpu_vec[element])));
+        element += desc.second[idx_dpu];
+    }
+
+    uint32_t mram_location = desc.first[0];
+    size_t xfer_size = desc.second[0];
+
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, DPU_MRAM_HEAP_POINTER_NAME,
+                            mram_location, xfer_size, DPU_XFER_DEFAULT));
+
+}
+
+void vec_xfer_from_dpu(char* cpu_vec, vector_desc& desc) {
+    auto& runtime = DpuRuntime::get();
+    dpu_set_t& dpu_set = runtime.dpu_set();
+    dpu_set_t dpu;
+    
+    uint32_t idx_dpu = 0;
+    size_t element = 0;
+
+    DPU_FOREACH(dpu_set, dpu, idx_dpu) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &(cpu_vec[element])));
+        element += desc.second[idx_dpu];
+    }
+
+    uint32_t mram_location = desc.first[0];
+    size_t xfer_size = desc.second[0];
+
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, mram_location, xfer_size,
+                             DPU_XFER_DEFAULT));
+}
+
+
 template <typename T>
 dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
                                       std::string_view name,
                                       std::source_location loc) {
   dpu_vector<T> vec(cpu_vec.size(), name, loc);
-  // TODO: implement transfer to DPU memory
   // .data returns a std::pair<vector<uint32_t>, vector<uint32_t>>
   // the first element is vector of pointers to DPU memory per DPU
   // the second element is vector of sizes per DPU
@@ -62,33 +104,23 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
 #if ENABLE_DPU_LOGGING >= 2
   print_vector_desc(desc);
 #endif
+  
+  char* cpu_buffer = reinterpret_cast<char*>(cpu_vec.data());
+  auto bound_cb = std::bind(vec_xfer_to_dpu, cpu_buffer, std::ref(desc));
 
   auto& runtime = DpuRuntime::get();
-
-  dpu_set_t& dpu_set = runtime.dpu_set();
-  dpu_set_t dpu;
-  uint32_t idx_dpu = 0;
-
-  char* cpu_vec_ptr = (char*)cpu_vec.data();
-  size_t element = 0;
-
-  DPU_FOREACH(dpu_set, dpu, idx_dpu) {
-    DPU_ASSERT(dpu_prepare_xfer(dpu, &(cpu_vec_ptr[element])));
-    element += desc.second[idx_dpu];
-  }
-
-  uint32_t mram_location = desc.first[0];
-  size_t xfer_size = desc.second[0];
-
-  DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, DPU_MRAM_HEAP_POINTER_NAME,
-                           mram_location, xfer_size, DPU_XFER_DEFAULT));
+  auto& event_queue = runtime.get_event_queue();
+  event_queue.submit(EventQueue::OperationType::DPU_TRANSFER, bound_cb);
+  // todo we need dependency analysis
+  event_queue.process_events();
 
 #if DENABLE_DPU_LOGGING >= 2
-  std::cout << "[debug-help] Transferred " << cpu_vec.size()
+  std::cout << "[queue-append] HOST->DPU XFER " << cpu_vec.size()
             << " elements to DPUs" << std::endl;
 #endif
   return vec;
 }
+
 
 template <typename T>
 vector<T> dpu_vector<T>::to_cpu() {
@@ -98,36 +130,23 @@ vector<T> dpu_vector<T>::to_cpu() {
   print_vector_desc(desc);
 #endif
 
-  auto& runtime = DpuRuntime::get();
-  dpu_set_t& dpu_set = runtime.dpu_set();
-  dpu_set_t dpu;
-
   // Allocate CPU buffer large enough to hold all data
-  vector<T> cpu_data(this->size());
-  char* cpu_vec = reinterpret_cast<char*>(cpu_data.data());
+  vector<T> cpu_vec(this->size());
+  char* cpu_buffer = reinterpret_cast<char*>(cpu_vec.data());
+  auto bound_cb = std::bind(vec_xfer_from_dpu, cpu_buffer, std::ref(desc));
 
-  uint32_t idx_dpu = 0;
-  size_t element = 0;
-
-  // Prepare DMA transfers from each DPU
-  DPU_FOREACH(dpu_set, dpu, idx_dpu) {
-    DPU_ASSERT(dpu_prepare_xfer(dpu, &(cpu_vec[element])));
-    element += desc.second[idx_dpu];
-  }
-
-  uint32_t mram_location = desc.first[0];
-  size_t xfer_size = desc.second[0];
-
-  // Perform the actual transfer from DPU MRAM to host memory
-  DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
-                           DPU_MRAM_HEAP_POINTER_NAME, mram_location, xfer_size,
-                           DPU_XFER_DEFAULT));
+  auto& runtime = DpuRuntime::get();
+  auto& event_queue = runtime.get_event_queue();
+  event_queue.submit(EventQueue::OperationType::HOST_TRANSFER, bound_cb);
+  
+  // TODO we need dependency analysis
+  event_queue.process_events();
 
 #if DENABLE_DPU_LOGGING >= 2
-  std::cout << "[debug-help] Retrieved " << cpu_data.size()
+  std::cout << "[queue-append] DPU->HOST XFER " << cpu_vec.size()
             << " elements from DPUs" << std::endl;
 #endif
-  return cpu_data;
+  return cpu_vec;
 }
 
 template <typename T>
@@ -137,6 +156,11 @@ dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
   dpu_vector<T> res(lhs.size());
 
   auto& runtime = DpuRuntime::get();
+
+  // TODO have some sort of dependency analysis
+  auto& event_queue = runtime.get_event_queue();
+  event_queue.process_events();
+  
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
 
@@ -173,6 +197,11 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
   dpu_vector<T> res(a.size());
 
   auto& runtime = DpuRuntime::get();
+
+  // TODO have some sort of dependency analysis
+  auto& event_queue = runtime.get_event_queue();
+  event_queue.process_events();
+
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
 

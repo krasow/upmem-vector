@@ -4,6 +4,7 @@
 #include <iostream>
 
 #include "allocator.h"
+#include "queue.h"
 
 class DpuRuntime {
  private:
@@ -13,6 +14,7 @@ class DpuRuntime {
   dpu_set_t dpu_set_;
   uint32_t num_dpus_;
   allocator* allocator_;
+  EventQueue* event_queue_;
 
  public:
   // Delete copy/move
@@ -43,6 +45,7 @@ class DpuRuntime {
 
       initialized_ = true;
       allocator_ = new allocator(0, 64 * 1024 * 1024, num_dpus_);
+      event_queue_ = new EventQueue();
     }
   }
 
@@ -54,4 +57,5 @@ class DpuRuntime {
   uint32_t num_dpus() const { return num_dpus_; }
   uint32_t num_tasklets() const { return NR_TASKLETS; }
   allocator& get_allocator() { return *allocator_; }
+  EventQueue& get_event_queue() { return *event_queue_; }
 };
