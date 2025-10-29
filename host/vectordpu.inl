@@ -49,51 +49,51 @@ uint32_t dpu_vector<T>::size() const {
 }
 
 void vec_xfer_to_dpu(Event e, char* cpu_vec, vector_desc& desc) {
-    auto& runtime = DpuRuntime::get();
-    dpu_set_t& dpu_set = runtime.dpu_set();
-    dpu_set_t dpu;
+  auto& runtime = DpuRuntime::get();
+  dpu_set_t& dpu_set = runtime.dpu_set();
+  dpu_set_t dpu;
 
-    uint32_t idx_dpu = 0;
-    size_t element = 0;
+  uint32_t idx_dpu = 0;
+  size_t element = 0;
 
-    DPU_FOREACH(dpu_set, dpu, idx_dpu) {
-        CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu_vec[element])));
-        element += desc.second[idx_dpu];
-    }
+  DPU_FOREACH(dpu_set, dpu, idx_dpu) {
+    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu_vec[element])));
+    element += desc.second[idx_dpu];
+  }
 
-    uint32_t mram_location = desc.first[0];
-    size_t xfer_size = desc.second[0];
+  uint32_t mram_location = desc.first[0];
+  size_t xfer_size = desc.second[0];
 
-    CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, DPU_MRAM_HEAP_POINTER_NAME,
-                            mram_location, xfer_size, DPU_XFER_ASYNC));
-                    
-    e.started = true;
-    e.add_completion_callback();
+  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
+                            DPU_MRAM_HEAP_POINTER_NAME, mram_location,
+                            xfer_size, DPU_XFER_ASYNC));
+
+  e.started = true;
+  e.add_completion_callback();
 }
 
 void vec_xfer_from_dpu(Event e, char* cpu_vec, vector_desc& desc) {
-    auto& runtime = DpuRuntime::get();
-    dpu_set_t& dpu_set = runtime.dpu_set();
-    dpu_set_t dpu;
-    
-    uint32_t idx_dpu = 0;
-    size_t element = 0;
+  auto& runtime = DpuRuntime::get();
+  dpu_set_t& dpu_set = runtime.dpu_set();
+  dpu_set_t dpu;
 
-    DPU_FOREACH(dpu_set, dpu, idx_dpu) {
-        CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu_vec[element])));
-        element += desc.second[idx_dpu];
-    }
+  uint32_t idx_dpu = 0;
+  size_t element = 0;
 
-    uint32_t mram_location = desc.first[0];
-    size_t xfer_size = desc.second[0];
+  DPU_FOREACH(dpu_set, dpu, idx_dpu) {
+    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu_vec[element])));
+    element += desc.second[idx_dpu];
+  }
 
-    CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
-                             DPU_MRAM_HEAP_POINTER_NAME, mram_location, xfer_size,
-                             DPU_XFER_ASYNC));
-    e.started = true;
-    e.add_completion_callback();
+  uint32_t mram_location = desc.first[0];
+  size_t xfer_size = desc.second[0];
+
+  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                            DPU_MRAM_HEAP_POINTER_NAME, mram_location,
+                            xfer_size, DPU_XFER_ASYNC));
+  e.started = true;
+  e.add_completion_callback();
 }
-
 
 template <typename T>
 dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
@@ -108,7 +108,7 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
 #if ENABLE_DPU_LOGGING >= 2
   print_vector_desc(desc);
 #endif
-  
+
   char* cpu_buffer = reinterpret_cast<char*>(cpu_vec.data());
   auto bound_cb = std::bind(vec_xfer_to_dpu, cpu_buffer, std::ref(desc));
 
@@ -124,7 +124,6 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
 #endif
   return vec;
 }
-
 
 template <typename T>
 vector<T> dpu_vector<T>::to_cpu() {
@@ -142,7 +141,7 @@ vector<T> dpu_vector<T>::to_cpu() {
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
   event_queue.submit(Event::OperationType::HOST_TRANSFER, bound_cb);
-  
+
   // TODO we need dependency analysis
   event_queue.process_events();
 
@@ -154,13 +153,13 @@ vector<T> dpu_vector<T>::to_cpu() {
 }
 
 template <typename T>
-void internal_launch_binop(Event e, const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
-                           KernelID kernel_id) {
+void internal_launch_binop(Event e, const dpu_vector<T>& lhs,
+                           const dpu_vector<T>& rhs, KernelID kernel_id) {
   assert(lhs.size() == rhs.size());
   dpu_vector<T> res(lhs.size());
 
   auto& runtime = DpuRuntime::get();
-  
+
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
 
@@ -185,8 +184,8 @@ void internal_launch_binop(Event e, const dpu_vector<T>& lhs, const dpu_vector<T
   DPU_FOREACH(dpu_set, dpu, idx_dpu) {
     CHECK_UPMEM(dpu_prepare_xfer(dpu, &args[idx_dpu]));
   }
-  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0, sizeof(args[0]),
-                           DPU_XFER_DEFAULT));
+  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
+                            sizeof(args[0]), DPU_XFER_DEFAULT));
   CHECK_UPMEM(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
 
   e.started = true;
@@ -195,9 +194,8 @@ void internal_launch_binop(Event e, const dpu_vector<T>& lhs, const dpu_vector<T
 }
 
 template <typename T>
-dpu_vector<T>launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
+dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
                            KernelID kernel_id) {
-                            
   auto bound_cb = std::bind(internal_launch_binop<T>, lhs, rhs, kernel_id);
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
@@ -205,15 +203,16 @@ dpu_vector<T>launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
   event_queue.submit(std::move(e));
 
   // TODO have some sort of dependency analysis
-  while(e.finished == false) {
-      event_queue.process_next();
+  while (e.finished == false) {
+    event_queue.process_next();
   }
 
   return std::get<dpu_vector<T>>(e.res);
 }
 
 template <typename T>
-void internal_launch_unary(Event e,const dpu_vector<T>& a, KernelID kernel_id) {
+void internal_launch_unary(Event e, const dpu_vector<T>& a,
+                           KernelID kernel_id) {
   dpu_vector<T> res(a.size());
 
   auto& runtime = DpuRuntime::get();
@@ -241,8 +240,8 @@ void internal_launch_unary(Event e,const dpu_vector<T>& a, KernelID kernel_id) {
   DPU_FOREACH(dpu_set, dpu, idx_dpu) {
     CHECK_UPMEM(dpu_prepare_xfer(dpu, &args[idx_dpu]));
   }
-  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0, sizeof(args[0]),
-                           DPU_XFER_DEFAULT));
+  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
+                            sizeof(args[0]), DPU_XFER_DEFAULT));
   CHECK_UPMEM(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
 
   e.started = true;
@@ -260,8 +259,8 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
   event_queue.submit(std::move(e));
 
   // TODO have some sort of dependency analysis
-  while(e.finished == false) {
-      event_queue.process_next();
+  while (e.finished == false) {
+    event_queue.process_next();
   }
 
   return std::get<dpu_vector<T>>(e.res);

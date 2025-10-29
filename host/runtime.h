@@ -4,10 +4,9 @@
 
 #ifndef DPURT
 #define DPURT
-#include <dpu> // UPMEM rt syslib
+#include <dpu>  // UPMEM rt syslib
 #define CHECK_UPMEM(x) DPU_ASSERT(x)
 #endif
-
 
 #include "allocator.h"
 #include "queue.h"
