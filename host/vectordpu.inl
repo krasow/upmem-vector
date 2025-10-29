@@ -114,9 +114,13 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
 
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
-  event_queue.submit(Event::OperationType::DPU_TRANSFER, bound_cb);
-  // todo we need dependency analysis
-  event_queue.process_events();
+  Event e(Event::OperationType::DPU_TRANSFER, bound_cb);
+  event_queue.submit(std::move(e));
+
+  // TODO have some sort of dependency analysis
+  while (e.finished == false) {
+    event_queue.process_next();
+  }
 
 #if DENABLE_DPU_LOGGING >= 2
   std::cout << "[queue-append] HOST->DPU XFER " << cpu_vec.size()
@@ -140,10 +144,13 @@ vector<T> dpu_vector<T>::to_cpu() {
 
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
-  event_queue.submit(Event::OperationType::HOST_TRANSFER, bound_cb);
+  Event e(Event::OperationType::HOST_TRANSFER, bound_cb);
+  event_queue.submit(std::move(e));
 
-  // TODO we need dependency analysis
-  event_queue.process_events();
+  // TODO have some sort of dependency analysis
+  while (e.finished == false) {
+    event_queue.process_next();
+  }
 
 #if DENABLE_DPU_LOGGING >= 2
   std::cout << "[queue-append] DPU->HOST XFER " << cpu_vec.size()
