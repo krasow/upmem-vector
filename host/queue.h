@@ -1,11 +1,14 @@
+#pragma once
+
+#include <variant>
 #include <queue>
 #include <functional>
 #include <cstdint>
 #include <cassert>
-#include <future> 
-#include <chrono>
 
-class EventQueue {
+#include "vectordpu.h"
+
+class Event {
 public:
     enum class OperationType {
         COMPUTE,
@@ -14,17 +17,34 @@ public:
         FENCE
     };
 
-    using Event = std::pair<OperationType, std::function<void()>>;
+    OperationType op;
+    std::function<void()> cb;
+
+    // Result of the event
+    std::variant<std::monostate, dpu_vector<int>, dpu_vector<float>> res;
     
+    Event(OperationType t) : op(t), res(std::monostate()) {}
+    Event(OperationType t, std::function<void()> c) : op(t), cb(c), res(std::monostate()) {}
+
+    bool finished = false;
+    bool started = false;
+
+    void add_completion_callback();
+    void mark_finished() { this->finished = true; }  
+};
+
+
+class EventQueue {
+public:
     EventQueue() = default;
     ~EventQueue() = default;
 
-
-    template <typename Callable>
-    void submit(OperationType op, Callable&& cb) {
-        Event e(op, std::function<void()>(std::forward<Callable>(cb)));
+    void submit(Event e) {
         operations_.push(std::move(e));
     }
+
+    void add_fence(Event e);
+
     void wait();
     void process_next();
     void process_events();
