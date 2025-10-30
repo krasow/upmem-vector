@@ -111,11 +111,12 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
 
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
-  Event e(Event::OperationType::DPU_TRANSFER, bound_cb);
-  event_queue.submit(std::move(e));
+  std::shared_ptr<Event> e =
+      std::make_shared<Event>(Event::OperationType::DPU_TRANSFER, bound_cb);
+  event_queue.submit(e);
 
   // TODO have some sort of dependency analysis
-  while (e.finished == false) {
+  while (e->finished == false) {
     event_queue.process_next();
   }
 
@@ -141,11 +142,13 @@ vector<T> dpu_vector<T>::to_cpu() {
 
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
-  Event e(Event::OperationType::HOST_TRANSFER, bound_cb);
-  event_queue.submit(std::move(e));
+  
+  std::shared_ptr<Event> e =
+      std::make_shared<Event>(Event::OperationType::HOST_TRANSFER, bound_cb);
+  event_queue.submit(e);
 
   // TODO have some sort of dependency analysis
-  while (e.finished == false) {
+  while (e->finished == false) {
     event_queue.process_next();
   }
 
@@ -199,13 +202,14 @@ dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
   auto bound_cb = std::bind(internal_launch_binop<T>, res, lhs, rhs, kernel_id);
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
-  Event e(Event::OperationType::COMPUTE, bound_cb);
-  e.res = res;
 
-  event_queue.submit(std::move(e));
+  std::shared_ptr<Event> e =
+      std::make_shared<Event>(Event::OperationType::COMPUTE, bound_cb);
+  e->res = res;
+  event_queue.submit(e);
 
   // TODO have some sort of dependency analysis
-  while (e.finished == false) {
+  while (e->finished == false) {
     event_queue.process_next();
   }
 
@@ -252,13 +256,14 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
   auto bound_cb = std::bind(internal_launch_unary<T>, res, a, kernel_id);
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
-  Event e(Event::OperationType::COMPUTE, bound_cb);
-  e.res = res;
 
-  event_queue.submit(std::move(e));
+  std::shared_ptr<Event> e =
+      std::make_shared<Event>(Event::OperationType::COMPUTE, bound_cb);
+  e->res = res;
+  event_queue.submit(e);
 
   // TODO have some sort of dependency analysis
-  while (e.finished == false) {
+  while (e->finished == false) {
     event_queue.process_next();
   }
 

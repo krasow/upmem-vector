@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <queue>
 #include <variant>
 
@@ -36,15 +37,11 @@ class EventQueue {
   EventQueue() = default;
   ~EventQueue() = default;
 
-  void submit(Event e) {
-#ifdef ENABLE_DPU_LOGGING
-    std::cout << "[EventQueue] Submitting event of type "
-              << static_cast<int>(e.op) << std::endl;
-#endif
-    operations_.push(std::move(e));
+  void submit(std::shared_ptr<Event> e) {
+    operations_.push(e);
   }
 
-  void add_fence(Event e);
+  void add_fence(std::shared_ptr<Event> e);
 
   void wait();
   void process_next();
@@ -55,5 +52,5 @@ class EventQueue {
   std::size_t pending_count() const { return operations_.size(); }
 
  private:
-  std::queue<Event> operations_;
+  std::queue<std::shared_ptr<Event>> operations_;
 };

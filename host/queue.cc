@@ -27,11 +27,12 @@ std::string operationtype_to_string(Event::OperationType op) {
 /*static*/ dpu_error_t upmem_start_callback(
     [[maybe_unused]] struct dpu_set_t stream, [[maybe_unused]] uint32_t rank_id,
     void* data) {
-  Event* me = (Event*)data;
+  Event* me = static_cast<Event*>(data);
   me->mark_finished(/* true */);
 #ifdef ENABLE_DPU_LOGGING
-  std::cout << "[Event] Callback of event of type "
-            << operationtype_to_string(me->op) << " finished." << std::endl;
+  std::cout << "[Event] Callback finished: " << operationtype_to_string(me->op)
+            << " started=" << me->started << ", finished=" << me->finished
+            << std::endl;
 #endif
   return DPU_OK;
 }
@@ -50,47 +51,47 @@ void Event::add_completion_callback() {
 #endif
 }
 
-void EventQueue::add_fence(Event e) {
+void EventQueue::add_fence(std::shared_ptr<Event> e) {
   auto& runtime = DpuRuntime::get();
   dpu_set_t& dpu_set = runtime.dpu_set();
   CHECK_UPMEM(dpu_callback(
-      dpu_set, &upmem_start_callback, (void*)&e,
+      dpu_set, &upmem_start_callback, (void*)e.get(),
       (dpu_callback_flags_t)(DPU_CALLBACK_ASYNC | DPU_CALLBACK_NONBLOCKING |
                              DPU_CALLBACK_SINGLE_CALL)));
-  assert(e.finished == false);
+  assert(e->finished == false);
 }
 
 void EventQueue::process_next() {
   if (operations_.empty()) {
     return;
   }
-  auto e = operations_.front();  // Peek
-
+  std::shared_ptr<Event> e = operations_.front();
   debug_print_queue();
 
 #ifdef ENABLE_DPU_LOGGING
-  std::cout << "[EventQueue] Processing " << operationtype_to_string(e.op)
+  std::cout << "[EventQueue] Processing " << operationtype_to_string(e->op)
             << " event." << std::endl;
 #endif
 
-  switch (e.op) {
+  switch (e->op) {
     case Event::OperationType::FENCE:
       EventQueue::add_fence(e);
       break;
     case Event::OperationType::COMPUTE:
-      e.started = true;
-      e.cb();
-      e.add_completion_callback();
+      e->started = true;
+      e->cb();
+      e->add_completion_callback();
       break;
     case Event::OperationType::DPU_TRANSFER:
-      e.started = true;
-      e.cb();
-      e.add_completion_callback();
+      e->started = true;
+      e->cb();
+      e->add_completion_callback();
+      debug_print_queue();
       break;
     case Event::OperationType::HOST_TRANSFER:
-      e.started = true;
-      e.cb();
-      e.add_completion_callback();
+      e->started = true;
+      e->cb();
+      e->add_completion_callback();
       break;
     default:
       assert(false && "Unknown event type");
@@ -103,17 +104,18 @@ void EventQueue::process_events() {
     this->process_next();
   }
 }
-
 void EventQueue::debug_print_queue() {
 #ifdef ENABLE_DPU_LOGGING
   std::cout << "[EventQueue] Current queue state:" << std::endl;
-  std::queue<Event> temp_queue = operations_;
+
+  std::queue<std::shared_ptr<Event>> temp_queue = operations_;
+
   while (!temp_queue.empty()) {
-    Event e = temp_queue.front();
-    std::cout << "  Event type: " << operationtype_to_string(e.op)
-              << ", started: " << e.started << ", finished: " << e.finished
+    auto e = temp_queue.front();  // Get the front element
+    std::cout << "  Event type: " << operationtype_to_string(e->op)
+              << ", started: " << e->started << ", finished: " << e->finished
               << std::endl;
-    temp_queue.pop();
+    temp_queue.pop();  // Pop the element from the temporary queue
   }
 #endif
 }
