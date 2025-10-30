@@ -48,7 +48,7 @@ uint32_t dpu_vector<T>::size() const {
   return size_;
 }
 
-void vec_xfer_to_dpu(Event e, char* cpu_vec, vector_desc& desc) {
+void vec_xfer_to_dpu(char* cpu_vec, vector_desc& desc) {
   auto& runtime = DpuRuntime::get();
   dpu_set_t& dpu_set = runtime.dpu_set();
   dpu_set_t dpu;
@@ -67,12 +67,9 @@ void vec_xfer_to_dpu(Event e, char* cpu_vec, vector_desc& desc) {
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
                             DPU_MRAM_HEAP_POINTER_NAME, mram_location,
                             xfer_size, DPU_XFER_ASYNC));
-
-  e.started = true;
-  e.add_completion_callback();
 }
 
-void vec_xfer_from_dpu(Event e, char* cpu_vec, vector_desc& desc) {
+void vec_xfer_from_dpu(char* cpu_vec, vector_desc& desc) {
   auto& runtime = DpuRuntime::get();
   dpu_set_t& dpu_set = runtime.dpu_set();
   dpu_set_t dpu;
@@ -91,8 +88,6 @@ void vec_xfer_from_dpu(Event e, char* cpu_vec, vector_desc& desc) {
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
                             DPU_MRAM_HEAP_POINTER_NAME, mram_location,
                             xfer_size, DPU_XFER_ASYNC));
-  e.started = true;
-  e.add_completion_callback();
 }
 
 template <typename T>
@@ -160,11 +155,8 @@ vector<T> dpu_vector<T>::to_cpu() {
 }
 
 template <typename T>
-void internal_launch_binop(Event e, const dpu_vector<T>& lhs,
+void internal_launch_binop(dpu_vector<T>& res, const dpu_vector<T>& lhs,
                            const dpu_vector<T>& rhs, KernelID kernel_id) {
-  assert(lhs.size() == rhs.size());
-  dpu_vector<T> res(lhs.size());
-
   auto& runtime = DpuRuntime::get();
 
   uint32_t nr_of_dpus = runtime.num_dpus();
@@ -194,19 +186,19 @@ void internal_launch_binop(Event e, const dpu_vector<T>& lhs,
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
                             sizeof(args[0]), DPU_XFER_DEFAULT));
   CHECK_UPMEM(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
-
-  e.started = true;
-  e.res = res;
-  e.add_completion_callback();
 }
 
 template <typename T>
 dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
                            KernelID kernel_id) {
-  auto bound_cb = std::bind(internal_launch_binop<T>, lhs, rhs, kernel_id);
+  assert(lhs.size() == rhs.size());
+  dpu_vector<T> res(lhs.size());
+  auto bound_cb = std::bind(internal_launch_binop<T>, res, lhs, rhs, kernel_id);
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
   Event e(Event::OperationType::COMPUTE, bound_cb);
+  e.res = res;
+
   event_queue.submit(std::move(e));
 
   // TODO have some sort of dependency analysis
@@ -214,14 +206,12 @@ dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
     event_queue.process_next();
   }
 
-  return std::get<dpu_vector<T>>(e.res);
+  return res;
 }
 
 template <typename T>
-void internal_launch_unary(Event e, const dpu_vector<T>& a,
+void internal_launch_unary(dpu_vector<T>& res, const dpu_vector<T>& a,
                            KernelID kernel_id) {
-  dpu_vector<T> res(a.size());
-
   auto& runtime = DpuRuntime::get();
 
   uint32_t nr_of_dpus = runtime.num_dpus();
@@ -250,19 +240,18 @@ void internal_launch_unary(Event e, const dpu_vector<T>& a,
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
                             sizeof(args[0]), DPU_XFER_DEFAULT));
   CHECK_UPMEM(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
-
-  e.started = true;
-  e.res = res;
-  e.add_completion_callback();
 }
 
 template <typename T>
 dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
-  auto bound_cb = std::bind(internal_launch_binop<T>, a, kernel_id);
+  dpu_vector<T> res(a.size());
 
+  auto bound_cb = std::bind(internal_launch_unary<T>, res, a, kernel_id);
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
   Event e(Event::OperationType::COMPUTE, bound_cb);
+  e.res = res;
+
   event_queue.submit(std::move(e));
 
   // TODO have some sort of dependency analysis
@@ -270,5 +259,5 @@ dpu_vector<T> launch_unary(const dpu_vector<T>& a, KernelID kernel_id) {
     event_queue.process_next();
   }
 
-  return std::get<dpu_vector<T>>(e.res);
+  return res;
 }

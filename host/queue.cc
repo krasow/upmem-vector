@@ -44,12 +44,19 @@ void EventQueue::process_next() {
       EventQueue::add_fence(e);
       break;
     case Event::OperationType::COMPUTE:
+      e.started = true;
+      e.cb();
+      e.add_completion_callback();
       break;
     case Event::OperationType::DPU_TRANSFER:
+      e.started = true;
       e.cb();
+      e.add_completion_callback();
       break;
     case Event::OperationType::HOST_TRANSFER:
+      e.started = true;
       e.cb();
+      e.add_completion_callback();
       break;
   }
   operations_.pop();  // Remove

@@ -19,8 +19,10 @@ class Event {
   std::variant<std::monostate, dpu_vector<int>, dpu_vector<float>> res;
 
   Event(OperationType t) : op(t), res(std::monostate()) {}
-  Event(OperationType t, std::function<void()> c)
-      : op(t), cb(c), res(std::monostate()) {}
+
+  template <typename Callable>
+  Event(OperationType t, Callable&& c)
+      : op(t), cb(std::forward<Callable>(c)), res(std::monostate()) {}
 
   bool finished = false;
   bool started = false;
