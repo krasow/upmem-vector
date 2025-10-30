@@ -142,7 +142,7 @@ vector<T> dpu_vector<T>::to_cpu() {
 
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
-  
+
   std::shared_ptr<Event> e =
       std::make_shared<Event>(Event::OperationType::HOST_TRANSFER, bound_cb);
   event_queue.submit(e);
@@ -190,7 +190,7 @@ void internal_launch_binop(dpu_vector<T>& res, const dpu_vector<T>& lhs,
   }
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
                             sizeof(args[0]), DPU_XFER_DEFAULT));
-  CHECK_UPMEM(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+  CHECK_UPMEM(dpu_launch(dpu_set, DPU_ASYNCHRONOUS));
 }
 
 template <typename T>
@@ -246,7 +246,7 @@ void internal_launch_unary(dpu_vector<T>& res, const dpu_vector<T>& a,
   }
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
                             sizeof(args[0]), DPU_XFER_DEFAULT));
-  CHECK_UPMEM(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+  CHECK_UPMEM(dpu_launch(dpu_set, DPU_ASYNCHRONOUS));
 }
 
 template <typename T>
