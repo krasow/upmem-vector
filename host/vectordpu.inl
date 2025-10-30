@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cassert>
 #include <cstdio>
 
@@ -193,6 +195,7 @@ dpu_vector<T> launch_binop(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs,
                            KernelID kernel_id) {
   assert(lhs.size() == rhs.size());
   dpu_vector<T> res(lhs.size());
+
   auto bound_cb = std::bind(internal_launch_binop<T>, res, lhs, rhs, kernel_id);
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();

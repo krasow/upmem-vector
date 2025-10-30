@@ -36,13 +36,20 @@ class EventQueue {
   EventQueue() = default;
   ~EventQueue() = default;
 
-  void submit(Event e) { operations_.push(std::move(e)); }
+  void submit(Event e) {
+#ifdef ENABLE_DPU_LOGGING
+    std::cout << "[EventQueue] Submitting event of type "
+              << static_cast<int>(e.op) << std::endl;
+#endif
+    operations_.push(std::move(e));
+  }
 
   void add_fence(Event e);
 
   void wait();
   void process_next();
   void process_events();
+  void debug_print_queue();
 
   bool has_pending() const { return !operations_.empty(); }
   std::size_t pending_count() const { return operations_.size(); }
