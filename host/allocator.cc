@@ -14,7 +14,6 @@ allocator::allocator(uint32_t start_addr, std::size_t total_size,
   sizes_.resize(num_dpus_, total_size_ / num_dpus_);
   offsets_.resize(num_dpus_, 0);
   free_list_.resize(num_dpus_);
-  allocations_.clear();
 }
 
 vector_desc allocator::allocate_upmem_vector(std::size_t n,
@@ -53,7 +52,7 @@ uint32_t allocator::allocate(std::size_t dpu_id, std::size_t n) {
 
   auto& flist = free_list_[dpu_id];
 
-  // Best-fit free block
+  // best-fit free block
   auto best_it = flist.end();
   size_t best_size = SIZE_MAX;
   for (auto it = flist.begin(); it != flist.end(); ++it) {
@@ -71,47 +70,50 @@ uint32_t allocator::allocate(std::size_t dpu_id, std::size_t n) {
     } else {
       flist.erase(best_it);
     }
-    allocations_.push_back(reinterpret_cast<void*>(addr));
     return addr;
   }
 
-  // Bump pointer allocation
   if (offsets_[dpu_id] + n > sizes_[dpu_id]) {
     throw std::runtime_error("DPU out of memory!");
   }
 
   uint32_t addr = ptrs_[dpu_id] + offsets_[dpu_id];
   offsets_[dpu_id] += n;
-  allocations_.push_back(reinterpret_cast<void*>(addr));
   return addr;
 }
 
 void allocator::deallocate(std::size_t dpu_id, uint32_t addr, size_t size) {
-  if (dpu_id >= num_dpus_) throw std::out_of_range("Invalid DPU ID");
+    if (dpu_id >= num_dpus_) throw std::out_of_range("Invalid DPU ID");
 
-  FreeBlock new_block{addr, size};
-  auto& flist = free_list_[dpu_id];
+    FreeBlock new_block{addr, size};
+    auto& flist = free_list_[dpu_id];
 
-  // Insert sorted by address
-  auto it = std::lower_bound(
-      flist.begin(), flist.end(), new_block,
-      [](const FreeBlock& a, const FreeBlock& b) { return a.addr < b.addr; });
-  flist.insert(it, new_block);
+    // Find the first block whose address is greater than new_block
+    auto it = std::find_if(flist.begin(), flist.end(),
+                           [&](const FreeBlock& b) { return b.addr > addr; });
 
-  // Merge adjacent blocks
-  for (size_t i = 0; i + 1 < flist.size();) {
-    if (flist[i].addr + flist[i].size == flist[i + 1].addr) {
-      flist[i].size += flist[i + 1].size;
-      flist.erase(flist.begin() + i + 1);
-    } else {
-      ++i;
+    // Insert the new block at the found position
+    auto inserted = flist.insert(it, new_block);
+
+    // Merge with previous block if adjacent
+    if (inserted != flist.begin()) {
+        auto prev = inserted - 1;
+        if (prev->addr + prev->size == inserted->addr) {
+            prev->size += inserted->size;
+            inserted = flist.erase(inserted);
+        }
     }
-  }
 
-  auto ait = std::find(allocations_.begin(), allocations_.end(),
-                       reinterpret_cast<void*>(addr));
-  if (ait != allocations_.end()) allocations_.erase(ait);
+    // Merge with next block if adjacent
+    if (inserted + 1 != flist.end()) {
+        auto next = inserted + 1;
+        if (inserted->addr + inserted->size == next->addr) {
+            inserted->size += next->size;
+            flist.erase(next);
+        }
+    }
 }
+
 
 vector_desc allocator::get_vector_desc() const {
   return std::make_pair(ptrs_, sizes_);

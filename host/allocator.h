@@ -20,7 +20,6 @@ class allocator {
   allocator(uint32_t start_addr, std::size_t total_size, std::size_t num_dpus);
 
   vector_desc allocate_upmem_vector(std::size_t n, std::size_t size_type);
-  // Deallocate all memory for a vector (reset allocator)
   void deallocate_upmem_vector(vector_desc &data);
 
  private:
@@ -31,10 +30,9 @@ class allocator {
   vector<uint32_t> ptrs_;                // base addresses per DPU
   vector<uint32_t> sizes_;               // total size per DPU
   vector<uint32_t> offsets_;             // bump pointer per DPU
-  vector<void *> allocations_;           // allocated addresses
   vector<vector<FreeBlock>> free_list_;  // free blocks per DPU
 
-  // Allocate 'n' units on a specific DPU (bump/free-list)
+  // Allocate 'n' units on a specific DPU 
   uint32_t allocate(std::size_t dpu_id, std::size_t n);
 
   // Deallocate a block and merge adjacent free blocks
