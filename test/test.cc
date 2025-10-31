@@ -11,6 +11,7 @@
    David Krasowska, October 2025
 */
 
+#include <runtime.h>
 #include <vectordpu.h>
 
 #include <cassert>
@@ -197,6 +198,7 @@ int main(void) {
   assert(test_float_abs() == TEST_SUCCESS);
   assert(test_chained_operations() == TEST_SUCCESS);
 
+  DpuRuntime::get().shutdown();
   std::cout << "All DPU vector tests passed successfully." << std::endl;
   return 0;
 }

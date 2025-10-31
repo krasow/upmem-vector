@@ -8,9 +8,9 @@
 #include <type_traits>
 #include <vector>
 
-#include "allocator.h"
-
 using std::vector;
+using vector_desc =
+    std::pair<vector<uint32_t>, vector<uint32_t>>;  // ptrs and sizes
 
 #define LOGGER_ARGS_WITH_DEFAULTS \
   std::string_view name = "",     \
@@ -25,6 +25,23 @@ class dpu_vector {
   dpu_vector(uint32_t n, LOGGER_ARGS_WITH_DEFAULTS);
 
   ~dpu_vector();
+
+  dpu_vector(const dpu_vector& other);      // copy constructor
+  dpu_vector(dpu_vector&& other) noexcept;  // move constructor
+  dpu_vector& operator=(dpu_vector&& other) noexcept {
+    if (this != &other) {
+      data_ = other.data_;
+      size_ = other.size_;
+      debug_name = other.debug_name;
+      debug_file = other.debug_file;
+      debug_line = other.debug_line;
+      other.size_ = 0;
+    }
+    // Logger & logger = DpuRuntime::get().get_logger();
+    // logger << "MOVE ASSIGNMENT at " << debug_name << " OF SIZE " << size_
+    //        << " FROM " << debug_file << ":" << debug_line << std::endl;
+    return *this;
+  }
 
   vector<uint32_t> data() const;
   uint32_t size() const;
@@ -42,6 +59,7 @@ class dpu_vector {
   const char* debug_name = nullptr;
   const char* debug_file = nullptr;
   int debug_line = -1;
+  bool copied = false;
 };
 
 // ============================

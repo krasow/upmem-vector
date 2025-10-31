@@ -1,20 +1,24 @@
 #pragma once
 
-#include <dpu>
-#include <iostream>
+#include <memory>
 
 #include "allocator.h"
+#include "logger.h"
 #include "queue.h"
+
+struct dpu_set_t;
 
 class DpuRuntime {
  private:
-  DpuRuntime() : initialized_(false), allocator_(nullptr) {}
+  DpuRuntime() : initialized_(false) {}
+  ~DpuRuntime() = default;
 
   bool initialized_;
-  dpu_set_t dpu_set_;
+  dpu_set_t* dpu_set_;
   uint32_t num_dpus_;
-  allocator* allocator_;
-  EventQueue* event_queue_;
+  std::unique_ptr<allocator> allocator_;
+  std::unique_ptr<EventQueue> event_queue_;
+  std::unique_ptr<Logger> logger_;
 
  public:
   // Delete copy/move
@@ -27,35 +31,15 @@ class DpuRuntime {
     return instance;
   }
 
-  void init(uint32_t num_dpus) {
-    if (!initialized_) {
-      num_dpus_ = num_dpus;
-
-#if ENABLE_DPU_LOGGING == 1
-      std::cout << "[runtime] Initializing DPU runtime with " << num_dpus_
-                << " DPUs..." << std::endl;
-#endif
-
-      DPU_ASSERT(dpu_alloc(num_dpus_, "backend=simulator", &dpu_set_));
-      DPU_ASSERT(dpu_load(dpu_set_, DPU_RUNTIUME, NULL));
-
-#if ENABLE_DPU_LOGGING == 1
-      std::cout << "[runtime] DPU runtime initialized." << std::endl;
-#endif
-
-      initialized_ = true;
-      allocator_ = new allocator(0, 64 * 1024 * 1024, num_dpus_);
-      event_queue_ = new EventQueue();
-    }
-  }
-
-  ~DpuRuntime() { delete allocator_; }
-
+  void init(uint32_t num_dpus);
   bool is_initialized() const { return initialized_; }
 
-  dpu_set_t& dpu_set() { return dpu_set_; }
-  uint32_t num_dpus() const { return num_dpus_; }
-  uint32_t num_tasklets() const { return NR_TASKLETS; }
-  allocator& get_allocator() { return *allocator_; }
-  EventQueue& get_event_queue() { return *event_queue_; }
+  allocator& get_allocator();
+  EventQueue& get_event_queue();
+  Logger& get_logger();
+  dpu_set_t& dpu_set();
+  uint32_t num_dpus() const;
+  uint32_t num_tasklets() const;
+
+  void shutdown();
 };
