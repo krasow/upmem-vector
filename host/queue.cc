@@ -91,7 +91,6 @@ void EventQueue::process_next() {
       e->started = true;
       e->cb();
       e->add_completion_callback();
-      debug_print_queue();
       break;
     case Event::OperationType::HOST_TRANSFER:
       e->started = true;
