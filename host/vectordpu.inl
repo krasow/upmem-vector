@@ -32,7 +32,7 @@ dpu_vector<T>::dpu_vector(uint32_t n, std::string_view name,
     runtime.init(NR_DPUS);
   }
   Logger& logger = runtime.get_logger();
-  logger.lock() << "ALLOCATING DPU VECTOR " << debug_name << " OF SIZE " << n
+  logger.lock() << "[dpu_vector] ALLOCATING DPU VECTOR " << debug_name << " OF SIZE " << n
                 << " FROM " << debug_file << ":" << debug_line << std::endl;
   data_ = runtime.get_allocator().allocate_upmem_vector(n, sizeof(T));
 

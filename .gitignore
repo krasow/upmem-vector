@@ -9,3 +9,5 @@ vectordpu_test
 .vscode/
 .vscode/*
 *.o
+*.log
+*.txt
