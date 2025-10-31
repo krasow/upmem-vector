@@ -1,7 +1,8 @@
 #include "queue.h"
 
-#include "logger.inl"
+#include "logger.h"
 #include "runtime.h"
+#include "vectordpu.h"
 
 #ifndef DPURT
 #define DPURT
@@ -24,16 +25,18 @@ std::string operationtype_to_string(Event::OperationType op) {
   }
 }
 
-/*static*/ dpu_error_t upmem_start_callback(
-    [[maybe_unused]] struct dpu_set_t stream, [[maybe_unused]] uint32_t rank_id,
-    void* data) {
+/*static*/ dpu_error_t upmem_callback([[maybe_unused]] struct dpu_set_t stream,
+                                      [[maybe_unused]] uint32_t rank_id,
+                                      void* data) {
   Event* me = static_cast<Event*>(data);
   me->mark_finished(/* true */);
 #ifdef ENABLE_DPU_LOGGING
-  std::cout << "[Event] Callback finished: " << operationtype_to_string(me->op)
-            << " started=" << me->started << ", finished=" << me->finished
-            << std::endl;
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[Event] Callback finished: "
+                << operationtype_to_string(me->op) << " started=" << me->started
+                << ", finished=" << me->finished << std::endl;
 #endif
+
   return DPU_OK;
 }
 
@@ -41,13 +44,14 @@ void Event::add_completion_callback() {
   auto& runtime = DpuRuntime::get();
   dpu_set_t& dpu_set = runtime.dpu_set();
   CHECK_UPMEM(dpu_callback(
-      dpu_set, &upmem_start_callback, (void*)this,
+      dpu_set, &upmem_callback, (void*)this,
       (dpu_callback_flags_t)(DPU_CALLBACK_ASYNC | DPU_CALLBACK_NONBLOCKING |
                              DPU_CALLBACK_SINGLE_CALL)));
   assert(this->finished == false);
 
 #ifdef ENABLE_DPU_LOGGING
-  std::cout << "[Event] Added completion callback." << std::endl;
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[Event] Added completion callback." << std::endl;
 #endif
 }
 
@@ -55,7 +59,7 @@ void EventQueue::add_fence(std::shared_ptr<Event> e) {
   auto& runtime = DpuRuntime::get();
   dpu_set_t& dpu_set = runtime.dpu_set();
   CHECK_UPMEM(dpu_callback(
-      dpu_set, &upmem_start_callback, (void*)e.get(),
+      dpu_set, &upmem_callback, (void*)e.get(),
       (dpu_callback_flags_t)(DPU_CALLBACK_ASYNC | DPU_CALLBACK_NONBLOCKING |
                              DPU_CALLBACK_SINGLE_CALL)));
   assert(e->finished == false);
@@ -69,8 +73,9 @@ void EventQueue::process_next() {
   debug_print_queue();
 
 #ifdef ENABLE_DPU_LOGGING
-  std::cout << "[EventQueue] Processing " << operationtype_to_string(e->op)
-            << " event." << std::endl;
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[EventQueue] Processing " << operationtype_to_string(e->op)
+                << " event." << std::endl;
 #endif
 
   switch (e->op) {
@@ -106,15 +111,16 @@ void EventQueue::process_events() {
 }
 void EventQueue::debug_print_queue() {
 #ifdef ENABLE_DPU_LOGGING
-  std::cout << "[EventQueue] Current queue state:" << std::endl;
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[EventQueue] Current queue state:" << std::endl;
 
   std::queue<std::shared_ptr<Event>> temp_queue = operations_;
 
   while (!temp_queue.empty()) {
     auto e = temp_queue.front();  // Get the front element
-    std::cout << "  Event type: " << operationtype_to_string(e->op)
-              << ", started: " << e->started << ", finished: " << e->finished
-              << std::endl;
+    logger.lock() << "  Event type: " << operationtype_to_string(e->op)
+                  << ", started: " << e->started
+                  << ", finished: " << e->finished << std::endl;
     temp_queue.pop();  // Pop the element from the temporary queue
   }
 #endif

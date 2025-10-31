@@ -2,10 +2,18 @@
 
 #include <cassert>
 #include <cstdio>
+#include <functional>
+#include <memory>
 
-#include "logger.inl"
+#include "logger.h"
 #include "runtime.h"
 #include "vectordpu.h"
+
+#ifndef DPURT
+#define DPURT
+#include <dpu>  // UPMEM rt syslib
+#define CHECK_UPMEM(x) DPU_ASSERT(x)
+#endif
 
 // ============================
 // DPU Vector
@@ -23,7 +31,9 @@ dpu_vector<T>::dpu_vector(uint32_t n, std::string_view name,
     // throw std::runtime_error("DPU runtime not initialized!");
     runtime.init(NR_DPUS);
   }
-
+  Logger& logger = runtime.get_logger();
+  logger.lock() << "ALLOCATING DPU VECTOR " << debug_name << " OF SIZE " << n
+                << " FROM " << debug_file << ":" << debug_line << std::endl;
   data_ = runtime.get_allocator().allocate_upmem_vector(n, sizeof(T));
 
 #if ENABLE_DPU_LOGGING >= 1
@@ -32,8 +42,53 @@ dpu_vector<T>::dpu_vector(uint32_t n, std::string_view name,
 }
 
 template <typename T>
+dpu_vector<T>::dpu_vector(const dpu_vector& other) {
+  if (this != &other) {
+    data_ = other.data_;
+    size_ = other.size_;
+    debug_name = other.debug_name;
+    debug_file = other.debug_file;
+    debug_line = other.debug_line;
+    copied = true;
+  }
+#if ENABLE_DPU_LOGGING >= 2
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[dpu_vector] COPY CONSTRUCTOR at " << debug_name
+                << " OF SIZE " << size_ << " FROM " << debug_file << ":"
+                << debug_line << std::endl;
+#endif
+}
+
+template <typename T>
+dpu_vector<T>::dpu_vector(dpu_vector&& other) noexcept {
+  if (this != &other) {
+    data_ = other.data_;
+    size_ = other.size_;
+    debug_name = other.debug_name;
+    debug_file = other.debug_file;
+    debug_line = other.debug_line;
+    other.size_ = 0;
+  }
+#if ENABLE_DPU_LOGGING >= 2
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[dpu_vector] MOVE CONSTRUCTOR at " << debug_name
+                << " OF SIZE " << size_ << " FROM " << debug_file << ":"
+                << debug_line << std::endl;
+#endif
+}
+
+template <typename T>
 dpu_vector<T>::~dpu_vector() {
+  if (copied == true) {
+    // Nothing to deallocate
+    return;
+  }
   auto& runtime = DpuRuntime::get();
+#if ENABLE_DPU_LOGGING >= 2
+  Logger& logger = runtime.get_logger();
+  logger.lock() << "[dpu_vector] DEALLOCATING DPU VECTOR " << debug_name
+                << " FROM " << debug_file << ":" << debug_line << std::endl;
+#endif
   runtime.get_allocator().deallocate_upmem_vector(data_);
 }
 
@@ -120,9 +175,10 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
     event_queue.process_next();
   }
 
-#if DENABLE_DPU_LOGGING >= 2
-  std::cout << "[queue-append] HOST->DPU XFER " << cpu_vec.size()
-            << " elements to DPUs" << std::endl;
+#if ENABLE_DPU_LOGGING >= 2
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[queue-append] HOST->DPU XFER " << cpu_vec.size()
+                << " elements to DPUs" << std::endl;
 #endif
   return vec;
 }
@@ -152,9 +208,10 @@ vector<T> dpu_vector<T>::to_cpu() {
     event_queue.process_next();
   }
 
-#if DENABLE_DPU_LOGGING >= 2
-  std::cout << "[queue-append] DPU->HOST XFER " << cpu_vec.size()
-            << " elements from DPUs" << std::endl;
+#if ENABLE_DPU_LOGGING >= 2
+  Logger& logger = DpuRuntime::get().get_logger();
+  logger.lock() << "[queue-append] DPU->HOST XFER " << cpu_vec.size()
+                << " elements from DPUs" << std::endl;
 #endif
   return cpu_vec;
 }

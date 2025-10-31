@@ -1,5 +1,7 @@
 #include "vectordpu.inl"
 
+#include "logger.inl"
+
 // Binary operators
 template <typename T>
 dpu_vector<T> operator+(const dpu_vector<T>& lhs, const dpu_vector<T>& rhs) {

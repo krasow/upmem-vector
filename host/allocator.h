@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -41,4 +42,6 @@ class allocator {
 
   // Get vector_desc (pointers and sizes per DPU)
   vector_desc get_vector_desc() const;
+
+  std::mutex lock;
 };

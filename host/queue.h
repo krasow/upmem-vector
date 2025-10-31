@@ -7,7 +7,7 @@
 #include <queue>
 #include <variant>
 
-#include "vectordpu.h"
+#include "vectordpu.h"  // for dpu_vector
 
 class Event {
  public:
@@ -37,9 +37,7 @@ class EventQueue {
   EventQueue() = default;
   ~EventQueue() = default;
 
-  void submit(std::shared_ptr<Event> e) {
-    operations_.push(e);
-  }
+  void submit(std::shared_ptr<Event> e) { operations_.push(e); }
 
   void add_fence(std::shared_ptr<Event> e);
 

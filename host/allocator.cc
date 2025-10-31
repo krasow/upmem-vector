@@ -1,9 +1,10 @@
+
 #include "allocator.h"
 
 #include <algorithm>
 #include <stdexcept>
 
-#include "logger.inl"
+#include "logger.h"
 
 allocator::allocator(uint32_t start_addr, std::size_t total_size,
                      std::size_t num_dpus)
@@ -18,6 +19,8 @@ allocator::allocator(uint32_t start_addr, std::size_t total_size,
 
 vector_desc allocator::allocate_upmem_vector(std::size_t n,
                                              std::size_t size_type) {
+  // grab lock
+  std::lock_guard<std::mutex> lock(this->lock);
   std::size_t num_dpus = this->num_dpus_;
   vector<uint32_t> vec_ptrs(num_dpus);
   vector<uint32_t> vec_sizes(num_dpus);
@@ -37,6 +40,7 @@ vector_desc allocator::allocate_upmem_vector(std::size_t n,
 }
 
 void allocator::deallocate_upmem_vector(vector_desc& data) {
+  std::lock_guard<std::mutex> lock(this->lock);
   for (size_t i = 0; i < num_dpus_; ++i) {
     uint32_t addr = data.first[i];
     size_t size = data.second[i];
