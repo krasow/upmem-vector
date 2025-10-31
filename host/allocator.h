@@ -32,7 +32,7 @@ class allocator {
   vector<uint32_t> offsets_;             // bump pointer per DPU
   vector<vector<FreeBlock>> free_list_;  // free blocks per DPU
 
-  // Allocate 'n' units on a specific DPU 
+  // Allocate 'n' units on a specific DPU
   uint32_t allocate(std::size_t dpu_id, std::size_t n);
 
   // Deallocate a block and merge adjacent free blocks

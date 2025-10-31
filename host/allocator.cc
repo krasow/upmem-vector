@@ -83,37 +83,36 @@ uint32_t allocator::allocate(std::size_t dpu_id, std::size_t n) {
 }
 
 void allocator::deallocate(std::size_t dpu_id, uint32_t addr, size_t size) {
-    if (dpu_id >= num_dpus_) throw std::out_of_range("Invalid DPU ID");
+  if (dpu_id >= num_dpus_) throw std::out_of_range("Invalid DPU ID");
 
-    FreeBlock new_block{addr, size};
-    auto& flist = free_list_[dpu_id];
+  FreeBlock new_block{addr, size};
+  auto& flist = free_list_[dpu_id];
 
-    // Find the first block whose address is greater than new_block
-    auto it = std::find_if(flist.begin(), flist.end(),
-                           [&](const FreeBlock& b) { return b.addr > addr; });
+  // Find the first block whose address is greater than new_block
+  auto it = std::find_if(flist.begin(), flist.end(),
+                         [&](const FreeBlock& b) { return b.addr > addr; });
 
-    // Insert the new block at the found position
-    auto inserted = flist.insert(it, new_block);
+  // Insert the new block at the found position
+  auto inserted = flist.insert(it, new_block);
 
-    // Merge with previous block if adjacent
-    if (inserted != flist.begin()) {
-        auto prev = inserted - 1;
-        if (prev->addr + prev->size == inserted->addr) {
-            prev->size += inserted->size;
-            inserted = flist.erase(inserted);
-        }
+  // Merge with previous block if adjacent
+  if (inserted != flist.begin()) {
+    auto prev = inserted - 1;
+    if (prev->addr + prev->size == inserted->addr) {
+      prev->size += inserted->size;
+      inserted = flist.erase(inserted);
     }
+  }
 
-    // Merge with next block if adjacent
-    if (inserted + 1 != flist.end()) {
-        auto next = inserted + 1;
-        if (inserted->addr + inserted->size == next->addr) {
-            inserted->size += next->size;
-            flist.erase(next);
-        }
+  // Merge with next block if adjacent
+  if (inserted + 1 != flist.end()) {
+    auto next = inserted + 1;
+    if (inserted->addr + inserted->size == next->addr) {
+      inserted->size += next->size;
+      flist.erase(next);
     }
+  }
 }
-
 
 vector_desc allocator::get_vector_desc() const {
   return std::make_pair(ptrs_, sizes_);
