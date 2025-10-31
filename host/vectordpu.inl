@@ -32,8 +32,9 @@ dpu_vector<T>::dpu_vector(uint32_t n, std::string_view name,
     runtime.init(NR_DPUS);
   }
   Logger& logger = runtime.get_logger();
-  logger.lock() << "[dpu_vector] ALLOCATING DPU VECTOR " << debug_name << " OF SIZE " << n
-                << " FROM " << debug_file << ":" << debug_line << std::endl;
+  logger.lock() << "[dpu_vector] ALLOCATING DPU VECTOR " << debug_name
+                << " OF SIZE " << n << " FROM " << debug_file << ":"
+                << debug_line << std::endl;
   data_ = runtime.get_allocator().allocate_upmem_vector(n, sizeof(T));
 
 #if ENABLE_DPU_LOGGING >= 1
@@ -60,21 +61,22 @@ dpu_vector<T>::dpu_vector(const dpu_vector& other) {
 }
 
 template <typename T>
-dpu_vector<T>::dpu_vector(dpu_vector&& other) noexcept {
+dpu_vector<T>& dpu_vector<T>::operator=(const dpu_vector& other) {
   if (this != &other) {
     data_ = other.data_;
     size_ = other.size_;
     debug_name = other.debug_name;
     debug_file = other.debug_file;
     debug_line = other.debug_line;
-    other.size_ = 0;
+    copied = true;
   }
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[dpu_vector] MOVE CONSTRUCTOR at " << debug_name
+  logger.lock() << "[dpu_vector] COPY ASSIGNMENT at " << debug_name
                 << " OF SIZE " << size_ << " FROM " << debug_file << ":"
                 << debug_line << std::endl;
 #endif
+  return *this;
 }
 
 template <typename T>
