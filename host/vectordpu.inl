@@ -536,6 +536,9 @@ template <typename T>
 pipeline_result<T> dpu_vector<T>::pipeline(
     const std::vector<uint8_t>& ops, const std::vector<dpu_vector<T>>& operands,
     const std::vector<uint32_t>& scalars) {
+  if (operands.size() > MAX_VFUSE_INPUTS) {
+    throw std::logic_error("pipeline operand count exceeds MAX_VFUSE_INPUTS");
+  }
   dpu_vector<T> res(this->size(), 0, true);
   res.data_desc_ref()->type_name = typeid(T).name();
   res.data_desc_ref()->debug_name = "pipeline_intermediate";
@@ -576,6 +579,9 @@ template <typename T>
 pipeline_result<T> dpu_vector<T>::jit(
     const std::vector<uint8_t>& ops, const std::vector<dpu_vector<T>>& operands,
     const std::vector<uint32_t>& scalars) {
+  if (operands.size() > MAX_VFUSE_INPUTS) {
+    throw std::logic_error("JIT operand count exceeds MAX_VFUSE_INPUTS");
+  }
   dpu_vector<T> res(this->size(), 0, true);
   res.data_desc_ref()->type_name = typeid(T).name();
   res.data_desc_ref()->debug_name = "jit_result";
@@ -646,6 +652,10 @@ template <typename T>
 lazy_reduction_result<T> dpu_vector<T>::pipeline_reduce(
     const std::vector<uint8_t>& ops, const std::vector<dpu_vector<T>>& operands,
     const std::vector<uint32_t>& scalars) {
+  if (operands.size() > MAX_VFUSE_INPUTS) {
+    throw std::logic_error(
+        "pipeline reduction operand count exceeds MAX_VFUSE_INPUTS");
+  }
   auto& runtime = DpuRuntime::get();
 
   // Identify rid from last op
@@ -700,6 +710,10 @@ template <typename F>
 lazy_reduction_result<T> dpu_vector<T>::transform_reduce(
     F&& build, const std::vector<dpu_vector<T>>& operands,
     const std::vector<uint32_t>& scalars) {
+  if (operands.size() > MAX_VFUSE_INPUTS) {
+    throw std::logic_error(
+        "transform_reduce operand count exceeds MAX_VFUSE_INPUTS");
+  }
   std::vector<dpu_expr<T>> vars;
   vars.reserve(operands.size() + 1);
   vars.push_back(dpu_expr<T>::input());

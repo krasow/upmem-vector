@@ -561,12 +561,6 @@ bool EventQueue::try_fuse(std::shared_ptr<Event> last,
 
   if (dependent) return try_vfuse(last, e);
 
-#if !JIT
-  // The non-JIT universal pipeline backend does not implement multi-chain
-  // NEXT_CHAIN execution. Keep its fusion model to vertical-only composition.
-  return false;
-#endif
-
   // If e already inlined last's output via absorbed_rpn, horizontally fusing
   // last as a separate chain would duplicate that work and shift result slots.
   if (e->absorbed_producer_ids.find(last->id) != e->absorbed_producer_ids.end())

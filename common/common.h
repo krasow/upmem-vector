@@ -7,9 +7,6 @@
 #include <stdint.h>
 #endif
 
-#define BLOCK_SIZE_LOG2 4              // 16 elements per block (reduced for the fused-input WRAM budget)
-#define BLOCK_SIZE (1U << BLOCK_SIZE_LOG2)
-
 typedef uint32_t KernelID;
 
 enum KernelCategory {
@@ -22,6 +19,11 @@ enum KernelCategory {
 
 #include "opcodes.h"
 #include <config.h>
+
+#ifndef BLOCK_SIZE_LOG2
+#define BLOCK_SIZE_LOG2 4              // 16 elements per block (reduced for the fused-input WRAM budget)
+#endif
+#define BLOCK_SIZE (1U << BLOCK_SIZE_LOG2)
 
 #ifndef MAX_VFUSE_OPS
 #define MAX_VFUSE_OPS 64

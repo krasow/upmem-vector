@@ -12,6 +12,10 @@
     uint32_t n = args.num_elements, n_ops = args.pipeline.num_ops;             \
     __mram_ptr TYPE *in_ptr = (__mram_ptr TYPE *)(args.pipeline.init_offset);  \
     __mram_ptr TYPE *rs_ptr = (__mram_ptr TYPE *)(args.pipeline.res_offset);   \
+    __mram_ptr TYPE *res_ptrs[MAX_HFUSE_CHAINS];                               \
+    res_ptrs[0] = rs_ptr;                                                      \
+    for (int r = 1; r < MAX_HFUSE_CHAINS; r++)                                 \
+      res_ptrs[r] = (__mram_ptr TYPE *)(args.pipeline.extra_res_offsets[r - 1]);\
                                                                                \
     /* Workspace Layout: input(0), operands(1-3), scratch(4) */                \
     TYPE *input_blk = (TYPE *)dpu_workspace[id];                               \
@@ -24,67 +28,70 @@
                    dpu_workspace[id][(MAX_VFUSE_INPUTS + 1) * BLOCK_SIZE *     \
                                      MINIMUM_WRITE_SIZE];                      \
                                                                                \
-    int64_t acc_64 = 0;                                                        \
-    TYPE acc;                                                                  \
-    bool has_r = false;                                                        \
-    uint8_t r_op = 0;                                                          \
+    int64_t acc_64[MAX_HFUSE_CHAINS];                                          \
+    TYPE acc[MAX_HFUSE_CHAINS];                                                \
+    bool has_r[MAX_HFUSE_CHAINS] = {false};                                    \
+    uint8_t r_op[MAX_HFUSE_CHAINS] = {0};                                      \
     uint32_t blk, i, b_e, b_b, oi;                                             \
                                                                                \
     /* Pre-scan for operands and reductions */                                 \
     bool uses_input = false;                                                   \
     bool uses_op[MAX_VFUSE_INPUTS] = {false};                                  \
-    bool uses_scalar[MAX_PIPELINE_SCALARS] = {false};                          \
+    int max_used_op = -1;                                                       \
+    uint32_t scan_chain = 0;                                                    \
     oi = 0;                                                                    \
     while (oi < n_ops) {                                                       \
       uint8_t op = args.pipeline.ops[oi];                                      \
+      if (op == OP_NEXT_CHAIN) {                                               \
+        if (scan_chain + 1 < MAX_HFUSE_CHAINS) scan_chain++;                   \
+        oi++;                                                                  \
+        continue;                                                              \
+      }                                                                        \
       if (IS_OP_SCALAR(op)) {                                                  \
         oi += 5; /* Opcode + 4 bytes scalar */                                 \
         continue;                                                              \
       }                                                                        \
       if (IS_OP_SCALAR_VAR(op)) {                                              \
-        if (oi + 1 < n_ops) uses_scalar[args.pipeline.ops[oi + 1]] = true;     \
         oi += 2; /* Opcode + 1 byte scalar index */                            \
         continue;                                                              \
       }                                                                        \
       if (op == OP_PUSH_SCALAR_VAR) {                                          \
-        if (oi + 1 < n_ops) uses_scalar[args.pipeline.ops[oi + 1]] = true;     \
         oi += 2; /* Opcode + 1 byte scalar index */                            \
         continue;                                                              \
       }                                                                        \
       if (op == OP_PUSH_INPUT)                                                 \
         uses_input = true;                                                     \
       else if (op >= OP_PUSH_OPERAND_0 &&                                      \
-               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS)                      \
-        uses_op[op - OP_PUSH_OPERAND_0] = true;                                \
+               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {                    \
+        int op_idx = op - OP_PUSH_OPERAND_0;                                   \
+        uses_op[op_idx] = true;                                                \
+        if (op_idx > max_used_op) max_used_op = op_idx;                        \
+      }                                                                        \
       else if (IS_OP_REDUCTION(op)) {                                          \
-        r_op = op;                                                             \
-        has_r = true;                                                          \
+        r_op[scan_chain] = op;                                                 \
+        has_r[scan_chain] = true;                                              \
       }                                                                        \
       oi++;                                                                    \
     }                                                                          \
                                                                                \
-    if (has_r) {                                                               \
-      switch (r_op) {                                                          \
+    for (uint32_t c = 0; c < MAX_HFUSE_CHAINS; c++) {                          \
+      if (!has_r[c]) continue;                                                 \
+      switch (r_op[c]) {                                                       \
         case OP_SUM:                                                           \
-          acc_64 = 0;                                                          \
-          acc = (TYPE)0;                                                       \
+          acc_64[c] = 0;                                                       \
+          acc[c] = (TYPE)0;                                                    \
           break;                                                               \
         case OP_PRODUCT:                                                       \
-          acc_64 = 1;                                                          \
-          acc = (TYPE)1;                                                       \
+          acc_64[c] = 1;                                                       \
+          acc[c] = (TYPE)1;                                                    \
           break;                                                               \
         case OP_MIN:                                                           \
-          acc = (TYPE)INT32_MAX;                                               \
+          acc[c] = (TYPE)INT32_MAX;                                            \
           break;                                                               \
         case OP_MAX:                                                           \
-          acc = (TYPE)INT32_MIN;                                               \
+          acc[c] = (TYPE)INT32_MIN;                                            \
           break;                                                               \
       }                                                                        \
-    }                                                                          \
-                                                                               \
-    TYPE scalar_vars[MAX_PIPELINE_SCALARS] = {0};                              \
-    for (int k = 0; k < MAX_PIPELINE_SCALARS; k++) {                           \
-      if (uses_scalar[k]) scalar_vars[k] = (TYPE)args.pipeline.scalars[k];     \
     }                                                                          \
                                                                                \
     for (blk = id << BLOCK_SIZE_LOG2; blk < n;                                 \
@@ -95,7 +102,7 @@
       /* 1. Fetch operands (with deduplication) */                             \
       if (uses_input)                                                          \
         mram_read((__mram_ptr void const *)(in_ptr + blk), input_blk, b_b);    \
-      for (int k = 0; k < MAX_VFUSE_INPUTS; k++) {                             \
+      for (int k = 0; k <= max_used_op; k++) {                                 \
         if (uses_op[k]) {                                                      \
           __mram_ptr TYPE *p =                                                 \
               (__mram_ptr TYPE *)(args.pipeline.binary_operands[k]);           \
@@ -121,10 +128,21 @@
       TYPE *st_ptr[MAX_PIPELINE_STACK_DEPTH];                                  \
       bool st_is_temp[MAX_PIPELINE_STACK_DEPTH];                               \
       uint32_t sp = 0;                                                         \
+      uint32_t chain_idx = 0;                                                   \
                                                                                \
       oi = 0;                                                                  \
       while (oi < n_ops) {                                                     \
         uint8_t op = args.pipeline.ops[oi];                                    \
+        if (op == OP_NEXT_CHAIN) {                                             \
+          if (chain_idx < MAX_HFUSE_CHAINS && !has_r[chain_idx] && sp > 0 &&   \
+              res_ptrs[chain_idx])                                             \
+            mram_write(st_ptr[sp - 1],                                         \
+                       (__mram_ptr void *)(res_ptrs[chain_idx] + blk), b_b);   \
+          sp = 0;                                                              \
+          if (chain_idx + 1 < MAX_HFUSE_CHAINS) chain_idx++;                   \
+          oi++;                                                                \
+          continue;                                                            \
+        }                                                                      \
         if (IS_OP_SCALAR(op)) {                                                \
           TYPE *s1 = st_ptr[sp - 1];                                           \
           int32_t val;                                                         \
@@ -216,7 +234,7 @@
         if (IS_OP_SCALAR_VAR(op)) {                                            \
           TYPE *s1 = st_ptr[sp - 1];                                           \
           uint8_t idx = args.pipeline.ops[oi + 1];                             \
-          TYPE scalar = scalar_vars[idx];                                      \
+          TYPE scalar = (TYPE)args.pipeline.scalars[idx];                      \
           uint8_t base =                                                       \
               op - (OP_ADD_SCALAR_VAR - OP_ADD_SCALAR);                        \
                                                                                \
@@ -313,7 +331,8 @@
           uint8_t idx = args.pipeline.ops[oi + 1];                             \
           st_ptr[sp] = scratch_blks[sp];                                       \
           st_is_temp[sp] = true;                                               \
-          for (i = 0; i < b_e; i++) st_ptr[sp][i] = scalar_vars[idx];          \
+          TYPE scalar = (TYPE)args.pipeline.scalars[idx];                      \
+          for (i = 0; i < b_e; i++) st_ptr[sp][i] = scalar;                    \
           sp++;                                                                \
           oi += 2;                                                             \
           continue;                                                            \
@@ -444,54 +463,57 @@
           switch (op) {                                                        \
             case OP_SUM:                                                       \
               if (ENABLE_PROMOTION_REDUCTIONS && sizeof(TYPE) == 4) {          \
-                for (i = 0; i < b_e; i++) acc_64 += s[i];                      \
+                for (i = 0; i < b_e; i++) acc_64[chain_idx] += s[i];           \
               } else {                                                         \
-                for (i = 0; i < b_e; i++) acc += s[i];                         \
+                for (i = 0; i < b_e; i++) acc[chain_idx] += s[i];              \
               }                                                                \
               break;                                                           \
             case OP_PRODUCT:                                                   \
               if (ENABLE_PROMOTION_REDUCTIONS && sizeof(TYPE) == 4) {          \
-                for (i = 0; i < b_e; i++) acc_64 *= s[i];                      \
+                for (i = 0; i < b_e; i++) acc_64[chain_idx] *= s[i];           \
               } else {                                                         \
-                for (i = 0; i < b_e; i++) acc *= s[i];                         \
+                for (i = 0; i < b_e; i++) acc[chain_idx] *= s[i];              \
               }                                                                \
               break;                                                           \
             case OP_MIN:                                                       \
               for (i = 0; i < b_e; i++)                                        \
-                if (s[i] < acc) acc = s[i];                                    \
+                if (s[i] < acc[chain_idx]) acc[chain_idx] = s[i];              \
               break;                                                           \
             case OP_MAX:                                                       \
               for (i = 0; i < b_e; i++)                                        \
-                if (s[i] > acc) acc = s[i];                                    \
+                if (s[i] > acc[chain_idx]) acc[chain_idx] = s[i];              \
               break;                                                           \
           }                                                                    \
         }                                                                      \
         oi++;                                                                  \
       }                                                                        \
-      if (!has_r && sp > 0)                                                    \
-        mram_write(st_ptr[sp - 1], (__mram_ptr void *)(rs_ptr + blk), b_b);    \
+      if (chain_idx < MAX_HFUSE_CHAINS && !has_r[chain_idx] && sp > 0 &&       \
+          res_ptrs[chain_idx])                                                 \
+        mram_write(st_ptr[sp - 1],                                             \
+                   (__mram_ptr void *)(res_ptrs[chain_idx] + blk), b_b);       \
     }                                                                          \
                                                                                \
-    if (has_r) {                                                               \
-      bool is_promotable = (r_op == OP_SUM || r_op == OP_PRODUCT);             \
+    for (uint32_t c = 0; c < MAX_HFUSE_CHAINS; c++) {                          \
+      if (!has_r[c] || !res_ptrs[c]) continue;                                 \
+      bool is_promotable = (r_op[c] == OP_SUM || r_op[c] == OP_PRODUCT);       \
       bool is_sum32 =                                                          \
           (is_promotable && sizeof(TYPE) == 4 && ENABLE_PROMOTION_REDUCTIONS); \
       enum { sd = (MINIMUM_WRITE_SIZE / sizeof(TYPE)) };                       \
       uint64_t bf = 0;                                                         \
       if (is_sum32) {                                                          \
-        bf = (uint64_t)acc_64;                                                 \
+        bf = (uint64_t)acc_64[c];                                              \
       } else {                                                                 \
-        memcpy(&bf, &acc, sizeof(TYPE));                                       \
+        memcpy(&bf, &acc[c], sizeof(TYPE));                                    \
       }                                                                        \
       extern uint64_t reduction_scratchpad[];                                  \
       reduction_scratchpad[id] = bf;                                           \
       barrier_wait(&my_barrier);                                               \
       if (id == 0) {                                                           \
         if (is_sum32) {                                                        \
-          int64_t tot_64 = (r_op == OP_SUM) ? 0 : 1;                           \
+          int64_t tot_64 = (r_op[c] == OP_SUM) ? 0 : 1;                        \
           uint32_t i;                                                          \
           for (i = 0; i < NR_TASKLETS; i++) {                                  \
-            if (r_op == OP_SUM)                                                \
+            if (r_op[c] == OP_SUM)                                             \
               tot_64 += (int64_t)reduction_scratchpad[i];                      \
             else                                                               \
               tot_64 *= (int64_t)reduction_scratchpad[i];                      \
@@ -506,7 +528,7 @@
           TYPE total = res_block_tot[0];                                       \
           for (i = 1; i < NR_TASKLETS; i++) {                                  \
             TYPE v = res_block_tot[i * sd];                                    \
-            switch (r_op) {                                                    \
+            switch (r_op[c]) {                                                 \
               case OP_SUM:                                                     \
                 total += v;                                                    \
                 break;                                                         \
@@ -524,8 +546,9 @@
           bf = 0;                                                              \
           memcpy(&bf, &total, sizeof(TYPE));                                   \
         }                                                                      \
-        mram_write(&bf, (__mram_ptr void *)rs_ptr, MINIMUM_WRITE_SIZE);        \
+        mram_write(&bf, (__mram_ptr void *)res_ptrs[c], MINIMUM_WRITE_SIZE);   \
       }                                                                        \
+      barrier_wait(&my_barrier);                                               \
     }                                                                          \
     return 0;                                                                  \
   }

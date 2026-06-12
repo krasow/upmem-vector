@@ -80,6 +80,14 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
   if (!in_vec || in_vec->absorbed_rpn.empty() ||
       in_vec->absorbed_inputs.empty())
     return;
+  if (in_vec->last_producer_id != 0 &&
+      get_last_finished_id() >= in_vec->last_producer_id) {
+    in_vec->absorbed_rpn.clear();
+    in_vec->absorbed_scalars.clear();
+    in_vec->absorbed_inputs.clear();
+    in_vec->is_shared_intermediate = false;
+    return;
+  }
   if (e->rpn_ops.empty()) {
     for (size_t k = 0; k < e->inputs.size(); ++k)
       e->rpn_ops.push_back(k == 0 ? OP_PUSH_INPUT
@@ -191,7 +199,7 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
   // Clear absorbed state — future ops that read this vector get it from MRAM.
   auto absorbed_vec = std::move(in_vec);
   e->inputs = std::move(new_inputs);
-  e->rpn_ops = std::move(new_rpn);
+  e->rpn_ops = normalize_associative_rpn(new_rpn);
   e->scalars = std::move(new_scalars);
   e->is_scalar = false;
   if (absorbed_vec->last_producer_id != 0)
@@ -453,6 +461,7 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
 
   last->rpn_ops = last_rpn;
   last->rpn_ops.insert(last->rpn_ops.end(), e_mapped.begin(), e_mapped.end());
+  last->rpn_ops = normalize_associative_rpn(last->rpn_ops);
   last->scalars = last_scalars;
   last->scalars.insert(last->scalars.end(), e_scalars.begin(), e_scalars.end());
   last->inputs = combined;

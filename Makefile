@@ -21,6 +21,10 @@ MAX_HFUSE_CHAINS ?= 10
 MAX_VFUSE_OPS ?= 128
 # vertical fusion: max distinct input vectors referenced per kernel
 MAX_VFUSE_INPUTS ?= 11
+# vertical fusion: max live WRAM stack vectors used by the generic pipeline interpreter
+MAX_PIPELINE_STACK_DEPTH ?= 2
+# DPU WRAM tile size is 2^BLOCK_SIZE_LOG2 elements per tasklet block
+BLOCK_SIZE_LOG2 ?= 4
 
 # this option enables fencing after dpu-to-host transfers automatically
 # you can disable it to manually control fencing in your code with add_fence() calls
@@ -147,6 +151,8 @@ reconfigure:
 	@echo "MAX_HFUSE_CHAINS=$(MAX_HFUSE_CHAINS)" >> $(CONFIG_STAMP)
 	@echo "MAX_VFUSE_OPS=$(MAX_VFUSE_OPS)" >> $(CONFIG_STAMP)
 	@echo "MAX_VFUSE_INPUTS=$(MAX_VFUSE_INPUTS)" >> $(CONFIG_STAMP)
+	@echo "MAX_PIPELINE_STACK_DEPTH=$(MAX_PIPELINE_STACK_DEPTH)" >> $(CONFIG_STAMP)
+	@echo "BLOCK_SIZE_LOG2=$(BLOCK_SIZE_LOG2)" >> $(CONFIG_STAMP)
 
 cache_old:
 	@if [ -f "$(CONFIG_STAMP)" ]; then \
