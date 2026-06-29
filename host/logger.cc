@@ -51,14 +51,14 @@ void print_vector_desc(Logger& logger, detail::VectorDescRef desc,
   }
 }
 
-void log_allocation(Logger& logger, const std::type_info& type, uint32_t n,
+void log_allocation(Logger& logger, const std::type_info& type, size_t n,
                     std::string_view debug_name, const char* debug_file,
                     int debug_line, bool is_allocation) {
   log_allocation(logger, type.name(), n, debug_name, debug_file, debug_line,
                  is_allocation);
 }
 
-void log_allocation(Logger& logger, const char* type_name, uint32_t n,
+void log_allocation(Logger& logger, const char* type_name, size_t n,
                     std::string_view debug_name, const char* debug_file,
                     int debug_line, bool is_allocation) {
   auto log = logger.lock();

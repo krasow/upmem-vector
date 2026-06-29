@@ -14,7 +14,7 @@ template <typename T>
 dpu_vector<T>::dpu_vector() noexcept : size_(0), reserved_(0) {}
 
 template <typename T>
-dpu_vector<T>::dpu_vector(uint32_t n, uint32_t reserved, bool lazy,
+dpu_vector<T>::dpu_vector(size_t n, uint32_t reserved, bool lazy,
                           std::string_view name, std::source_location loc)
     : size_(n),
       reserved_(reserved),
@@ -1052,7 +1052,7 @@ void jit_indirect_ref_expr<T>::apply(
 
 #if JIT
 template <typename T, typename F>
-void dpu_jit_foreach(uint32_t n, F f) {
+void dpu_jit_foreach(size_t n, F f) {
   detail::jit_recorder rec;
   detail::jit_index_expr idx{rec};
 

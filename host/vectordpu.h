@@ -125,7 +125,7 @@ template <typename T>
 class dpu_vector {
  public:
   dpu_vector() noexcept;
-  dpu_vector(uint32_t n, uint32_t reserved = 0, bool lazy = false,
+  dpu_vector(size_t n, uint32_t reserved = 0, bool lazy = false,
              LOGGER_ARGS_WITH_DEFAULTS);
 
   ~dpu_vector();
@@ -161,12 +161,12 @@ class dpu_vector {
   const detail::VectorDesc& data_desc() const { return *data_; }
   detail::VectorDescRef data_desc_ref() const { return data_; }
 
-  uint32_t size() const { return size_; }
+  size_t size() const { return size_; }
   uint32_t reserved() const { return reserved_; }
 
  private:
   detail::VectorDescRef data_;
-  uint32_t size_;
+  size_t size_;
   uint32_t reserved_ = 0;
   const char* debug_name = nullptr;
 
@@ -404,7 +404,7 @@ class dpu_local_vector {
 };
 
 template <typename T, typename F>
-void dpu_jit_foreach(uint32_t n, F f);
+void dpu_jit_foreach(size_t n, F f);
 
 void dpu_fence();
 

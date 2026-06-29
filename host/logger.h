@@ -48,11 +48,11 @@ char const* kernel_id_to_string(KernelID kernel_id);
 void print_vector_desc(Logger& logger, detail::VectorDescRef desc,
                        uint32_t reserved);
 
-void log_allocation(Logger& logger, const std::type_info& type, uint32_t n,
+void log_allocation(Logger& logger, const std::type_info& type, size_t n,
                     std::string_view debug_name, const char* debug_file,
                     int debug_line, bool is_allocation = true);
 
-void log_allocation(Logger& logger, const char* type_name, uint32_t n,
+void log_allocation(Logger& logger, const char* type_name, size_t n,
                     std::string_view debug_name, const char* debug_file,
                     int debug_line, bool is_allocation = true);
 
