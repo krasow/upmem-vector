@@ -78,8 +78,8 @@ void DpuRuntime::init(uint32_t num_dpus) {
   num_dpus_ = num_dpus;
   logger_ = std::make_unique<Logger>();
 
-#if ENABLE_DPU_LOGGING == 1
-  logger_->lock() << "[runtime] Initializing DPU runtime with " << num_dpus_
+#if ENABLE_DPU_LOGGING >= 1
+  logger_->lock(logcat::RUNTIME) << "Initializing DPU runtime with " << num_dpus_
                   << " DPUs..." << std::endl;
 #endif
 
@@ -96,8 +96,8 @@ void DpuRuntime::init(uint32_t num_dpus) {
   DPU_ASSERT(dpu_get_nr_dpus(*dpu_set_, &actual_dpus));
   num_dpus_ = actual_dpus;
 
-#if ENABLE_DPU_LOGGING == 1
-  logger_->lock() << "[runtime] Allocated " << num_dpus_ << " DPUs..."
+#if ENABLE_DPU_LOGGING >= 1
+  logger_->lock(logcat::RUNTIME) << "Allocated " << num_dpus_ << " DPUs..."
                   << std::endl;
 #endif
 
@@ -105,8 +105,8 @@ void DpuRuntime::init(uint32_t num_dpus) {
   std::string dpu_file = get_runtime_dpu_binary();
   DPU_ASSERT(dpu_load(*dpu_set_, dpu_file.c_str(), nullptr));
 
-#if ENABLE_DPU_LOGGING == 1
-  logger_->lock() << "[runtime] DPU runtime initialized with " << backend_str
+#if ENABLE_DPU_LOGGING >= 1
+  logger_->lock(logcat::RUNTIME) << "DPU runtime initialized with " << backend_str
                   << std::endl;
 #endif
 
@@ -128,17 +128,17 @@ void DpuRuntime::shutdown() {
 
 #if ENABLE_DPU_LOGGING >= 1
     if (logger_)
-      logger_->lock() << "[runtime] Shutting down DPU runtime..." << std::endl;
+      logger_->lock(logcat::RUNTIME) << "Shutting down DPU runtime..." << std::endl;
 #endif
 
     if (event_queue_ && event_queue_->has_pending()) {
       if (logger_)
-        logger_->lock() << "[runtime] Flushing pending events..." << std::endl;
+        logger_->lock(logcat::RUNTIME) << "Flushing pending events..." << std::endl;
       event_queue_->process_events(UINT64_MAX);
     }
 
     if (logger_)
-      logger_->lock() << "[runtime] Waiting for active events and callbacks..."
+      logger_->lock(logcat::RUNTIME) << "Waiting for active events and callbacks..."
                       << std::endl;
     while (event_queue_) {
       std::list<std::shared_ptr<Event>> active;
@@ -154,7 +154,7 @@ void DpuRuntime::shutdown() {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    if (logger_) logger_->lock() << "[runtime] Freeing DPU set..." << std::endl;
+    if (logger_) logger_->lock(logcat::RUNTIME) << "Freeing DPU set..." << std::endl;
     if (dpu_set_) {
       DPU_ASSERT(dpu_free(*dpu_set_));
       delete dpu_set_;
@@ -163,16 +163,16 @@ void DpuRuntime::shutdown() {
     initialized_ = false;
   }  // trace_scoped ends here, before TRACE_SHUTDOWN
 
-  if (logger_) logger_->lock() << "[runtime] Tracing shutdown..." << std::endl;
+  if (logger_) logger_->lock(logcat::RUNTIME) << "Tracing shutdown..." << std::endl;
   TRACE_SHUTDOWN();
 
 #if JIT
   if (logger_)
-    logger_->lock() << "[runtime] Cleaning up JIT files..." << std::endl;
+    logger_->lock(logcat::RUNTIME) << "Cleaning up JIT files..." << std::endl;
   jit_cleanup();
 #endif
 
-  if (logger_) logger_->lock() << "[runtime] Shutdown complete." << std::endl;
+  if (logger_) logger_->lock(logcat::RUNTIME) << "Shutdown complete." << std::endl;
 
   // Reset core systems explicitly so they don't hang in static destructor
   event_queue_.reset();

@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -31,15 +32,54 @@ std::map<CacheKey, std::string> g_jit_cache;
 std::map<Signature, std::string> g_kernel_obj_cache;
 std::recursive_mutex g_jit_cache_mutex;
 
-std::string hash_signature(const Signature& sig) {
-  size_t h = std::hash<std::string>{}(sig.second);
-  for (uint8_t b : sig.first)
-    h ^= std::hash<uint8_t>{}(b) + 0x9e3779b9 + (h << 6) + (h >> 2);
-  char buf[32];
-  sprintf(buf, "%016zx", h);
-  return std::string(buf);
+size_t jit_link_batch_limit() {
+  constexpr size_t kIramSafeLinkBatch = 6;
+  return JIT_BATCH_SIZE < kIramSafeLinkBatch ? JIT_BATCH_SIZE
+                                             : kIramSafeLinkBatch;
 }
 }  // namespace
+
+std::string jit_canonical_type_name(const char* raw_type_name) {
+  if (!raw_type_name) return "int32_t";
+  std::string tn = raw_type_name;
+  if (tn == "i" || tn == "int" || tn == "int32_t") return "int32_t";
+  if (tn == "j" || tn == "uint32_t") return "uint32_t";
+  if (tn == "f" || tn == "float") return "float";
+  if (tn == "d" || tn == "double") return "double";
+  return raw_type_name;
+}
+
+std::string jit_signature_hash(const Signature& sig) {
+  uint64_t h = 1469598103934665603ull;
+  auto mix = [&](uint8_t byte) {
+    h ^= byte;
+    h *= 1099511628211ull;
+  };
+  for (char c : sig.second) mix(static_cast<uint8_t>(c));
+  mix(0xff);
+  for (uint8_t b : sig.first) mix(b);
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%016llx",
+                static_cast<unsigned long long>(h));
+  return std::string(buf);
+}
+
+std::string jit_batch_hash(const std::vector<Signature>& kernels) {
+  uint64_t h = 1469598103934665603ull;
+  auto mix = [&](uint8_t byte) {
+    h ^= byte;
+    h *= 1099511628211ull;
+  };
+  for (const auto& sig : kernels) {
+    std::string hash = jit_signature_hash(sig);
+    for (char c : hash) mix(static_cast<uint8_t>(c));
+    mix(0xfe);
+  }
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%016llx",
+                static_cast<unsigned long long>(h));
+  return std::string(buf);
+}
 
 // Anchor for dladdr
 extern "C" void vectordpu_jit_dladdr_anchor() {}
@@ -184,7 +224,8 @@ extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
     if (!uses_local[k]) continue;
     out << "    uint32_t local_size_" << k << " = args.pipeline.local_sizes["
         << k << "];\n"
-        << "    " << type_name << " *local_accum_" << k << " = (" << type_name
+        << "    " << type_name << " *local_accum_" << k
+        << " = (" << type_name
         << " *)&dpu_workspace[id][BASE_TASKLET_WORKSPACE_SIZE + " << k
         << " * LOCAL_VECTOR_WORKSPACE_BYTES];\n";
   }
@@ -288,87 +329,142 @@ extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
     const auto& chain = chains[c_idx];
     out << "            // Chain " << c_idx << "\n";
 
-    std::vector<std::string> stack;
+    struct StackValue {
+      std::string value;
+      std::string id;
+    };
+    std::vector<StackValue> stack;
+    std::map<std::string, StackValue> cse;
+    int expr_id = 0;
     int tmp_n = 0;
     auto get_tmp = [&]() {
       return "t_" + std::to_string(c_idx) + "_" + std::to_string(tmp_n++);
+    };
+    auto leaf = [](const std::string& value, const std::string& id) {
+      return StackValue{value, id};
+    };
+    auto emit_cached = [&](const std::string& sig,
+                           const std::string& expr) -> StackValue {
+      auto it = cse.find(sig);
+      if (it != cse.end()) return it->second;
+      std::string res = get_tmp();
+      StackValue out_val{res, "e" + std::to_string(expr_id++)};
+      out << "            " << stack_type << " " << res << " = " << expr
+          << ";\n";
+      cse.emplace(sig, out_val);
+      return out_val;
+    };
+    auto scalar_expr = [&](uint8_t base, const std::string& lhs,
+                           const std::string& rhs) {
+      switch (base) {
+        case OP_ADD_SCALAR:
+          return lhs + " + (" + stack_type + ")" + rhs;
+        case OP_SUB_SCALAR:
+          return lhs + " - (" + stack_type + ")" + rhs;
+        case OP_MUL_SCALAR:
+          return lhs + " * (" + stack_type + ")" + rhs;
+        case OP_DIV_SCALAR:
+          return lhs + " / (" + stack_type + ")" + rhs;
+        case OP_ASR_SCALAR:
+          return lhs + " >> " + rhs;
+        case OP_EQ_SCALAR:
+          return lhs + " == (" + stack_type + ")" + rhs;
+        case OP_LT_SCALAR:
+          return lhs + " < (" + stack_type + ")" + rhs;
+        case OP_GT_SCALAR:
+          return lhs + " > (" + stack_type + ")" + rhs;
+        case OP_GE_SCALAR:
+          return lhs + " >= (" + stack_type + ")" + rhs;
+        case OP_LE_SCALAR:
+          return lhs + " <= (" + stack_type + ")" + rhs;
+        default:
+          return std::string("0");
+      }
+    };
+    auto binary_expr = [&](uint8_t op, const std::string& lhs,
+                           const std::string& rhs) {
+      switch (op) {
+        case OP_ADD:
+          return lhs + " + " + rhs;
+        case OP_SUB:
+          return lhs + " - " + rhs;
+        case OP_MUL:
+          return lhs + " * " + rhs;
+        case OP_DIV:
+          return lhs + " / " + rhs;
+        case OP_ASR:
+          return lhs + " >> " + rhs;
+        case OP_EQ:
+          return lhs + " == " + rhs;
+        case OP_LT:
+          return lhs + " < " + rhs;
+        case OP_GT:
+          return lhs + " > " + rhs;
+        case OP_GE:
+          return lhs + " >= " + rhs;
+        case OP_LE:
+          return lhs + " <= " + rhs;
+        default:
+          return std::string("0");
+      }
     };
 
     for (size_t op_idx = chain.start_op; op_idx < chain.end_op; ++op_idx) {
       uint8_t op = rpn_ops[op_idx];
       if (op == OP_PUSH_INPUT) {
-        stack.push_back("((" + stack_type + ")input_blk[i])");
+        stack.push_back(leaf("((" + stack_type + ")input_blk[i])", "input"));
 
       } else if (op >= OP_PUSH_OPERAND_0 &&
                  op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
-        stack.push_back("((" + stack_type + ")op_blks[" +
-                        std::to_string(op - OP_PUSH_OPERAND_0) + "][i])");
+        uint8_t idx = op - OP_PUSH_OPERAND_0;
+        stack.push_back(leaf("((" + stack_type + ")op_blks[" +
+                                 std::to_string(idx) + "][i])",
+                             "op" + std::to_string(idx)));
 
       } else if (IS_OP_SCALAR(op) || IS_OP_SCALAR_VAR(op)) {
         std::string rhs;
+        std::string rhs_id;
         if (IS_OP_SCALAR(op)) {
           uint8_t b0 = rpn_ops[op_idx + 1], b1 = rpn_ops[op_idx + 2],
                   b2 = rpn_ops[op_idx + 3], b3 = rpn_ops[op_idx + 4];
           int32_t val = (int32_t)(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
           op_idx += SCALAR_INLINE_BYTES;
           rhs = std::to_string(val);
+          rhs_id = "scalar:" + rhs;
         } else {
           uint8_t idx = rpn_ops[op_idx + 1];
           op_idx += SCALAR_VAR_INDEX_BYTES;
           rhs = "args.pipeline.scalars[" + std::to_string(idx) + "]";
+          rhs_id = "scalar_var:" + std::to_string(idx);
         }
-        std::string s1 = stack.back();
+        StackValue s1 = stack.back();
         stack.pop_back();
-        std::string res = get_tmp();
-        out << "            " << stack_type << " " << res << " = ";
         // Normalize SCALAR_VAR opcode to the equivalent SCALAR opcode for a
         // unified switch; both forms share the same operator symbol.
         uint8_t base = IS_OP_SCALAR_VAR(op)
                            ? (op - (OP_ADD_SCALAR_VAR - OP_ADD_SCALAR))
                            : op;
-        switch (base) {
-          case OP_ADD_SCALAR:
-            EMIT_SCALAROP(+);
-          case OP_SUB_SCALAR:
-            EMIT_SCALAROP(-);
-          case OP_MUL_SCALAR:
-            EMIT_SCALAROP(*);
-          case OP_DIV_SCALAR:
-            EMIT_SCALAROP(/);
-          case OP_ASR_SCALAR:
-            EMIT_SHIFTOP;
-          case OP_EQ_SCALAR:
-            EMIT_SCALAROP(==);
-          case OP_LT_SCALAR:
-            EMIT_SCALAROP(<);
-          case OP_GT_SCALAR:
-            EMIT_SCALAROP(>);
-          case OP_GE_SCALAR:
-            EMIT_SCALAROP(>=);
-          case OP_LE_SCALAR:
-            EMIT_SCALAROP(<=);
-        }
-        stack.push_back(res);
+        std::string sig = "scalar_op:" + std::to_string(base) + ":" + s1.id +
+                          ":" + rhs_id;
+        stack.push_back(emit_cached(sig, scalar_expr(base, s1.value, rhs)));
 
       } else if (op == OP_DUP) {
         stack.push_back(stack.back());
 
       } else if (IS_OP_UNARY(op)) {
-        std::string s1 = stack.back();
+        StackValue s1 = stack.back();
         stack.pop_back();
-        std::string res = get_tmp();
         std::string expr;
         switch (op) {
           case OP_NEGATE:
-            expr = "-" + s1;
+            expr = "-" + s1.value;
             break;
           case OP_ABS:
-            expr = "(" + s1 + " < 0) ? -" + s1 + " : " + s1;
+            expr = "(" + s1.value + " < 0) ? -" + s1.value + " : " + s1.value;
             break;
         }
-        out << "            " << stack_type << " " << res << " = " << expr
-            << ";\n";
-        stack.push_back(res);
+        stack.push_back(
+            emit_cached("unary:" + std::to_string(op) + ":" + s1.id, expr));
 
       } else if (IS_OP_BINARY(op)) {
         if (stack.size() < 2) {
@@ -377,126 +473,109 @@ extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
                   (unsigned)op, stack.size());
           abort();
         }
-        std::string s2 = stack.back();
+        StackValue s2 = stack.back();
         stack.pop_back();
-        std::string s1 = stack.back();
+        StackValue s1 = stack.back();
         stack.pop_back();
-        std::string res = get_tmp();
-        out << "            " << stack_type << " " << res << " = ";
-        switch (op) {
-          case OP_ADD:
-            EMIT_BINOP(+);
-          case OP_SUB:
-            EMIT_BINOP(-);
-          case OP_MUL:
-            EMIT_BINOP(*);
-          case OP_DIV:
-            EMIT_BINOP(/);
-          case OP_ASR:
-            out << s1 << " >> " << s2 << ";\n";
-            break;
-          case OP_EQ:
-            EMIT_BINOP(==);
-          case OP_LT:
-            EMIT_BINOP(<);
-          case OP_GT:
-            EMIT_BINOP(>);
-          case OP_GE:
-            EMIT_BINOP(>=);
-          case OP_LE:
-            EMIT_BINOP(<=);
-        }
-        stack.push_back(res);
+        std::string sig = "binary:" + std::to_string(op) + ":" + s1.id + ":" +
+                          s2.id;
+        stack.push_back(emit_cached(sig, binary_expr(op, s1.value, s2.value)));
 
       } else if (IS_OP_TERNARY(op)) {
-        std::string s1 = stack.back();
+        StackValue s1 = stack.back();
         stack.pop_back();
-        std::string s2 = stack.back();
+        StackValue s2 = stack.back();
         stack.pop_back();
-        std::string s3 = stack.back();
+        StackValue s3 = stack.back();
         stack.pop_back();
-        std::string res = get_tmp();
-        if (op == OP_SELECT)
-          out << "            " << stack_type << " " << res << " = (" << s3
-              << " != 0) ? " << s2 << " : " << s1 << ";\n";
-        stack.push_back(res);
+        if (op == OP_SELECT) {
+          std::string sig =
+              "select:" + s3.id + ":" + s2.id + ":" + s1.id;
+          stack.push_back(emit_cached(sig, "(" + s3.value + " != 0) ? " +
+                                               s2.value + " : " + s1.value));
+        }
 
       } else if (IS_OP_REDUCTION(op)) {
-        std::string s = stack.back();
+        StackValue s = stack.back();
         stack.pop_back();
         switch (op) {
           case OP_SUM:
-            out << "            acc_" << c_idx << " += " << s << ";\n";
+            out << "            acc_" << c_idx << " += " << s.value << ";\n";
             break;
           case OP_PRODUCT:
-            out << "            acc_" << c_idx << " *= " << s << ";\n";
+            out << "            acc_" << c_idx << " *= " << s.value << ";\n";
             break;
           case OP_MIN:
-            out << "            if (" << s << " < acc_" << c_idx << ") acc_"
-                << c_idx << " = " << s << ";\n";
+            out << "            if (" << s.value << " < acc_" << c_idx
+                << ") acc_" << c_idx << " = " << s.value << ";\n";
             break;
           case OP_MAX:
-            out << "            if (" << s << " > acc_" << c_idx << ") acc_"
-                << c_idx << " = " << s << ";\n";
+            out << "            if (" << s.value << " > acc_" << c_idx
+                << ") acc_" << c_idx << " = " << s.value << ";\n";
             break;
         }
       } else if (op == OP_PUSH_INDEX) {
-        stack.push_back("(blk + i)");
+        stack.push_back(leaf("(blk + i)", "idx"));
       } else if (op == OP_LOAD_INDIRECT) {
         uint8_t op_id = rpn_ops[++op_idx];
-        std::string idx = stack.back();
+        StackValue idx = stack.back();
         stack.pop_back();
-        std::string res = get_tmp();
-        out << "            " << stack_type << " " << res << " = ((__mram_ptr "
-            << type_name << " *)args.pipeline.binary_operands[" << (int)op_id
-            << "])[" << idx << "];\n";
-        stack.push_back(res);
+        std::string sig =
+            "load_indirect:" + std::to_string(op_id) + ":" + idx.id;
+        stack.push_back(emit_cached(
+            sig, "((__mram_ptr " + type_name +
+                     " *)args.pipeline.binary_operands[" +
+                     std::to_string((int)op_id) + "])[" + idx.value + "]"));
       } else if (op == OP_ADD_INDIRECT || op == OP_APPLY_INDIRECT) {
         uint8_t local_id = rpn_ops[++op_idx];
         uint8_t reduce_op =
             (op == OP_ADD_INDIRECT) ? OP_SUM : rpn_ops[++op_idx];
-        std::string val = stack.back();
+        StackValue val = stack.back();
         stack.pop_back();
-        std::string idx = stack.back();
+        StackValue idx = stack.back();
         stack.pop_back();
         std::string slot =
-            "local_accum_" + std::to_string((int)local_id) + "[" + idx + "]";
+            "local_accum_" + std::to_string((int)local_id) + "[" + idx.value +
+            "]";
         switch (reduce_op) {
           case OP_SUM:
-            out << "            " << slot << " += " << val << ";\n";
+            out << "            " << slot << " += " << val.value << ";\n";
             break;
           case OP_PRODUCT:
-            out << "            " << slot << " *= " << val << ";\n";
+            out << "            " << slot << " *= " << val.value << ";\n";
             break;
           case OP_MIN:
-            out << "            if (" << val << " < " << slot << ") " << slot
-                << " = " << val << ";\n";
+            out << "            if (" << val.value << " < " << slot << ") "
+                << slot << " = " << val.value << ";\n";
             break;
           case OP_MAX:
-            out << "            if (" << val << " > " << slot << ") " << slot
-                << " = " << val << ";\n";
+            out << "            if (" << val.value << " > " << slot << ") "
+                << slot << " = " << val.value << ";\n";
             break;
           default:
-            out << "            " << slot << " += " << val << ";\n";
+            out << "            " << slot << " += " << val.value << ";\n";
             break;
         }
       } else if (op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR) {
         if (op == OP_PUSH_SCALAR_VAR) {
           uint8_t idx = rpn_ops[op_idx + 1];
           op_idx += SCALAR_VAR_INDEX_BYTES;
-          stack.push_back("scalar_vars[" + std::to_string((uint32_t)idx) + "]");
+          stack.push_back(
+              leaf("scalar_vars[" + std::to_string((uint32_t)idx) + "]",
+                   "scalar_var:" + std::to_string((uint32_t)idx)));
         } else {
           uint8_t b0 = rpn_ops[op_idx + 1], b1 = rpn_ops[op_idx + 2],
                   b2 = rpn_ops[op_idx + 3], b3 = rpn_ops[op_idx + 4];
           int32_t val = (int32_t)(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
           op_idx += SCALAR_INLINE_BYTES;
-          stack.push_back(std::to_string(val));
+          stack.push_back(leaf(std::to_string(val),
+                               "scalar:" + std::to_string(val)));
         }
       }
     }  // op_idx
 
     if (!chain.is_reduction && !stack.empty()) {
-      out << "            res_blks[" << c_idx << "][i] = " << stack.back()
+      out << "            res_blks[" << c_idx << "][i] = " << stack.back().value
           << ";\n";
       chain_has_output[c_idx] = true;
     }
@@ -672,8 +751,8 @@ static bool compile_dpu_source(const std::string& filepath,
     return false;
   }
 #if ENABLE_DPU_LOGGING >= 1
-  DpuRuntime::get().get_logger().lock()
-      << "[JIT] Compiled " << (is_object ? "object " : "kernel ") << "to "
+  DpuRuntime::get().get_logger().lock(logcat::JIT_COMPILER)
+      << "Compiled " << (is_object ? "object " : "kernel ") << "to "
       << binpath << std::endl;
 #endif
   return true;
@@ -682,7 +761,8 @@ static bool compile_dpu_source(const std::string& filepath,
 static bool link_dpu_objects(const std::string& main_path,
                              const std::vector<std::string>& objects,
                              const std::string& binpath,
-                             const std::string& include_flags) {
+                             const std::string& include_flags,
+                             const std::string& batch_hash) {
   std::string cmd = "dpu-upmem-dpurte-clang -DNR_TASKLETS=" +
                     std::to_string(DpuRuntime::get().num_tasklets()) +
                     include_flags + " -O3 -o " + binpath + " " + main_path;
@@ -693,22 +773,27 @@ static bool link_dpu_objects(const std::string& main_path,
     return false;
   }
 #if ENABLE_DPU_LOGGING >= 1
-  DpuRuntime::get().get_logger().lock()
-      << "[JIT] Linked binary to " << binpath << std::endl;
+  auto log = DpuRuntime::get().get_logger().lock(logcat::JIT_COMPILER);
+  log.first() << "linked binary";
+  log.second() << "batch_hash=" << batch_hash << " path=" << binpath
+               << std::endl;
 #endif
   return true;
 }
 
 std::string jit_compile(
     const std::vector<std::pair<std::vector<uint8_t>, std::string>>& kernels) {
+  const std::string batch_hash = jit_batch_hash(kernels);
   {
     std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
     auto it = g_jit_cache.find(kernels);
     if (it != g_jit_cache.end()) {
 #if ENABLE_DPU_LOGGING >= 1
-      DpuRuntime::get().get_logger().lock()
-          << "[JIT] Cache hit for batched binary with " << kernels.size()
-          << " sub-kernels" << std::endl;
+      auto log = DpuRuntime::get().get_logger().lock(logcat::JIT_COMPILER);
+      log.first() << "cache hit linked binary";
+      log.second() << "batch_hash=" << batch_hash
+                   << " kernels=" << kernels.size() << " path=" << it->second
+                   << std::endl;
 #endif
       return it->second;
     }
@@ -723,11 +808,7 @@ std::string jit_compile(
   // Compile each unique kernel to an object file (cached per signature).
   std::vector<std::string> object_files;
   for (const auto& sig : kernels) {
-#if ENABLE_DPU_LOGGING >= 1
-    DpuRuntime::get().get_logger().lock() << "[JIT] Compiling RPN: ";
-    for (uint8_t op : sig.first) std::cerr << (unsigned)op << " ";
-    std::cerr << std::endl;
-#endif
+    const std::string kernel_hash = jit_signature_hash(sig);
     std::string obj_path;
     {
       std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
@@ -736,20 +817,25 @@ std::string jit_compile(
     }
 
     if (obj_path.empty()) {
-      const std::string hash = hash_signature(sig);
-      const std::string c_path = build_dir + "/k_" + hash + ".c";
-      obj_path = build_dir + "/k_" + hash + ".o";
-
 #if ENABLE_DPU_LOGGING >= 1
-      DpuRuntime::get().get_logger().lock()
-          << "[JIT-DBG] write " << c_path << std::endl;
+      auto log = DpuRuntime::get().get_logger().lock(logcat::JIT_COMPILER);
+      log.first() << "compile kernel object";
+      log.second() << "kernel_hash=" << kernel_hash << " type=" << sig.second
+                   << " " << fusion_rpn_fields(summarize_fusion_rpn(sig.first))
+                   << std::endl;
 #endif
+      const std::string c_path = build_dir + "/k_" + kernel_hash + ".c";
+      obj_path = build_dir + "/k_" + kernel_hash + ".o";
+
       std::ofstream out(c_path);
-      write_kernel_function(out, "k_" + hash, sig.first, sig.second);
+      write_kernel_function(out, "k_" + kernel_hash, sig.first, sig.second);
       out.close();
 #if ENABLE_DPU_LOGGING >= 1
-      DpuRuntime::get().get_logger().lock()
-          << "[JIT-DBG] wrote " << c_path << std::endl;
+      auto debug_log =
+          DpuRuntime::get().get_logger().lock(logcat::JIT_DEBUG, 2);
+      debug_log.first() << "wrote kernel source";
+      debug_log.second() << "kernel_hash=" << kernel_hash
+                         << " path=" << c_path << std::endl;
 #endif
 
       if (!compile_dpu_source(c_path, obj_path, true, include_flags)) {
@@ -757,13 +843,20 @@ std::string jit_compile(
         throw std::runtime_error("JIT Compilation failed for " + c_path);
       }
 #if ENABLE_DPU_LOGGING >= 1
-      DpuRuntime::get().get_logger().lock()
-          << "[JIT-DBG] compiled " << obj_path << std::endl;
+      DpuRuntime::get().get_logger().lock(logcat::JIT_DEBUG, 2)
+          << "compiled " << obj_path << std::endl;
 #endif
       {
         std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
         g_kernel_obj_cache[sig] = obj_path;
       }
+    } else {
+#if ENABLE_DPU_LOGGING >= 2
+      auto log = DpuRuntime::get().get_logger().lock(logcat::JIT_COMPILER, 2);
+      log.first() << "cache hit kernel object";
+      log.second() << "kernel_hash=" << kernel_hash << " type=" << sig.second
+                   << " path=" << obj_path << std::endl;
+#endif
     }
     object_files.push_back(obj_path);
   }
@@ -779,24 +872,25 @@ std::string jit_compile(
     write_dpu_main_header(out);
     for (size_t k = 0; k < kernels.size(); ++k) {
       std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
-      out << "extern int k_" << hash_signature(kernels[k]) << "(void);\n";
+      out << "extern int k_" << jit_signature_hash(kernels[k]) << "(void);\n";
     }
     out << "\nint main() {\n  switch (args.kernel) {\n";
     for (size_t k = 0; k < kernels.size(); ++k) {
       std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
       out << "    case " << (JIT_STATIC_KERNEL_COUNT + k) << ": return k_"
-          << hash_signature(kernels[k]) << "();\n";
+          << jit_signature_hash(kernels[k]) << "();\n";
     }
     out << "    default: return -1;\n  }\n}\n";
   }
 
-  if (!link_dpu_objects(main_c_path, object_files, binpath, include_flags)) {
+  if (!link_dpu_objects(main_c_path, object_files, binpath, include_flags,
+                        batch_hash)) {
     trace::jit_compile_end();
     throw std::runtime_error("JIT Linking failed for " + binpath);
   }
 #if ENABLE_DPU_LOGGING >= 1
-  DpuRuntime::get().get_logger().lock()
-      << "[JIT-DBG] linked " << binpath << std::endl;
+  DpuRuntime::get().get_logger().lock(logcat::JIT_DEBUG, 2)
+      << "linked " << binpath << std::endl;
 #endif
 
   {
@@ -814,9 +908,10 @@ void EventQueue::flush_jit_batch() {
       pending_unique_kernels_;
 
 #if ENABLE_DPU_LOGGING >= 1
-  DpuRuntime::get().get_logger().lock()
-      << "[queue-jit] Flushing " << batch.size() << " kernels to JIT compiler."
-      << std::endl;
+  auto log = DpuRuntime::get().get_logger().lock(logcat::QUEUE_JIT);
+  log.first() << "flush JIT batch";
+  log.second() << "batch_hash=" << jit_batch_hash(batch)
+               << " kernels=" << batch.size() << std::endl;
 #endif
 
   std::shared_future<std::string> future = std::async(
@@ -843,39 +938,39 @@ void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
     }
   }
 
-  const char* type_name = "int32_t";
-  if (e->output && e->output->type_name) {
-    std::string tn = e->output->type_name;
-    if (tn == "i" || tn == "int")
-      type_name = "int32_t";
-    else if (tn == "j" || tn == "uint32_t")
-      type_name = "uint32_t";
-    else if (tn == "f" || tn == "float")
-      type_name = "float";
-    else if (tn == "d" || tn == "double")
-      type_name = "double";
-    else
-      type_name = e->output->type_name;
-  }
-
-  Signature sig = {e->rpn_ops, type_name};
+  const char* raw_type_name =
+      (e->output && e->output->type_name) ? e->output->type_name : "int32_t";
+  std::string canonical_type = jit_canonical_type_name(raw_type_name);
+  Signature sig = {e->rpn_ops, canonical_type};
+  e->jit_kernel_hash = jit_signature_hash(sig);
 
   // Check if this signature already has a slot in the current batch.
   for (size_t i = 0; i < pending_unique_kernels_.size(); ++i) {
     if (pending_unique_kernels_[i] == sig) {
       e->jit_sub_kernel_idx = i;
       pending_jit_events_.push_back(e);
-      if (pending_jit_events_.size() >= JIT_BATCH_SIZE) flush_jit_batch();
+#if ENABLE_DPU_LOGGING >= 2
+      auto log = DpuRuntime::get().get_logger().lock(logcat::QUEUE_JIT, 2);
+      log.first() << "cache hit pending JIT batch";
+      log.second() << "event_id=" << e->id
+                   << " kernel_hash=" << e->jit_kernel_hash
+                   << " sub_kernel=" << i
+                   << " pending_events=" << pending_jit_events_.size()
+                   << std::endl;
+#endif
+      if (pending_jit_events_.size() >= jit_link_batch_limit())
+        flush_jit_batch();
       return;
     }
   }
 
-  if (pending_unique_kernels_.size() >= JIT_BATCH_SIZE) flush_jit_batch();
+  if (pending_unique_kernels_.size() >= jit_link_batch_limit())
+    flush_jit_batch();
 
   e->jit_sub_kernel_idx = pending_unique_kernels_.size();
   pending_unique_kernels_.push_back(sig);
   pending_jit_events_.push_back(e);
-  if (pending_jit_events_.size() >= JIT_BATCH_SIZE) flush_jit_batch();
+  if (pending_jit_events_.size() >= jit_link_batch_limit()) flush_jit_batch();
 }
 
 bool jit_find_kernel_in_binary(const Signature& sig,

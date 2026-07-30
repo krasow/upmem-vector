@@ -62,9 +62,15 @@ def generate_config_h(config, output_path):
         f"#endif /* {header_guard} */",
     ])
     
+    content = '\n'.join(lines)
     try:
+        if os.path.exists(output_path):
+            with open(output_path, 'r') as f:
+                if f.read() == content:
+                    print(f"Generated {output_path} (unchanged)")
+                    return
         with open(output_path, 'w') as f:
-            f.write('\n'.join(lines))
+            f.write(content)
         print(f"Generated {output_path}")
     except Exception as e:
         print(f"Error writing {output_path}: {e}", file=sys.stderr)

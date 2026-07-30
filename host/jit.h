@@ -15,6 +15,13 @@ using Signature = std::pair<std::vector<uint8_t>, std::string>;
 
 #if JIT
 
+// Canonicalizes host/C++ type names before they become part of a JIT cache key.
+std::string jit_canonical_type_name(const char* raw_type_name);
+
+// Stable identifiers derived from the exact JIT cache keys.
+std::string jit_signature_hash(const Signature& sig);
+std::string jit_batch_hash(const std::vector<Signature>& kernels);
+
 // Compiles a batch of unique RPN sequences into a single DPU binary
 std::string jit_compile(const std::vector<Signature>& kernels);
 

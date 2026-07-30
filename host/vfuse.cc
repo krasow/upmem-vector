@@ -1,9 +1,35 @@
 #include "fusion.h"
+#include "jit.h"
 #include "runtime.h"
 
 #if PIPELINE
 
 namespace {
+std::string compact_rpn_label(const std::vector<uint8_t>& rpn) {
+  FusionRpnSummary summary = summarize_fusion_rpn(rpn);
+  std::string label = "Fused Pipeline (ops=" +
+                      std::to_string(summary.decoded_ops) +
+                      ", bytes=" + std::to_string(rpn.size());
+  if (summary.chains > 1)
+    label += ", chains=" + std::to_string(summary.chains);
+  if (summary.reductions > 0)
+    label += ", reductions=" + std::to_string(summary.reductions);
+  label += ")";
+  return label;
+}
+
+#if JIT
+std::string fused_kernel_hash(const std::shared_ptr<Event>& e) {
+  const char* raw_type_name = nullptr;
+  if (e->output && e->output->type_name)
+    raw_type_name = e->output->type_name;
+  else if (!e->inputs.empty() && e->inputs[0])
+    raw_type_name = e->inputs[0]->type_name;
+  return jit_signature_hash(
+      Signature{e->rpn_ops, jit_canonical_type_name(raw_type_name)});
+}
+#endif
+
 uint8_t get_or_add_push_op(std::vector<detail::VectorDescRef>& inputs,
                            const detail::VectorDescRef& vec) {
   if (!vec) return PUSH_OP_BUDGET_EXCEEDED;
@@ -152,12 +178,34 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
     }
     new_scalars = e->scalars;
 #if ENABLE_DPU_LOGGING >= 1
-    DpuRuntime::get().get_logger().lock()
-        << "[vfuse] inlined absorbed input into indirect consumer id=" << e->id
-        << std::endl;
+    Logger& logger = DpuRuntime::get().get_logger();
+    FusionRpnSummary consumer_after = summarize_fusion_rpn(new_rpn);
+    if (logger.enabled(2)) {
+      auto log = logger.lock(logcat::FUSION);
+      log.first() << "inline input";
+      log.second() << "producer #" << in_vec->last_producer_id
+                   << " -> consumer #" << e->id;
+      log.second() << "reason=indirect_load_of_absorbed_vector";
+      log.second() << "shape inputs=" << e->inputs.size() << "=>"
+                   << new_inputs.size() << "  scalars=" << e->scalars.size()
+                   << "=>" << new_scalars.size();
+      log.second() << "consumer expr before: "
+                   << fusion_rpn_expr_preview(e->rpn_ops, 1, 90);
+      log.second() << "consumer expr after: " << fusion_rpn_expr_preview(new_rpn);
+      log.second() << "kernel after: " << fusion_rpn_short(consumer_after)
+#if JIT
+                   << "  kernel_hash="
+                   << jit_signature_hash(Signature{
+                          new_rpn, jit_canonical_type_name(
+                                       e->output ? e->output->type_name
+                                                 : nullptr)})
+#endif
+                   << "  opcode mix: " << fusion_op_counts(consumer_after)
+                   << std::endl;
+    }
 #else
     fprintf(stderr,
-            "[vfuse] inlined absorbed input into indirect consumer id=%zu\n",
+            "[VFUSE] inlined absorbed input into indirect consumer id=%zu\n",
             e->id);
 #endif
   } else {
@@ -244,6 +292,9 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
       bool erasable_seed = op->opcode == OP_NEGATE;
       if (op->output == absorbed_vec && op->extra_outputs.empty() &&
           (!external_holder || erasable_seed || contains_indirect)) {
+        size_t erased_id = op->id;
+        size_t erased_max_id = op->max_id;
+        size_t deps_before = e->dependencies.size();
         // Close the perfetto slice opened by event_enqueued so the absorbed
         // producer's track doesn't hang open for the rest of the trace.
         trace::event_fused(op, e, "");
@@ -260,9 +311,16 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
         absorbed_vec->last_producer_id = e->id;
         it = operations_.erase(it);
 #if ENABLE_DPU_LOGGING >= 1
-        DpuRuntime::get().get_logger().lock()
-            << "[vfuse] erased absorbed producer id=" << op->id
-            << " for consumer id=" << e->id << std::endl;
+        Logger& logger = DpuRuntime::get().get_logger();
+        if (logger.enabled(2)) {
+          auto log = logger.lock(logcat::FUSION);
+          log.first() << "absorb producer";
+          log.second() << "producer #" << erased_id << "..#" << erased_max_id
+                       << " -> consumer #" << e->id << "..#" << e->max_id
+                       << "  deps=" << deps_before << "=>"
+                       << e->dependencies.size();
+          log.second() << "reason=inline_absorbed_input" << std::endl;
+        }
 #endif
       } else {
         ++it;
@@ -378,6 +436,8 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   std::vector<uint32_t> e_scalars;
   build_default_rpn(last, last_rpn, last_scalars);
   build_default_rpn(e, e_rpn, e_scalars);
+  size_t last_inputs_before = last->inputs.size();
+  size_t last_extra_outputs_before = last->extra_outputs.size();
 
   std::vector<detail::VectorDescRef> combined = last->inputs;
   auto get_push_op = [&](detail::VectorDescRef vec) -> uint8_t {
@@ -491,45 +551,36 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   for (auto& out : e->extra_outputs)
     if (out) out->last_producer_id = last->id;
 
-  std::string ops;
-  for (size_t i = 0; i < last->rpn_ops.size(); ++i) {
-    uint8_t op = last->rpn_ops[i];
-    std::string s = opcode_to_string(op);
-    if (s.empty()) continue;
-    if (!ops.empty()) ops += ", ";
-    ops += s;
-    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
-  }
-  last->slice_name = "Fused: [" + ops + "]";
+  FusionRpnSummary rpn_summary = summarize_fusion_rpn(last->rpn_ops);
+  last->slice_name = compact_rpn_label(last->rpn_ops);
 
 #if ENABLE_DPU_LOGGING >= 1
-  std::string rpn_dbg;
-  for (size_t i = 0; i < last->rpn_ops.size(); ++i) {
-    uint8_t op = last->rpn_ops[i];
-    if (!rpn_dbg.empty()) rpn_dbg += " ";
-    if (op == OP_PUSH_INPUT) {
-      rpn_dbg += "PUSH_INPUT";
-    } else if (op >= OP_PUSH_OPERAND_0 &&
-               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
-      rpn_dbg += "PUSH_OPERAND_" + std::to_string(op - OP_PUSH_OPERAND_0);
-    } else {
-      std::string s = opcode_to_string(op);
-      if (s.empty())
-        rpn_dbg += "OP(" + std::to_string(op) + ")";
-      else
-        rpn_dbg += s;
-      if (OP_INLINE_BYTES(op) > 0) {
-        for (size_t j = 0; j < OP_INLINE_BYTES(op) && i + 1 < last->rpn_ops.size();
-             ++j) {
-          rpn_dbg += " " + std::to_string(last->rpn_ops[++i]);
-        }
-      }
-    }
+  Logger& logger = DpuRuntime::get().get_logger();
+  if (logger.enabled(2)) {
+    auto log = logger.lock(logcat::FUSION);
+    log.first() << "vertical fusion";
+    log.second() << "child #" << e->id << "..#" << e->max_id
+                 << " -> fused #" << last->id << "..#" << last->max_id
+                 << "  deps=" << last->dependencies.size();
+    log.second() << "reason=dependent_on_stack_output";
+    log.second() << "shape inputs=" << last_inputs_before << "+"
+                 << e->inputs.size() << "=>" << last->inputs.size()
+                 << "  extra_outputs=" << last_extra_outputs_before << "=>"
+                 << last->extra_outputs.size() << "  scalars="
+                 << last_scalars.size() << "+" << e_scalars.size() << "=>"
+                 << last->scalars.size();
+    log.second() << "producer expr: " << fusion_rpn_expr_preview(last_rpn, 1, 90);
+    log.second() << "consumer expr: "
+                 << fusion_rpn_expr_preview(e_rpn, 1, 90, "producer_out", 1)
+                 << "  [producer_out = producer expr]";
+    log.second() << "fused expr: " << fusion_rpn_expr_preview(last->rpn_ops);
+    log.second() << "kernel after: " << fusion_rpn_short(rpn_summary)
+#if JIT
+                 << "  kernel_hash=" << fused_kernel_hash(last)
+#endif
+                 << "  opcode mix: " << fusion_op_counts(rpn_summary)
+                 << std::endl;
   }
-  DpuRuntime::get().get_logger().lock()
-      << "[queue-fuse] fused event id=" << e->id << " into last=" << last->id
-      << " rpn=\"" << rpn_dbg << "\""
-      << std::endl;
 #endif
   trace::event_fused(e, last, "");
   trace::inqueue_end(e);

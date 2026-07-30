@@ -2,7 +2,11 @@
 // Internal helpers shared by vfuse.cc, hfuse.cc, and jit.cc.
 // Not part of the public API.
 
+#include <algorithm>
 #include <cstdint>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include "common.h"
 #include "opinfo.h"
@@ -11,6 +15,286 @@
 #include "queue.h"
 
 #if PIPELINE
+struct FusionRpnSummary {
+  size_t decoded_ops = 0;
+  size_t bytes = 0;
+  size_t chains = 0;
+  size_t reductions = 0;
+  size_t push_ops = 0;
+  std::string top_expr_ops;
+};
+
+inline bool is_rpn_push_plumbing(uint8_t op) {
+  return (op >= OP_PUSH_INPUT &&
+          op <= OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1) ||
+         op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR;
+}
+
+inline FusionRpnSummary summarize_fusion_rpn(const std::vector<uint8_t>& rpn) {
+  FusionRpnSummary summary;
+  summary.bytes = rpn.size();
+  summary.chains = rpn.empty() ? 0 : 1;
+  uint32_t counts[256] = {0};
+
+  for (size_t i = 0; i < rpn.size(); ++i) {
+    uint8_t op = rpn[i];
+    if (op == OP_NEXT_CHAIN) {
+      summary.chains++;
+      continue;
+    }
+
+    summary.decoded_ops++;
+    if (is_rpn_push_plumbing(op)) {
+      summary.push_ops++;
+    } else {
+      counts[op]++;
+    }
+    if (IS_OP_REDUCTION(op)) summary.reductions++;
+    i += OP_INLINE_BYTES(op);
+  }
+
+  for (size_t rank = 0; rank < 6; ++rank) {
+    uint32_t best_op = 0;
+    uint32_t best_count = 0;
+    for (uint32_t op = 0; op < 256; ++op) {
+      if (counts[op] > best_count) {
+        best_op = op;
+        best_count = counts[op];
+      }
+    }
+    if (best_count == 0) break;
+
+    std::string name = opcode_to_string((uint8_t)best_op);
+    if (name.empty()) name = "OP(" + std::to_string(best_op) + ")";
+    if (!summary.top_expr_ops.empty()) summary.top_expr_ops += ", ";
+    summary.top_expr_ops += name + "=" + std::to_string(best_count);
+    counts[best_op] = 0;
+  }
+
+  return summary;
+}
+
+inline std::string fusion_rpn_short(const FusionRpnSummary& s) {
+  auto plural = [](size_t n, const char* singular, const char* plural) {
+    return std::to_string(n) + " " + (n == 1 ? singular : plural);
+  };
+  return std::to_string(s.decoded_ops) + " ops, " +
+         std::to_string(s.bytes) + " bytes, " +
+         plural(s.chains, "chain", "chains") + ", " +
+         plural(s.reductions, "reduction", "reductions");
+}
+
+inline std::string fusion_rpn_fields(const FusionRpnSummary& s,
+                                     const char* prefix = "") {
+  std::string p = prefix ? prefix : "";
+  return p + fusion_rpn_short(s) + ", " + p +
+         "stack pushes=" + std::to_string(s.push_ops) + ", " + p +
+         "opcode mix=[" + s.top_expr_ops + "]";
+}
+
+inline std::string fusion_op_counts(const FusionRpnSummary& s) {
+  return s.top_expr_ops.empty() ? "none" : s.top_expr_ops;
+}
+
+inline std::string fusion_rpn_expr_preview(const std::vector<uint8_t>& rpn,
+                                           size_t max_chains = 3,
+                                           size_t max_expr_chars = 120,
+                                           const std::string& input0_name =
+                                               "in0",
+                                           size_t operand_base = 1) {
+  std::vector<std::string> stack;
+  std::vector<std::string> chains;
+  size_t hidden_chains = 0;
+
+  auto clip = [&](std::string s) {
+    if (s.size() <= max_expr_chars) return s;
+    if (max_expr_chars <= 3) return std::string(max_expr_chars, '.');
+    s.resize(max_expr_chars - 3);
+    s += "...";
+    return s;
+  };
+  auto scalar_inline = [&](size_t& i) {
+    if (i + 4 >= rpn.size()) return std::string("imm(?)");
+    uint32_t bits = (uint32_t)rpn[i + 1] | ((uint32_t)rpn[i + 2] << 8) |
+                    ((uint32_t)rpn[i + 3] << 16) |
+                    ((uint32_t)rpn[i + 4] << 24);
+    i += 4;
+    return "imm(" + std::to_string((int32_t)bits) + ")";
+  };
+  auto scalar_var = [&](size_t& i) {
+    if (i + 1 >= rpn.size()) return std::string("s?");
+    return "s" + std::to_string(rpn[++i]);
+  };
+  auto binary_symbol = [](uint8_t op) -> const char* {
+    switch (op) {
+      case OP_ADD:
+      case OP_ADD_SCALAR:
+      case OP_ADD_SCALAR_VAR:
+        return "+";
+      case OP_SUB:
+      case OP_SUB_SCALAR:
+      case OP_SUB_SCALAR_VAR:
+        return "-";
+      case OP_MUL:
+      case OP_MUL_SCALAR:
+      case OP_MUL_SCALAR_VAR:
+        return "*";
+      case OP_DIV:
+      case OP_DIV_SCALAR:
+      case OP_DIV_SCALAR_VAR:
+        return "/";
+      case OP_ASR:
+      case OP_ASR_SCALAR:
+      case OP_ASR_SCALAR_VAR:
+        return ">>";
+      case OP_EQ:
+      case OP_EQ_SCALAR:
+      case OP_EQ_SCALAR_VAR:
+        return "==";
+      case OP_LT:
+      case OP_LT_SCALAR:
+      case OP_LT_SCALAR_VAR:
+        return "<";
+      case OP_GT:
+      case OP_GT_SCALAR:
+      case OP_GT_SCALAR_VAR:
+        return ">";
+      case OP_GE:
+      case OP_GE_SCALAR:
+      case OP_GE_SCALAR_VAR:
+        return ">=";
+      case OP_LE:
+      case OP_LE_SCALAR:
+      case OP_LE_SCALAR_VAR:
+        return "<=";
+      default:
+        return nullptr;
+    }
+  };
+  auto reduction_name = [](uint8_t op) -> const char* {
+    switch (op) {
+      case OP_MIN:
+        return "min";
+      case OP_MAX:
+        return "max";
+      case OP_SUM:
+        return "sum";
+      case OP_PRODUCT:
+        return "product";
+      default:
+        return "reduce";
+    }
+  };
+  auto flush_chain = [&]() {
+    if (chains.size() < max_chains) {
+      chains.push_back(stack.empty() ? "<empty>" : clip(stack.back()));
+    } else {
+      hidden_chains++;
+    }
+    stack.clear();
+  };
+
+  for (size_t i = 0; i < rpn.size(); ++i) {
+    uint8_t op = rpn[i];
+    if (op == OP_NEXT_CHAIN) {
+      flush_chain();
+    } else if (op == OP_PUSH_INPUT) {
+      stack.push_back(input0_name);
+    } else if (op >= OP_PUSH_OPERAND_0 &&
+               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
+      stack.push_back("in" +
+                      std::to_string(op - OP_PUSH_OPERAND_0 + operand_base));
+    } else if (op == OP_DUP) {
+      if (!stack.empty()) stack.push_back(stack.back());
+    } else if (op == OP_PUSH_INDEX) {
+      stack.push_back("idx");
+    } else if (op == OP_PUSH_SCALAR) {
+      stack.push_back(scalar_inline(i));
+    } else if (op == OP_PUSH_SCALAR_VAR) {
+      stack.push_back(scalar_var(i));
+    } else if (IS_OP_SCALAR(op) || IS_OP_SCALAR_VAR(op)) {
+      if (stack.empty()) {
+        i += OP_INLINE_BYTES(op);
+        continue;
+      }
+      std::string rhs = IS_OP_SCALAR(op) ? scalar_inline(i) : scalar_var(i);
+      std::string lhs = stack.back();
+      stack.pop_back();
+      const char* sym = binary_symbol(op);
+      stack.push_back(sym ? clip("(" + lhs + " " + sym + " " + rhs + ")")
+                          : clip(opcode_to_string(op) + "(" + lhs + ", " +
+                                 rhs + ")"));
+    } else if (op == OP_NEGATE || op == OP_ABS) {
+      if (stack.empty()) continue;
+      std::string v = stack.back();
+      stack.pop_back();
+      stack.push_back(op == OP_NEGATE ? clip("(-" + v + ")")
+                                      : clip("abs(" + v + ")"));
+    } else if (IS_OP_BINARY(op)) {
+      if (stack.size() < 2) continue;
+      std::string rhs = stack.back();
+      stack.pop_back();
+      std::string lhs = stack.back();
+      stack.pop_back();
+      const char* sym = binary_symbol(op);
+      stack.push_back(sym ? clip("(" + lhs + " " + sym + " " + rhs + ")")
+                          : clip(opcode_to_string(op) + "(" + lhs + ", " +
+                                 rhs + ")"));
+    } else if (op == OP_SELECT) {
+      if (stack.size() < 3) continue;
+      std::string false_val = stack.back();
+      stack.pop_back();
+      std::string true_val = stack.back();
+      stack.pop_back();
+      std::string cond = stack.back();
+      stack.pop_back();
+      stack.push_back(clip("select(" + cond + ", " + true_val + ", " +
+                           false_val + ")"));
+    } else if (IS_OP_REDUCTION(op)) {
+      if (stack.empty()) continue;
+      std::string v = stack.back();
+      stack.pop_back();
+      stack.push_back(clip(std::string(reduction_name(op)) + "(" + v + ")"));
+    } else if (op == OP_LOAD_INDIRECT) {
+      if (stack.empty() || i + 1 >= rpn.size()) continue;
+      uint8_t operand_idx = rpn[++i];
+      std::string idx = stack.back();
+      stack.pop_back();
+      stack.push_back(clip("load(in" +
+                           std::to_string(operand_idx + operand_base) + ", " +
+                           idx + ")"));
+    } else if (op == OP_ADD_INDIRECT || op == OP_APPLY_INDIRECT) {
+      size_t extra = op == OP_APPLY_INDIRECT ? 2 : 1;
+      if (stack.size() < 2 || i + extra >= rpn.size()) {
+        i += std::min(extra, rpn.size() - i - 1);
+        continue;
+      }
+      uint8_t local_idx = rpn[++i];
+      uint8_t reduce_op = op == OP_APPLY_INDIRECT ? rpn[++i] : OP_SUM;
+      std::string val = stack.back();
+      stack.pop_back();
+      std::string idx = stack.back();
+      stack.pop_back();
+      stack.push_back(clip("local" + std::to_string(local_idx) + "[" + idx +
+                           "] <- " + reduction_name(reduce_op) + "(" + val +
+                           ")"));
+    } else {
+      i += OP_INLINE_BYTES(op);
+    }
+  }
+
+  if (!rpn.empty()) flush_chain();
+  if (chains.empty()) return "<empty>";
+
+  std::ostringstream out;
+  for (size_t i = 0; i < chains.size(); ++i) {
+    if (i) out << "; ";
+    out << "chain" << i << ": " << chains[i];
+  }
+  if (hidden_chains) out << "; +" << hidden_chains << " more";
+  return out.str();
+}
+
 inline uint8_t map_to_var_op(uint8_t op) {
   switch (op) {
     case OP_ADD_SCALAR:

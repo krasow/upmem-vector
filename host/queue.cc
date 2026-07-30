@@ -1,8 +1,11 @@
 #include "queue.h"
 
 #include <cassert>
+#include <filesystem>
+#include <iomanip>
 #include <mutex>
 #include <ostream>
+#include <sstream>
 #include <thread>
 
 #include "fusion.h"
@@ -20,6 +23,8 @@
 #endif
 
 namespace {
+namespace fs = std::filesystem;
+
 [[maybe_unused]] const char* canonical_jit_type_name(
     const char* raw_type_name) {
   if (!raw_type_name) return "int32_t";
@@ -29,6 +34,113 @@ namespace {
   if (tn == "f" || tn == "float") return "float";
   if (tn == "d" || tn == "double") return "double";
   return raw_type_name;
+}
+
+std::string normalize_binary_path(std::string path) {
+  return fs::path(std::move(path)).lexically_normal().string();
+}
+
+std::string describe_binary_path(const std::string& path) {
+  if (path.empty()) return "<none>";
+
+  std::string default_path =
+      normalize_binary_path(DpuRuntime::get().get_default_binary_path());
+  std::string current_path = normalize_binary_path(path);
+  if (current_path == default_path) return "default runtime.dpu";
+
+  return current_path;
+}
+
+size_t jit_link_batch_limit() {
+  constexpr size_t kIramSafeLinkBatch = 6;
+  return JIT_BATCH_SIZE < kIramSafeLinkBatch ? JIT_BATCH_SIZE
+                                             : kIramSafeLinkBatch;
+}
+
+std::string compact_rpn_name(const std::vector<uint8_t>& rpn_ops) {
+  size_t op_count = 0;
+  size_t chain_count = rpn_ops.empty() ? 0 : 1;
+  size_t reduction_count = 0;
+  for (size_t i = 0; i < rpn_ops.size(); ++i) {
+    uint8_t op = rpn_ops[i];
+    if (op == OP_NEXT_CHAIN) {
+      chain_count++;
+    } else {
+      op_count++;
+      if (IS_OP_REDUCTION(op)) reduction_count++;
+    }
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
+  }
+
+  std::string name = "Fused Pipeline (ops=" + std::to_string(op_count) +
+                     ", bytes=" + std::to_string(rpn_ops.size());
+  if (chain_count > 1) name += ", chains=" + std::to_string(chain_count);
+  if (reduction_count > 0)
+    name += ", reductions=" + std::to_string(reduction_count);
+  name += ")";
+  return name;
+}
+
+std::string human_bytes(size_t bytes) {
+  static constexpr const char* units[] = {"B", "KiB", "MiB", "GiB"};
+  double value = static_cast<double>(bytes);
+  size_t unit = 0;
+  while (value >= 1024.0 && unit + 1 < sizeof(units) / sizeof(units[0])) {
+    value /= 1024.0;
+    unit++;
+  }
+
+  std::ostringstream out;
+  if (unit == 0) {
+    out << bytes << " " << units[unit];
+  } else {
+    out << std::fixed << std::setprecision(2) << value << " " << units[unit];
+  }
+  return out.str();
+}
+
+std::string describe_vector(detail::VectorDescRef vec, size_t transfer_bytes = 0) {
+  if (!vec) return "vec=<none>";
+
+  std::ostringstream out;
+  out << "vec#" << vec->vector_id << " dpu_vector<"
+      << (vec->type_name != nullptr ? vec->type_name : "unknown") << ">"
+      << " size=" << vec->num_elements;
+  if (transfer_bytes > 0) out << " bytes=" << human_bytes(transfer_bytes);
+  if (vec->needs_layout_materialization) out << "  layout=lazy";
+  if (vec->debug_name != nullptr && vec->debug_name[0] != '\0') {
+    out << "  name=\"" << vec->debug_name << "\"";
+  }
+  return out.str();
+}
+
+std::string describe_transfer_summary(const std::shared_ptr<Event>& e) {
+  if (e->op == Event::OperationType::DPU_TRANSFER) {
+    return "transfer=host_to_dpu";
+  }
+  if (e->op == Event::OperationType::HOST_TRANSFER) {
+    return "transfer=dpu_to_host";
+  }
+  return "name=\"" + e->slice_name + "\"";
+}
+
+std::string describe_transfer_details(const std::shared_ptr<Event>& e) {
+  std::ostringstream out;
+  if (e->op == Event::OperationType::DPU_TRANSFER) {
+    out << describe_vector(e->output, e->transfer_size);
+    return out.str();
+  }
+
+  if (e->op == Event::OperationType::HOST_TRANSFER) {
+    if (e->inputs.size() == 1) {
+      out << describe_vector(e->inputs[0], e->transfer_size);
+    } else if (!e->inputs.empty()) {
+      out << "vectors=" << e->inputs.size()
+          << " first=" << describe_vector(e->inputs[0], e->transfer_size);
+    }
+    return out.str();
+  }
+  return {};
 }
 }  // namespace
 
@@ -40,24 +152,11 @@ namespace {
 
   auto& runtime = DpuRuntime::get();
   auto& queue = runtime.get_event_queue();
-  auto& events = queue.get_active_events();
   std::recursive_mutex& mtx = queue.get_mutex();
 
   {
     std::lock_guard<std::recursive_mutex> lock(mtx);
     me->mark_finished();
-
-    while (!events.empty() && events.front()->finished) {
-      auto e = events.front();
-      queue.last_finished_id_.store(e->max_id);
-      trace::execution_end();
-      events.pop_front();
-
-      if (!events.empty()) {
-        auto next = events.front();
-        trace::execution_begin(next);
-      }
-    }
   }
 
   static std::atomic<size_t> callback_count{0};
@@ -65,7 +164,7 @@ namespace {
   if (count % 100 == 0) {
 #if ENABLE_DPU_LOGGING >= 1
     Logger& logger = DpuRuntime::get().get_logger();
-    logger.lock() << "[queue-heartbeat] callback fired (" << count
+    logger.lock(logcat::QUEUE_HEARTBEAT, 2) << "callback fired (" << count
                   << ") for id=" << me->id << std::endl;
 #endif
   }
@@ -120,6 +219,22 @@ void EventQueue::sync() {
   auto& runtime = DpuRuntime::get();
   dpu_set_t& dpu_set = runtime.dpu_set();
   CHECK_UPMEM(dpu_sync(dpu_set));
+  finalize_finished_events();
+}
+
+void EventQueue::finalize_finished_events() {
+  std::lock_guard<std::recursive_mutex> lock(mtx_);
+  while (!running_events_.empty() && running_events_.front()->finished) {
+    auto e = running_events_.front();
+    last_finished_id_.store(e->max_id);
+    trace::execution_end();
+    running_events_.pop_front();
+
+    if (!running_events_.empty()) {
+      auto next = running_events_.front();
+      trace::execution_begin(next);
+    }
+  }
 }
 
 constexpr bool NO_PROGRESS = false;
@@ -136,14 +251,17 @@ bool EventQueue::process_next() {
 
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[QUEUE-NEXT] id=" << e->id << " type=" << (int)e->op
+#endif
+
+#if ENABLE_DPU_LOGGING >= 2
+  logger.lock(logcat::QUEUE_NEXT, 2) << "id=" << e->id << " type=" << (int)e->op
                 << " deps=" << e->dependencies.size()
                 << " started=" << (int)e->started
                 << " finished=" << (int)e->finished.load() << std::endl;
 #endif
 
-#if ENABLE_DPU_LOGGING >= 1
-  logger.lock() << "[event-logger] id=" << e->id
+#if ENABLE_DPU_LOGGING >= 2
+  logger.lock(logcat::EVENT, 2) << "id=" << e->id
                 << " type=" << operationtype_to_string(e->op)
                 << " phase=started" << std::endl;
 #endif
@@ -152,22 +270,24 @@ bool EventQueue::process_next() {
 
   // Wait for dependencies
   if (!e->dependencies.empty()) {
+    finalize_finished_events();
     size_t max_dep = 0;
     for (size_t dep : e->dependencies)
       if (dep > max_dep) max_dep = dep;
-#if ENABLE_DPU_LOGGING >= 1
+#if ENABLE_DPU_LOGGING >= 2
     if (this->get_last_finished_id() < max_dep)
-      logger.lock() << "[queue-wait] id=" << e->id
+      logger.lock(logcat::QUEUE_WAIT, 2) << "id=" << e->id
                     << " waiting for max_dep=" << max_dep
                     << " (current=" << this->get_last_finished_id() << ")"
                     << std::endl;
     size_t loop_count = 0;
 #endif
     while (this->get_last_finished_id() < max_dep) {
+      finalize_finished_events();
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
-#if ENABLE_DPU_LOGGING >= 1
+#if ENABLE_DPU_LOGGING >= 2
       if (++loop_count % 1000 == 0)
-        logger.lock() << "[queue-heartbeat] id=" << e->id
+        logger.lock(logcat::QUEUE_HEARTBEAT, 2) << "id=" << e->id
                       << " dependency block on " << max_dep
                       << " (current=" << this->get_last_finished_id() << ")"
                       << std::endl;
@@ -191,9 +311,10 @@ bool EventQueue::process_next() {
         if (!try_fuse(e, next)) break;
         operations_.pop_front();
         lookahead++;
-#if ENABLE_DPU_LOGGING >= 1
-        logger.lock() << "[queue-fuse] Look-ahead fused event id=" << next->id
-                      << " into id=" << e->id << std::endl;
+#if ENABLE_DPU_LOGGING >= 2
+        logger.lock(logcat::FUSION, 2)
+            << "lookahead: child #" << next->id << " -> top #" << e->id
+            << "  slot " << lookahead << std::endl;
 #endif
         if (operations_.empty())
           std::this_thread::sleep_for(std::chrono::microseconds(50));
@@ -210,7 +331,7 @@ bool EventQueue::process_next() {
           std::this_thread::sleep_for(std::chrono::microseconds(200));
 
         auto it = operations_.begin();
-        while (pending_unique_kernels_.size() < JIT_BATCH_SIZE &&
+        while (pending_unique_kernels_.size() < jit_link_batch_limit() &&
                it != operations_.end()) {
           auto next = *it;
           if (next->op != Event::OperationType::COMPUTE) break;
@@ -229,7 +350,7 @@ bool EventQueue::process_next() {
 #if JIT
   if (e->op == Event::OperationType::COMPUTE && e->jit_future.valid()) {
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[queue-jit] Awaiting background JIT compilation for id="
+    logger.lock(logcat::QUEUE_JIT) << "Awaiting background JIT compilation for id="
                   << e->id << std::endl;
 #endif
     e->jit_binary_path = e->jit_future.get();
@@ -239,16 +360,7 @@ bool EventQueue::process_next() {
   // 4. Refined naming
   if (e->op == Event::OperationType::COMPUTE) {
     if (!e->rpn_ops.empty()) {
-      std::string ops;
-      for (size_t i = 0; i < e->rpn_ops.size(); ++i) {
-        uint8_t op = e->rpn_ops[i];
-        std::string s = opcode_to_string(op);
-        if (s.empty()) continue;
-        if (!ops.empty()) ops += ", ";
-        ops += s;
-        if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
-      }
-      e->slice_name = e->rpn_ops.size() > 2 ? "Fused: [" + ops + "]" : ops;
+      e->slice_name = compact_rpn_name(e->rpn_ops);
     } else {
       e->slice_name = kernel_id_to_string(e->kid);
     }
@@ -257,14 +369,30 @@ bool EventQueue::process_next() {
   }
 
 #if ENABLE_DPU_LOGGING >= 1
-  logger.lock() << "[queue-exec] id=" << e->id << " name=\"" << e->slice_name
-                << "\"" << std::endl;
+  if (e->op == Event::OperationType::COMPUTE) {
+    auto log = logger.lock(logcat::QUEUE_EXEC, 2);
+    log.first() << "id=" << e->id << " launch=compute";
+    log.second() << "name=\"" << e->slice_name << "\"";
+    if (!e->jit_kernel_hash.empty())
+      log << "  kernel_hash=" << e->jit_kernel_hash;
+    log << std::endl;
+  }
+#endif
+#if ENABLE_DPU_LOGGING >= 2
+  if (e->op != Event::OperationType::COMPUTE) {
+    auto log = logger.lock(logcat::QUEUE_EXEC);
+    log.first() << "id=" << e->id << " " << describe_transfer_summary(e);
+    std::string details = describe_transfer_details(e);
+    if (!details.empty()) log.second() << details;
+    log << std::endl;
+  }
 #endif
 
   // 5. Register with running events and start trace
   {
     std::lock_guard<std::recursive_mutex> lock(mtx_);
-    trace::execution_begin(e);
+    bool start_trace_now = running_events_.empty();
+    if (start_trace_now) trace::execution_begin(e);
     running_events_.push_back(e);
     current_event_ = e;
     trace::active_ops_counter(running_events_.size());
@@ -282,6 +410,7 @@ bool EventQueue::process_next() {
       std::string type_name = canonical_jit_type_name(raw_type_name);
       std::pair<std::vector<uint8_t>, std::string> sig = {e->rpn_ops,
                                                           type_name};
+      e->jit_kernel_hash = jit_signature_hash(sig);
       e->jit_binary_path = jit_compile({sig});
       e->jit_sub_kernel_idx = 0;
       e->is_locked_for_jit = true;
@@ -303,8 +432,10 @@ bool EventQueue::process_next() {
 
   if (!required_binary.empty() && required_binary != current_binary_path_) {
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[queue-jit] Switching binary to " << required_binary
-                  << " (was " << current_binary_path_ << ")" << std::endl;
+    logger.lock(logcat::QUEUE_JIT) << "Switching binary to "
+                  << describe_binary_path(required_binary) << " (was "
+                  << describe_binary_path(current_binary_path_) << ")"
+                  << std::endl;
 #endif
     trace::jit_binary_switch(current_binary_path_, required_binary);
 
@@ -318,13 +449,13 @@ bool EventQueue::process_next() {
 
     dpu_set_t& dpu_set = DpuRuntime::get().dpu_set();
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[queue-jit] Loading binary onto "
+    logger.lock(logcat::QUEUE_JIT) << "Loading binary onto "
                   << DpuRuntime::get().num_dpus() << " DPUs..." << std::endl;
 #endif
     DPU_ASSERT(dpu_load(dpu_set, required_binary.c_str(), nullptr));
     current_binary_path_ = required_binary;
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[queue-jit] Binary load successful." << std::endl;
+    logger.lock(logcat::QUEUE_JIT) << "Binary load successful." << std::endl;
 #endif
   } else if (current_binary_path_.empty()) {
     current_binary_path_ = DpuRuntime::get().get_default_binary_path();
@@ -332,8 +463,8 @@ bool EventQueue::process_next() {
 
   // 7. Dispatch
   try {
-#if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[QUEUE-DISPATCH] id=" << e->id << " type=" << (int)e->op
+#if ENABLE_DPU_LOGGING >= 2
+    logger.lock(logcat::QUEUE_DISPATCH, 2) << "id=" << e->id << " type=" << (int)e->op
                   << " begin" << std::endl;
 #endif
     switch (e->op) {
@@ -355,7 +486,8 @@ bool EventQueue::process_next() {
                    ? std::vector<detail::VectorDescRef>(e->inputs.begin() + 1,
                                                         e->inputs.end())
                    : std::vector<detail::VectorDescRef>()),
-              dynamic_kid, e->scalars, e->extra_scalars, e->extra_outputs);
+              dynamic_kid, e->scalars, e->extra_scalars, e->extra_outputs,
+              e->jit_kernel_hash);
         } else if (e->cb) {
           e->cb();
         }
@@ -377,13 +509,13 @@ bool EventQueue::process_next() {
       default:
         assert(false && "Unknown event type");
     }
-#if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[QUEUE-DISPATCH] id=" << e->id << " type=" << (int)e->op
+#if ENABLE_DPU_LOGGING >= 2
+    logger.lock(logcat::QUEUE_DISPATCH, 2) << "id=" << e->id << " type=" << (int)e->op
                   << " end" << std::endl;
 #endif
   } catch (const DpuOOMException& ex) {
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[OOM] caught for event id=" << e->id
+    logger.lock(logcat::OOM) << "caught for event id=" << e->id
                   << " started=" << e->started << " retries=" << e->oom_retries
                   << std::endl;
 #endif
@@ -405,7 +537,7 @@ bool EventQueue::process_next() {
       if (current_event_ == e) current_event_ = nullptr;
     }
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[OOM] freed failed outputs for event id=" << e->id
+    logger.lock(logcat::OOM) << "freed failed outputs for event id=" << e->id
                   << ", requeueing" << std::endl;
 #endif
     auto& alloc = DpuRuntime::get().get_allocator();
@@ -416,7 +548,7 @@ bool EventQueue::process_next() {
       if (current_event_ == e) current_event_ = nullptr;
     }
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[OOM] event id=" << e->id << " requeued" << std::endl;
+    logger.lock(logcat::OOM) << "event id=" << e->id << " requeued" << std::endl;
 #endif
     return NO_PROGRESS;
 #endif
@@ -428,9 +560,9 @@ bool EventQueue::process_next() {
 }
 
 void EventQueue::process_events(size_t wait_for_id) {
-#if ENABLE_DPU_LOGGING >= 1
+#if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[QUEUE-WAIT] begin wait_for_id=" << wait_for_id
+  logger.lock(logcat::QUEUE_WAIT, 2) << "begin wait_for_id=" << wait_for_id
                 << std::endl;
 #endif
   while (true) {
@@ -445,24 +577,25 @@ void EventQueue::process_events(size_t wait_for_id) {
 
     auto& runtime = DpuRuntime::get();
     dpu_set_t& dpu_set = runtime.dpu_set();
-#if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[QUEUE-WAIT] dpu_sync wait_for_id=" << wait_for_id
+#if ENABLE_DPU_LOGGING >= 2
+    logger.lock(logcat::QUEUE_WAIT, 2) << "dpu_sync wait_for_id=" << wait_for_id
                   << " last_finished=" << this->get_last_finished_id()
                   << std::endl;
 #endif
     CHECK_UPMEM(dpu_sync(dpu_set));
-#if ENABLE_DPU_LOGGING >= 1
-    logger.lock() << "[QUEUE-WAIT] dpu_sync done wait_for_id=" << wait_for_id
+    finalize_finished_events();
+#if ENABLE_DPU_LOGGING >= 2
+    logger.lock(logcat::QUEUE_WAIT, 2) << "dpu_sync done wait_for_id=" << wait_for_id
                   << " last_finished=" << this->get_last_finished_id()
                   << std::endl;
 #endif
 
     if (!progress) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-#if ENABLE_DPU_LOGGING >= 1
+#if ENABLE_DPU_LOGGING >= 2
     static size_t loop_count = 0;
     if (++loop_count % 1000 == 0) {
       std::lock_guard<std::recursive_mutex> lock(mtx_);
-      logger.lock() << "[queue-heartbeat] process_events waiting for "
+      logger.lock(logcat::QUEUE_HEARTBEAT, 2) << "process_events waiting for "
                     << wait_for_id
                     << " (last_finished=" << this->get_last_finished_id()
                     << " ops=" << operations_.size()
@@ -471,49 +604,53 @@ void EventQueue::process_events(size_t wait_for_id) {
     }
 #endif
   }
-#if ENABLE_DPU_LOGGING >= 1
-  logger.lock() << "[QUEUE-WAIT] end wait_for_id=" << wait_for_id
+#if ENABLE_DPU_LOGGING >= 2
+  logger.lock(logcat::QUEUE_WAIT, 2) << "end wait_for_id=" << wait_for_id
                 << " last_finished=" << this->get_last_finished_id()
                 << std::endl;
 #endif
 }
 
 void EventQueue::debug_print_queue() {
-#if ENABLE_DPU_LOGGING >= 2
+#if ENABLE_DPU_LOGGING >= 3
   Logger& logger = DpuRuntime::get().get_logger();
   if (!operations_.empty()) {
-    logger.lock() << "[EventQueue] Current queue state:" << std::endl;
+    logger.lock(logcat::EVENT_QUEUE, 3) << "pending queue" << std::endl;
     std::deque<std::shared_ptr<Event>> tmp = operations_;
     int i = 0;
     while (!tmp.empty()) {
       auto e = tmp.front();
-      logger.lock() << "\t\t" << i++ << ". id=" << e->id
-                    << " type=" << operationtype_to_string(e->op)
-                    << " started=" << e->started << " finished=" << e->finished
-                    << std::endl;
+      auto log = logger.lock(logcat::EVENT_QUEUE, 3);
+      log.second() << i++ << ". id=" << e->id
+                   << " type=" << operationtype_to_string(e->op)
+                   << " started=" << e->started
+                   << " finished=" << e->finished << std::endl;
       tmp.pop_front();
     }
   } else {
-    logger.lock() << "[EventQueue] Queue is empty." << std::endl;
+    logger.lock(logcat::EVENT_QUEUE, 3) << "pending queue empty" << std::endl;
   }
 #endif
 }
 
 void EventQueue::debug_active_events() {
-#if ENABLE_DPU_LOGGING >= 2
+#if ENABLE_DPU_LOGGING >= 3
   Logger& logger = DpuRuntime::get().get_logger();
   auto& events = get_active_events();
   std::lock_guard<std::recursive_mutex> lock(get_mutex());
   if (!events.empty()) {
-    logger.lock() << "[EventQueue] Current active events:" << std::endl;
+    logger.lock(logcat::EVENT_QUEUE, 3) << "active runners" << std::endl;
     int i = 0;
-    for (const auto& e : events)
-      logger.lock() << "\t\t" << i++ << ". id=" << e->id
-                    << " type=" << operationtype_to_string(e->op)
-                    << " started=" << e->started << " finished=" << e->finished
-                    << std::endl;
+    for (const auto& e : events) {
+      auto log = logger.lock(logcat::EVENT_QUEUE, 3);
+      log.second() << i++ << ". id=" << e->id
+                   << " type=" << operationtype_to_string(e->op)
+                   << " started=" << e->started
+                   << " finished=" << e->finished << std::endl;
+    }
   } else {
-    logger.lock() << "[EventQueue] No active events." << std::endl;
+    logger.lock(logcat::EVENT_QUEUE, 3) << "active runners empty"
+                                        << std::endl;
   }
 #endif
 }

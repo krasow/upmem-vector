@@ -39,6 +39,7 @@ class Event : public std::enable_shared_from_this<Event> {
 
   // JIT
   std::string jit_binary_path;
+  std::string jit_kernel_hash;
   bool is_locked_for_jit = false;
   int jit_sub_kernel_idx = -1;
   std::shared_future<std::string> jit_future;
@@ -87,6 +88,7 @@ class EventQueue {
   void sync();
   bool process_next();
   void process_events(size_t wait_for_id);
+  void finalize_finished_events();
   void debug_print_queue();
   void remove_dead_events();
   void debug_active_events();

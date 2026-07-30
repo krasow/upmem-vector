@@ -5,7 +5,7 @@ NR_TASKLETS ?= 12
 
 BACKEND ?= hw
 DEBUG ?= 0
-LOGGING ?= 0
+LOGGING ?= 3
 
 # this option enables experimental pipeline and fusion features
 PIPELINE ?= 0
@@ -34,7 +34,7 @@ ENABLE_AUTO_FENCING ?= 1
 ENABLE_DPU_PRINTING ?= 0
 
 # this option enables tracing with Perfetto
-TRACE ?= 0
+TRACE ?= 1
 PERFETTO_HOME ?= /scratch/david/benchmark-upmem/opt/perfetto
 
 # this option prevents the automatic removal of the JIT build directory at shutdown

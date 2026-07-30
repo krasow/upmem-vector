@@ -67,6 +67,7 @@ class allocator {
 
   // Internal helpers for raw allocation/deallocation.
   // dpu_id = DPU_BROADCAST means broadcast.
+  void materialize_descriptor_layout(detail::VectorDesc* data);
   uint32_t raw_allocate(int dpu_id, std::size_t n);
   void raw_deallocate(int dpu_id, uint32_t addr, size_t size);
 

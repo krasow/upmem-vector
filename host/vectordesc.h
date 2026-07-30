@@ -15,13 +15,16 @@ struct VectorSegment {
 };
 
 struct VectorDesc {
-  size_t num_elements;    // total number of elements
-  uint32_t element_size;  // sizeof(T)
-  uint32_t reserved_bytes;
+  uint64_t vector_id = 0;
+  size_t num_elements = 0;    // total number of elements
+  uint32_t element_size = 0;  // sizeof(T)
+  uint32_t reserved_bytes = 0;
+  size_t allocated_footprint_bytes = 0;
   /// ...
 
   // Sharded per DPU.
   std::vector<VectorSegment> desc;
+  bool needs_layout_materialization = false;
 
   bool is_reduction_result = false;
   KernelID reduction_rid;

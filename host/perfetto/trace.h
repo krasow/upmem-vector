@@ -15,6 +15,7 @@ namespace trace {
 // Library-internal opaque tracing hooks to avoid pulling Perfetto into user
 // headers. These are implemented in trace.cc using the full Perfetto SDK.
 #if TRACE == 1
+bool enabled();
 void internal_reduction_begin(uint64_t flow_id);
 void internal_reduction_end();
 void internal_to_cpu_begin(uint64_t flow_id);
@@ -33,6 +34,7 @@ void jit_compile_begin(
 void jit_compile_end();
 void jit_binary_switch(const std::string& previous, const std::string& current);
 #else
+inline bool enabled() { return false; }
 inline void internal_reduction_begin(uint64_t flow_id) { (void)flow_id; }
 inline void internal_reduction_end() {}
 inline void internal_to_cpu_begin(uint64_t flow_id) { (void)flow_id; }

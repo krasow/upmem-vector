@@ -1,11 +1,41 @@
 #include "allocator.h"
 
 #include <algorithm>
+#include <atomic>
 #include <stdexcept>
 
 #include "logger.h"
 #include "perfetto/trace.h"
 #include "runtime.h"
+
+namespace {
+std::atomic<uint64_t> next_vector_id{1};
+
+void assign_vector_id(detail::VectorDesc& vec) {
+  vec.vector_id = next_vector_id.fetch_add(1, std::memory_order_relaxed);
+}
+
+size_t align8(size_t n) { return (n + 7) & ~size_t{7}; }
+
+size_t total_allocated_footprint_from_layout(const detail::VectorDesc& vec) {
+  size_t total = 0;
+  for (const auto& segment : vec.desc) total += segment.allocated_bytes;
+  return total;
+}
+
+size_t total_allocated_footprint(size_t n, size_t reserved, size_t size_type,
+                                 size_t num_dpus) {
+  if (n == 0) return 0;
+
+  size_t elems_per_dpu = n / num_dpus;
+  size_t remainder = n % num_dpus;
+  if (elems_per_dpu * size_type == 4) elems_per_dpu = 2;
+
+  size_t base_bytes = align8(elems_per_dpu * size_type + reserved);
+  size_t remainder_bytes = align8((elems_per_dpu + 1) * size_type + reserved);
+  return (num_dpus - remainder) * base_bytes + remainder * remainder_bytes;
+}
+}  // namespace
 
 allocator::allocator(uint32_t start_addr, std::size_t dpu_mem,
                      std::size_t num_dpus)
@@ -27,11 +57,13 @@ detail::VectorDescRef allocator::allocate_upmem_vector(std::size_t n,
   if (n == 0) {
     std::lock_guard<std::recursive_mutex> lock(this->lock);
     auto vec = std::make_shared<detail::VectorDesc>();
+    assign_vector_id(*vec);
     vec->desc.resize(num_dpus_, {0, 0, 0});
     vec->ptr_allocated = true;
     vec->reserved_bytes = reserved;
     vec->element_size = size_type;
     vec->num_elements = 0;
+    vec->allocated_footprint_bytes = 0;
     return vec;
   }
   bool uniform = (n % num_dpus_ == 0) && (n / num_dpus_ * size_type >= 8);
@@ -46,16 +78,25 @@ detail::VectorDescRef allocator::allocate_upmem_vector(std::size_t n,
   if (eff * size_type == 4) eff = 2;
 
   auto vec = std::make_shared<detail::VectorDesc>();
-  for (size_t i = 0; i < num_dpus_; i++) {
-    size_t sz = (eff + (i < rem ? 1 : 0)) * size_type + reserved;
-    size_t aligned_sz = (sz + 7) & ~7;
-    vec->desc.push_back({!lazy ? raw_allocate(i, aligned_sz) : 0, (uint32_t)sz,
-                         (uint32_t)aligned_sz});
-  }
+  assign_vector_id(*vec);
   vec->ptr_allocated = !lazy;
   vec->reserved_bytes = reserved;
   vec->element_size = size_type;
   vec->num_elements = n;
+  vec->allocated_footprint_bytes =
+      total_allocated_footprint(n, reserved, size_type, num_dpus_);
+  if (lazy) {
+    vec->needs_layout_materialization = true;
+    return vec;
+  }
+
+  vec->desc.reserve(num_dpus_);
+  for (size_t i = 0; i < num_dpus_; i++) {
+    size_t sz = (eff + (i < rem ? 1 : 0)) * size_type + reserved;
+    size_t aligned_sz = align8(sz);
+    vec->desc.push_back({raw_allocate(i, aligned_sz), (uint32_t)sz,
+                         (uint32_t)aligned_sz});
+  }
   return vec;
 }
 
@@ -63,6 +104,7 @@ detail::VectorDescRef allocator::allocate_local_vector(std::size_t n,
                                                        std::size_t size_type) {
   std::lock_guard<std::recursive_mutex> lock(this->lock);
   auto vec = std::make_shared<detail::VectorDesc>();
+  assign_vector_id(*vec);
   size_t sz = n * size_type;
   size_t aligned_sz = (sz + 7) & ~7;
   for (size_t i = 0; i < num_dpus_; i++) {
@@ -73,27 +115,62 @@ detail::VectorDescRef allocator::allocate_local_vector(std::size_t n,
   vec->reserved_bytes = 0;
   vec->element_size = size_type;
   vec->num_elements = n;
+  vec->allocated_footprint_bytes = total_allocated_footprint_from_layout(*vec);
   return vec;
 }
 
 detail::VectorDescRef allocator::allocate_upmem_vector_broadcast(
     std::size_t n, std::size_t reserved, std::size_t size_type, bool lazy) {
   size_t sz = std::max((size_t)8, (n / num_dpus_) * size_type) + reserved;
-  size_t aligned_sz = (sz + 7) & ~7;
+  size_t aligned_sz = align8(sz);
   auto vec = std::make_shared<detail::VectorDesc>();
-  uint32_t addr = !lazy ? raw_allocate(DPU_BROADCAST, aligned_sz) : 0;
-  vec->desc.assign(num_dpus_, {addr, (uint32_t)sz, (uint32_t)aligned_sz});
+  assign_vector_id(*vec);
   vec->ptr_allocated = !lazy;
   vec->reserved_bytes = reserved;
   vec->element_size = size_type;
   vec->num_elements = n;
+  vec->allocated_footprint_bytes = aligned_sz * num_dpus_;
+  if (lazy) {
+    vec->needs_layout_materialization = true;
+    return vec;
+  }
+
+  uint32_t addr = raw_allocate(DPU_BROADCAST, aligned_sz);
+  vec->desc.assign(num_dpus_, {addr, (uint32_t)sz, (uint32_t)aligned_sz});
   return vec;
+}
+
+void allocator::materialize_descriptor_layout(detail::VectorDesc* data) {
+  if (!data || !data->needs_layout_materialization) return;
+
+  size_t n = data->num_elements;
+  size_t reserved = data->reserved_bytes;
+  size_t size_type = data->element_size;
+  if (n == 0) {
+    data->desc.resize(num_dpus_, {0, 0, 0});
+    data->needs_layout_materialization = false;
+    return;
+  }
+
+  size_t elems_per_dpu = n / num_dpus_;
+  size_t remainder = n % num_dpus_;
+  if (elems_per_dpu * size_type == 4) elems_per_dpu = 2;
+
+  data->desc.reserve(num_dpus_);
+  for (size_t i = 0; i < num_dpus_; i++) {
+    size_t sz = (elems_per_dpu + (i < remainder ? 1 : 0)) * size_type +
+                reserved;
+    size_t aligned_sz = align8(sz);
+    data->desc.push_back({0, (uint32_t)sz, (uint32_t)aligned_sz});
+  }
+  data->needs_layout_materialization = false;
 }
 
 void allocator::realize_allocation(detail::VectorDescRef data) {
   if (!data || data->ptr_allocated) return;
   std::lock_guard<std::recursive_mutex> lock(this->lock);
   if (data->ptr_allocated) return;  // double check after lock
+  materialize_descriptor_layout(data.get());
 
   if (is_synchronized_) {
     uint32_t addr = raw_allocate(DPU_BROADCAST, data->desc[0].allocated_bytes);

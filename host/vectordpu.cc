@@ -1,5 +1,6 @@
 #include "vectordpu.h"
 
+#include "fusion.h"
 #include "logger.h"
 #include "perfetto/trace.h"
 #include "vectordesc.h"
@@ -12,13 +13,16 @@
 
 namespace detail {
 VectorDesc::~VectorDesc() {
-  if (ptr_allocated) {
-    auto& runtime = DpuRuntime::get();
+  auto& runtime = DpuRuntime::get();
+  if (vector_id != 0) {
 #if ENABLE_DPU_LOGGING >= 1
     Logger& logger = runtime.get_logger();
-    log_deallocation(logger, type_name, num_elements,
+    log_deallocation(logger, type_name, num_elements, vector_id,
+                     allocated_footprint_bytes, !needs_layout_materialization,
                      (debug_name ? debug_name : ""), debug_file, debug_line);
 #endif
+  }
+  if (ptr_allocated) {
     runtime.get_allocator().deallocate_upmem_vector(this);
   }
 }
@@ -73,6 +77,25 @@ void vec_xfer_from_dpu(char* cpu, VectorDescRef desc) {
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
                             DPU_MRAM_HEAP_POINTER_NAME, mram_location,
                             xfer_size, DPU_XFER_ASYNC));
+}
+
+void vec_xfer_from_dpu_span(char* cpu, VectorDescRef base, size_t span_bytes) {
+  auto& runtime = DpuRuntime::get();
+  dpu_set_t& dpu_set = runtime.dpu_set();
+  dpu_set_t dpu;
+
+  uint32_t idx_dpu = 0;
+
+  DPU_FOREACH(dpu_set, dpu, idx_dpu) {
+    CHECK_UPMEM(
+        dpu_prepare_xfer(dpu, &(cpu[(size_t)idx_dpu * span_bytes])));
+  }
+
+  uint32_t mram_location = base->desc[0].ptr;
+  trace::scoped_event trace_scoped("transfer", "vec_xfer_from_dpu_batch");
+  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                            DPU_MRAM_HEAP_POINTER_NAME, mram_location,
+                            span_bytes, DPU_XFER_ASYNC));
 }
 
 void internal_launch_binary_scalar(VectorDescRef res, VectorDescRef lhs,
@@ -288,7 +311,8 @@ void internal_launch_universal_pipeline(
     const std::vector<VectorDescRef>& operands, KernelID kernel_id,
     const std::vector<uint32_t>& scalars,
     const std::vector<uint32_t>& extra_scalars,
-    const std::vector<VectorDescRef>& extra_outputs) {
+    const std::vector<VectorDescRef>& extra_outputs,
+    std::string_view kernel_hash) {
   auto& runtime = DpuRuntime::get();
   if (res) runtime.get_allocator().realize_allocation(res);
   if (init) runtime.get_allocator().realize_allocation(init);
@@ -363,7 +387,9 @@ void internal_launch_universal_pipeline(
 
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = DpuRuntime::get().get_logger();
-  log_dpu_launch_args(logger, args, nr_of_dpus);
+  FusionRpnSummary rpn_summary = summarize_fusion_rpn(ops);
+  log_dpu_launch_args(logger, args, nr_of_dpus, rpn_summary.decoded_ops,
+                      rpn_summary.chains, kernel_hash);
 #endif
 
   dpu_set_t& dpu_set = runtime.dpu_set();
@@ -408,7 +434,7 @@ void launch_unary(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (unary) kernel="
+  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (unary) kernel="
                 << kernel_id_to_string(kernel_id) << std::endl;
 #endif
 }
@@ -418,7 +444,9 @@ void launch_universal_pipeline(VectorDescRef res, VectorDescRef init,
                                const std::vector<uint8_t>& ops,
                                const std::vector<VectorDescRef>& operands,
                                KernelID kernel_id,
-                               const std::vector<uint32_t>& scalars) {
+                               const std::vector<uint32_t>& scalars,
+                               const std::vector<uint32_t>& extra_scalars,
+                               const std::vector<VectorDescRef>& extra_outputs) {
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
 
@@ -433,13 +461,17 @@ void launch_universal_pipeline(VectorDescRef res, VectorDescRef init,
   e->rpn_ops = ops;
   e->kid = kernel_id;
   e->scalars = scalars;
+  e->extra_scalars = extra_scalars;
+  e->extra_outputs = extra_outputs;
 
   // Detect reduction and flag result descriptor synchronously
-  for (uint8_t op : ops) {
-    if (op >= OP_MIN && op <= OP_PRODUCT) {
+  for (size_t i = 0; i < ops.size(); ++i) {
+    uint8_t op = ops[i];
+    if (res && op >= OP_MIN && op <= OP_PRODUCT) {
       res->is_reduction_result = true;
       res->reduction_rid = static_cast<KernelID>(op);
     }
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
   }
 
   event_queue.submit(e);
@@ -473,7 +505,7 @@ void launch_binary(VectorDescRef res, VectorDescRef lhs, VectorDescRef rhs,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (binary) kernel="
+  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (binary) kernel="
                 << kernel_id_to_string(kernel_id) << std::endl;
 #endif
 }
@@ -506,7 +538,7 @@ void launch_binary_scalar(VectorDescRef res, VectorDescRef lhs, uint32_t scalar,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (binary_scalar) kernel="
+  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (binary_scalar) kernel="
                 << kernel_id_to_string(kernel_id) << std::endl;
 #endif
 }
@@ -539,7 +571,7 @@ void launch_reduction(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (reduction) kernel="
+  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (reduction) kernel="
                 << kernel_id_to_string(kernel_id) << std::endl;
 #endif
 }

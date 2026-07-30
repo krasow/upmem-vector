@@ -1,7 +1,41 @@
 #include "fusion.h"
+#include "jit.h"
 #include "runtime.h"
 
 #if PIPELINE
+
+namespace {
+constexpr size_t MAX_SAFE_HFUSED_REDUCTION_CHAINS = 4;
+
+size_t count_reduction_chains(const std::vector<uint8_t>& rpn) {
+  size_t count = 0;
+  bool chain_has_reduction = false;
+  for (size_t i = 0; i < rpn.size(); ++i) {
+    uint8_t op = rpn[i];
+    if (op == OP_NEXT_CHAIN) {
+      if (chain_has_reduction) count++;
+      chain_has_reduction = false;
+      continue;
+    }
+    if (IS_OP_REDUCTION(op)) chain_has_reduction = true;
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
+  }
+  if (chain_has_reduction) count++;
+  return count;
+}
+
+#if JIT
+std::string fused_kernel_hash(const std::shared_ptr<Event>& e) {
+  const char* raw_type_name = nullptr;
+  if (e->output && e->output->type_name)
+    raw_type_name = e->output->type_name;
+  else if (!e->inputs.empty() && e->inputs[0])
+    raw_type_name = e->inputs[0]->type_name;
+  return jit_signature_hash(
+      Signature{e->rpn_ops, jit_canonical_type_name(raw_type_name)});
+}
+#endif
+}  // namespace
 
 // Horizontal fusion: last and e are independent chains over equal-length
 // vectors.  Both run in the same kernel pass as separate WRAM chains.
@@ -15,6 +49,12 @@ bool EventQueue::try_hfuse(std::shared_ptr<Event> last,
   std::vector<uint32_t> e_scalars;
   build_default_rpn(last, last_rpn, last_scalars);
   build_default_rpn(e, e_rpn, e_scalars);
+  size_t last_inputs_before = last->inputs.size();
+  size_t last_extra_outputs_before = last->extra_outputs.size();
+  if (count_reduction_chains(last_rpn) + count_reduction_chains(e_rpn) >
+      MAX_SAFE_HFUSED_REDUCTION_CHAINS) {
+    return false;
+  }
 
   std::vector<detail::VectorDescRef> combined = last->inputs;
   auto get_push_op = [&](detail::VectorDescRef vec) -> uint8_t {
@@ -94,21 +134,37 @@ bool EventQueue::try_hfuse(std::shared_ptr<Event> last,
   for (auto& out : e->extra_outputs)
     if (out) out->last_producer_id = last->id;
 
-  std::string ops;
-  for (size_t i = 0; i < last->rpn_ops.size(); ++i) {
-    uint8_t op = last->rpn_ops[i];
-    std::string s = opcode_to_string(op);
-    if (s.empty()) continue;
-    if (!ops.empty()) ops += ", ";
-    ops += s;
-    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
-  }
-  last->slice_name = "Horiz-Fused: [" + ops + "]";
+  FusionRpnSummary fused_summary = summarize_fusion_rpn(last->rpn_ops);
+  last->slice_name =
+      "Horiz-Fused Pipeline (ops=" + std::to_string(fused_summary.decoded_ops) +
+      ", bytes=" + std::to_string(fused_summary.bytes) +
+      ", chains=" + std::to_string(fused_summary.chains) + ")";
 
 #if ENABLE_DPU_LOGGING >= 1
-  DpuRuntime::get().get_logger().lock()
-      << "[queue-fuse] horizontally fused event id=" << e->id
-      << " into last=" << last->id << std::endl;
+  Logger& logger = DpuRuntime::get().get_logger();
+  if (logger.enabled(2)) {
+    auto log = logger.lock(logcat::FUSION);
+    log.first() << "horizontal fusion";
+    log.second() << "child #" << e->id << "..#" << e->max_id
+                 << " -> fused #" << last->id << "..#" << last->max_id
+                 << "  deps=" << last->dependencies.size();
+    log.second() << "reason=independent_same_length";
+    log.second() << "shape inputs=" << last_inputs_before << "+"
+                 << e->inputs.size() << "=>" << last->inputs.size()
+                 << "  extra_outputs=" << last_extra_outputs_before << "=>"
+                 << last->extra_outputs.size() << "  scalars="
+                 << last_scalars.size() << "+" << e_scalars.size() << "=>"
+                 << last->scalars.size();
+    log.second() << "existing expr: " << fusion_rpn_expr_preview(last_rpn, 1, 90);
+    log.second() << "new expr: " << fusion_rpn_expr_preview(e_rpn, 1, 90);
+    log.second() << "fused expr: " << fusion_rpn_expr_preview(last->rpn_ops);
+    log.second() << "kernel after: " << fusion_rpn_short(fused_summary)
+#if JIT
+                 << "  kernel_hash=" << fused_kernel_hash(last)
+#endif
+                 << "  opcode mix: " << fusion_op_counts(fused_summary)
+                 << std::endl;
+  }
 #endif
   trace::event_fused(e, last, "");
   trace::inqueue_end(e);
