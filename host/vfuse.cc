@@ -1,17 +1,17 @@
 #include "fusion.h"
 #include "jit.h"
 #include "runtime.h"
+#include "stats.h"
 
 #if PIPELINE
 
 namespace {
 std::string compact_rpn_label(const std::vector<uint8_t>& rpn) {
   FusionRpnSummary summary = summarize_fusion_rpn(rpn);
-  std::string label = "Fused Pipeline (ops=" +
-                      std::to_string(summary.decoded_ops) +
-                      ", bytes=" + std::to_string(rpn.size());
-  if (summary.chains > 1)
-    label += ", chains=" + std::to_string(summary.chains);
+  std::string label =
+      "Fused Pipeline (ops=" + std::to_string(summary.decoded_ops) +
+      ", bytes=" + std::to_string(rpn.size());
+  if (summary.chains > 1) label += ", chains=" + std::to_string(summary.chains);
   if (summary.reductions > 0)
     label += ", reductions=" + std::to_string(summary.reductions);
   label += ")";
@@ -191,14 +191,15 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
                    << "=>" << new_scalars.size();
       log.second() << "consumer expr before: "
                    << fusion_rpn_expr_preview(e->rpn_ops, 1, 90);
-      log.second() << "consumer expr after: " << fusion_rpn_expr_preview(new_rpn);
+      log.second() << "consumer expr after: "
+                   << fusion_rpn_expr_preview(new_rpn);
       log.second() << "kernel after: " << fusion_rpn_short(consumer_after)
 #if JIT
                    << "  kernel_hash="
                    << jit_signature_hash(Signature{
-                          new_rpn, jit_canonical_type_name(
-                                       e->output ? e->output->type_name
-                                                 : nullptr)})
+                          new_rpn,
+                          jit_canonical_type_name(
+                              e->output ? e->output->type_name : nullptr)})
 #endif
                    << "  opcode mix: " << fusion_op_counts(consumer_after)
                    << std::endl;
@@ -310,6 +311,7 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
         // producer.
         absorbed_vec->last_producer_id = e->id;
         it = operations_.erase(it);
+        VECTORDPU_NOTE(absorbed_producers);
 #if ENABLE_DPU_LOGGING >= 1
         Logger& logger = DpuRuntime::get().get_logger();
         if (logger.enabled(2)) {
@@ -566,17 +568,18 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   if (logger.enabled(2)) {
     auto log = logger.lock(logcat::FUSION);
     log.first() << "vertical fusion";
-    log.second() << "child #" << e->id << "..#" << e->max_id
-                 << " -> fused #" << last->id << "..#" << last->max_id
+    log.second() << "child #" << e->id << "..#" << e->max_id << " -> fused #"
+                 << last->id << "..#" << last->max_id
                  << "  deps=" << last->dependencies.size();
     log.second() << "reason=dependent_on_stack_output";
     log.second() << "shape inputs=" << last_inputs_before << "+"
                  << e->inputs.size() << "=>" << last->inputs.size()
                  << "  extra_outputs=" << last_extra_outputs_before << "=>"
-                 << last->extra_outputs.size() << "  scalars="
-                 << last_scalars.size() << "+" << e_scalars.size() << "=>"
-                 << last->scalars.size();
-    log.second() << "producer expr: " << fusion_rpn_expr_preview(last_rpn, 1, 90);
+                 << last->extra_outputs.size()
+                 << "  scalars=" << last_scalars.size() << "+"
+                 << e_scalars.size() << "=>" << last->scalars.size();
+    log.second() << "producer expr: "
+                 << fusion_rpn_expr_preview(last_rpn, 1, 90);
     log.second() << "consumer expr: "
                  << fusion_rpn_expr_preview(e_rpn, 1, 90, "producer_out", 1)
                  << "  [producer_out = producer expr]";
@@ -589,6 +592,7 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
                  << std::endl;
   }
 #endif
+  VECTORDPU_NOTE(vertical_fusions);
   trace::event_fused(e, last, "");
   trace::inqueue_end(e);
   return true;

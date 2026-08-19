@@ -78,9 +78,8 @@ inline std::string fusion_rpn_short(const FusionRpnSummary& s) {
   auto plural = [](size_t n, const char* singular, const char* plural) {
     return std::to_string(n) + " " + (n == 1 ? singular : plural);
   };
-  return std::to_string(s.decoded_ops) + " ops, " +
-         std::to_string(s.bytes) + " bytes, " +
-         plural(s.chains, "chain", "chains") + ", " +
+  return std::to_string(s.decoded_ops) + " ops, " + std::to_string(s.bytes) +
+         " bytes, " + plural(s.chains, "chain", "chains") + ", " +
          plural(s.reductions, "reduction", "reductions");
 }
 
@@ -96,12 +95,10 @@ inline std::string fusion_op_counts(const FusionRpnSummary& s) {
   return s.top_expr_ops.empty() ? "none" : s.top_expr_ops;
 }
 
-inline std::string fusion_rpn_expr_preview(const std::vector<uint8_t>& rpn,
-                                           size_t max_chains = 3,
-                                           size_t max_expr_chars = 120,
-                                           const std::string& input0_name =
-                                               "in0",
-                                           size_t operand_base = 1) {
+inline std::string fusion_rpn_expr_preview(
+    const std::vector<uint8_t>& rpn, size_t max_chains = 3,
+    size_t max_expr_chars = 120, const std::string& input0_name = "in0",
+    size_t operand_base = 1) {
   std::vector<std::string> stack;
   std::vector<std::string> chains;
   size_t hidden_chains = 0;
@@ -116,8 +113,7 @@ inline std::string fusion_rpn_expr_preview(const std::vector<uint8_t>& rpn,
   auto scalar_inline = [&](size_t& i) {
     if (i + 4 >= rpn.size()) return std::string("imm(?)");
     uint32_t bits = (uint32_t)rpn[i + 1] | ((uint32_t)rpn[i + 2] << 8) |
-                    ((uint32_t)rpn[i + 3] << 16) |
-                    ((uint32_t)rpn[i + 4] << 24);
+                    ((uint32_t)rpn[i + 3] << 16) | ((uint32_t)rpn[i + 4] << 24);
     i += 4;
     return "imm(" + std::to_string((int32_t)bits) + ")";
   };
@@ -221,9 +217,9 @@ inline std::string fusion_rpn_expr_preview(const std::vector<uint8_t>& rpn,
       std::string lhs = stack.back();
       stack.pop_back();
       const char* sym = binary_symbol(op);
-      stack.push_back(sym ? clip("(" + lhs + " " + sym + " " + rhs + ")")
-                          : clip(opcode_to_string(op) + "(" + lhs + ", " +
-                                 rhs + ")"));
+      stack.push_back(
+          sym ? clip("(" + lhs + " " + sym + " " + rhs + ")")
+              : clip(opcode_to_string(op) + "(" + lhs + ", " + rhs + ")"));
     } else if (op == OP_NEGATE || op == OP_ABS) {
       if (stack.empty()) continue;
       std::string v = stack.back();
@@ -237,9 +233,9 @@ inline std::string fusion_rpn_expr_preview(const std::vector<uint8_t>& rpn,
       std::string lhs = stack.back();
       stack.pop_back();
       const char* sym = binary_symbol(op);
-      stack.push_back(sym ? clip("(" + lhs + " " + sym + " " + rhs + ")")
-                          : clip(opcode_to_string(op) + "(" + lhs + ", " +
-                                 rhs + ")"));
+      stack.push_back(
+          sym ? clip("(" + lhs + " " + sym + " " + rhs + ")")
+              : clip(opcode_to_string(op) + "(" + lhs + ", " + rhs + ")"));
     } else if (op == OP_SELECT) {
       if (stack.size() < 3) continue;
       std::string false_val = stack.back();
@@ -248,8 +244,8 @@ inline std::string fusion_rpn_expr_preview(const std::vector<uint8_t>& rpn,
       stack.pop_back();
       std::string cond = stack.back();
       stack.pop_back();
-      stack.push_back(clip("select(" + cond + ", " + true_val + ", " +
-                           false_val + ")"));
+      stack.push_back(
+          clip("select(" + cond + ", " + true_val + ", " + false_val + ")"));
     } else if (IS_OP_REDUCTION(op)) {
       if (stack.empty()) continue;
       std::string v = stack.back();
@@ -390,8 +386,7 @@ inline void append_rpn_terms(std::vector<std::vector<uint8_t>>& terms,
 }
 
 inline bool append_rpn_token_with_inline(const std::vector<uint8_t>& in,
-                                         size_t& i,
-                                         std::vector<uint8_t>& out) {
+                                         size_t& i, std::vector<uint8_t>& out) {
   uint8_t op = in[i];
   out.push_back(op);
   size_t inline_bytes = OP_INLINE_BYTES(op);
@@ -489,8 +484,7 @@ inline std::vector<uint8_t> normalize_associative_rpn(
     uint8_t op = in[i];
     if (op == OP_NEXT_CHAIN) {
       std::vector<uint8_t> normalized;
-      if (chain.empty() ||
-          !normalize_associative_rpn_chain(chain, normalized))
+      if (chain.empty() || !normalize_associative_rpn_chain(chain, normalized))
         return in;
       out.insert(out.end(), normalized.begin(), normalized.end());
       out.push_back(OP_NEXT_CHAIN);

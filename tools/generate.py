@@ -6,7 +6,7 @@ class DPUOp:
         self.type = type
         self.kid = kid
 
-class DPUBinaryOp(DPUOp):    
+class DPUBinaryOp(DPUOp):
     def generate_macro(self, out):
         out.write(f"DEFINE_BINARY_KERNEL({self.type}, {self.name}, {self.symbol})\n")
     def kernel_name(self):
@@ -15,7 +15,7 @@ class DPUBinaryOp(DPUOp):
     def make(name, symbol):
         return lambda type, kid: DPUBinaryOp(name, symbol, type, kid)
 
-class DPUBinaryScalarOp(DPUOp):    
+class DPUBinaryScalarOp(DPUOp):
     def generate_macro(self, out):
         out.write(f"DEFINE_BINARY_SCALAR_KERNEL({self.type}, {self.name}, {self.symbol})\n")
     def kernel_name(self):
@@ -40,9 +40,9 @@ class DPUUnaryOp(DPUOp):
 
     def make(name, symbol):
         return lambda type, kid: DPUUnaryOp(name, symbol, type, kid)
-    
 
-class DPUReduceOp(DPUOp):    
+
+class DPUReduceOp(DPUOp):
     def generate_macro(self, out):
         out.write(f"DEFINE_REDUCTION_KERNEL({self.type}, {self.name}, {self.symbol})\n")
     def kernel_name(self):
@@ -95,7 +95,7 @@ grouped_ops = []
 kernel_id = 0
 for type in types:
     group = []
-    
+
     # Binary Ops
     for op in ops:
         if isinstance(op('int32_t', 0), DPUBinaryOp):
@@ -105,7 +105,7 @@ for type in types:
              all_ops.append((kernel_id, op_instance))
              group.append(op_instance)
              kernel_id += 1
-    
+
     # Binary Scalar Ops
     for op in ops:
         if isinstance(op('int32_t', 0), DPUBinaryOp):
@@ -117,7 +117,7 @@ for type in types:
              all_ops.append((kernel_id, op_instance))
              group.append(op_instance)
              kernel_id += 1
-    
+
     # Individual Unary Ops (Restored)
     for op in ops:
         if isinstance(op('int32_t', 0), DPUUnaryOp):
@@ -172,7 +172,7 @@ pipeline_ops = [
     ('gt_scalar', 'GT_SCALAR'),
     ('ge_scalar', 'GE_SCALAR'),
     ('le_scalar', 'LE_SCALAR'),
-    # Reduction 
+    # Reduction
     ('min', 'MIN'),
     ('max', 'MAX'),
     ('sum', 'SUM'),
@@ -228,7 +228,7 @@ with open("common/opcodes.h", "w") as out:
     for idx, (name, symbol) in enumerate(pipeline_ops):
         out.write(f'    OP_{symbol} = {idx},\n')
     out.write('};\n\n')
-    
+
     # Generate classification macros
     out.write('#define IS_OP_STACK(op) ((op) >= OP_PUSH_INPUT && (op) <= OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1)\n')
     out.write('#define IS_OP_UNARY(op) ((op) >= OP_NEGATE && (op) <= OP_ABS)\n')
@@ -265,7 +265,7 @@ with open("dpu/kernels.h", "w") as out:
 
     for id, op in all_ops:
         out.write(f'#define KERNEL_ID_{op.kernel_name().upper()} {id}\n')
-    
+
     # Generate macros (definitions) first
     for id, op in all_ops:
         if op.name == "universal_pipeline":
@@ -304,12 +304,12 @@ with open("host/opinfo.h", "w") as out:
              else:
                 out.write(f'    static constexpr int {op.name} = {op.kid};\n')
 
-        
+
         # Add pipeline opcodes to OpInfo
         for idx, (name, symbol) in enumerate(pipeline_ops):
             if name != 'identity': # optional check
                 out.write(f'    static constexpr int {name}_op = {idx};\n')
-        
+
         out.write('};\n\n')
 
 with open("host/kernelids.h", "w") as out:
@@ -358,7 +358,7 @@ with open("host/kernelids.h", "w") as out:
         else:
             category = 'KERNEL_UNKNOWN'
             op_enum = 'KERNEL_OP_ADD' # dummy
-            
+
         name = f'"{op.kernel_name().upper()}"'
         out.write(f'    {{ {id}, KERNEL_TYPE_{op.type.upper()}, {category}, {op_enum}, {name} }},\n')
     out.write('};\n')

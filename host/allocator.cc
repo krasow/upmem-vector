@@ -94,8 +94,8 @@ detail::VectorDescRef allocator::allocate_upmem_vector(std::size_t n,
   for (size_t i = 0; i < num_dpus_; i++) {
     size_t sz = (eff + (i < rem ? 1 : 0)) * size_type + reserved;
     size_t aligned_sz = align8(sz);
-    vec->desc.push_back({raw_allocate(i, aligned_sz), (uint32_t)sz,
-                         (uint32_t)aligned_sz});
+    vec->desc.push_back(
+        {raw_allocate(i, aligned_sz), (uint32_t)sz, (uint32_t)aligned_sz});
   }
   return vec;
 }
@@ -158,8 +158,8 @@ void allocator::materialize_descriptor_layout(detail::VectorDesc* data) {
 
   data->desc.reserve(num_dpus_);
   for (size_t i = 0; i < num_dpus_; i++) {
-    size_t sz = (elems_per_dpu + (i < remainder ? 1 : 0)) * size_type +
-                reserved;
+    size_t sz =
+        (elems_per_dpu + (i < remainder ? 1 : 0)) * size_type + reserved;
     size_t aligned_sz = align8(sz);
     data->desc.push_back({0, (uint32_t)sz, (uint32_t)aligned_sz});
   }

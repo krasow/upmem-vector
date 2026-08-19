@@ -32,7 +32,7 @@ def parse_build_config(config_path):
 def generate_config_h(config, output_path):
     """Generate config.h from configuration dictionary."""
     header_guard = "CONFIG_H"
-    
+
     lines = [
         f"#ifndef {header_guard}",
         f"#define {header_guard}",
@@ -40,11 +40,11 @@ def generate_config_h(config, output_path):
         "/* Auto-generated from build.config */",
         "",
     ]
-    
+
     for key, value in config.items():
         # Convert to macro format (uppercase, spaces to underscores)
         macro_name = key.upper().replace(' ', '_').replace('-', '_')
-        
+
         # Determine if value is numeric or string
         if value.isdigit():
             # Numeric value
@@ -56,12 +56,12 @@ def generate_config_h(config, output_path):
         else:
             # String value
             lines.append(f"#define {macro_name} \"{value}\"")
-    
+
     lines.extend([
         "",
         f"#endif /* {header_guard} */",
     ])
-    
+
     content = '\n'.join(lines)
     try:
         if os.path.exists(output_path):
@@ -83,7 +83,7 @@ def main():
     repo_root = script_dir.parent
     build_config = repo_root / "build.config"
     output_config_h = repo_root / "common" / "config.h"
-    
+
     # Parse and generate
     config = parse_build_config(str(build_config))
     generate_config_h(config, str(output_config_h))

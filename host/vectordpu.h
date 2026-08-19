@@ -22,8 +22,7 @@
 namespace std {
 struct source_location {
   constexpr source_location(const char* file = "unknown", int line = 0,
-                            int column = 0,
-                            const char* function = "unknown")
+                            int column = 0, const char* function = "unknown")
       : file_(file), line_(line), column_(column), function_(function) {}
   static source_location current() { return {}; }
   constexpr const char* file_name() const { return file_; }
@@ -275,9 +274,7 @@ class dpu_future_vector {
   using result_type = typename dpu_vector<T>::reduction_result_t;
 
   void reserve(size_t count) { futures_.reserve(count); }
-  void push_back(future_type future) {
-    futures_.push_back(std::move(future));
-  }
+  void push_back(future_type future) { futures_.push_back(std::move(future)); }
 
   size_t size() const { return futures_.size(); }
   bool empty() const { return futures_.empty(); }
@@ -305,9 +302,9 @@ class dpu_reduction_batch {
   dpu_reduction_batch& operator=(dpu_reduction_batch&&) noexcept = default;
 
   template <typename F>
-  lazy_reduction_result<T> add(
-      F&& build, const std::vector<dpu_vector<T>>& operands = {},
-      const std::vector<uint32_t>& scalars = {});
+  lazy_reduction_result<T> add(F&& build,
+                               const std::vector<dpu_vector<T>>& operands = {},
+                               const std::vector<uint32_t>& scalars = {});
   void submit();
 
  private:
@@ -384,12 +381,12 @@ class dpu_pipeline_expr {
   dpu_pipeline_expr operator*(T rhs) const {
     return append_scalar_op(OP_MUL_SCALAR, rhs);
   }
-	  dpu_pipeline_expr operator/(T rhs) const {
-	    return append_scalar_op(OP_DIV_SCALAR, rhs);
-	  }
-	  dpu_pipeline_expr operator==(T rhs) const {
-	    return append_scalar_op(OP_EQ_SCALAR, rhs);
-	  }
+  dpu_pipeline_expr operator/(T rhs) const {
+    return append_scalar_op(OP_DIV_SCALAR, rhs);
+  }
+  dpu_pipeline_expr operator==(T rhs) const {
+    return append_scalar_op(OP_EQ_SCALAR, rhs);
+  }
 
   const std::vector<uint8_t>& ops() const { return ops_; }
 
@@ -452,8 +449,7 @@ class dpu_pipeline_expr {
     if (rhs.ops_.size() == 2 && rhs.ops_[0] == OP_PUSH_SCALAR_VAR &&
         op >= OP_ADD && op <= OP_LE) {
       auto out = *this;
-      out.ops_.push_back(
-          (uint8_t)(op + (OP_ADD_SCALAR_VAR - OP_ADD)));
+      out.ops_.push_back((uint8_t)(op + (OP_ADD_SCALAR_VAR - OP_ADD)));
       out.ops_.push_back(rhs.ops_[1]);
       return out;
     }
@@ -607,13 +603,12 @@ class dpu_pipeline_context {
                     const dpu_pipeline_expr<T>& index, T value) {
     local_reduce(local, index, dpu_pipeline_expr<T>::scalar(value));
   }
-  void local_sum(dpu_local_vector<T>& local,
-                 const dpu_pipeline_expr<T>& index,
+  void local_sum(dpu_local_vector<T>& local, const dpu_pipeline_expr<T>& index,
                  const dpu_pipeline_expr<T>& value) {
     local_reduce(local, index, value);
   }
-  void local_sum(dpu_local_vector<T>& local,
-                 const dpu_pipeline_expr<T>& index, T value) {
+  void local_sum(dpu_local_vector<T>& local, const dpu_pipeline_expr<T>& index,
+                 T value) {
     local_reduce(local, index, value);
   }
 
@@ -667,13 +662,12 @@ void internal_launch_reduction(VectorDescRef res, VectorDescRef rhs,
                                KernelID kernel_id);
 
 #if PIPELINE
-void launch_universal_pipeline(VectorDescRef res, VectorDescRef init,
-                               const std::vector<uint8_t>& ops,
-                               const std::vector<VectorDescRef>& operands,
-                               KernelID kernel_id,
-                               const std::vector<uint32_t>& scalars = {},
-                               const std::vector<uint32_t>& extra_scalars = {},
-                               const std::vector<VectorDescRef>& extra_outputs = {});
+void launch_universal_pipeline(
+    VectorDescRef res, VectorDescRef init, const std::vector<uint8_t>& ops,
+    const std::vector<VectorDescRef>& operands, KernelID kernel_id,
+    const std::vector<uint32_t>& scalars = {},
+    const std::vector<uint32_t>& extra_scalars = {},
+    const std::vector<VectorDescRef>& extra_outputs = {});
 
 void internal_launch_universal_pipeline(
     VectorDescRef res, VectorDescRef init, const std::vector<uint8_t>& ops,

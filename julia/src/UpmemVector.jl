@@ -21,7 +21,7 @@ end
 """
     sync()
 
-Synchronize all DPUs: blocks until all pending operations on all vectors 
+Synchronize all DPUs: blocks until all pending operations on all vectors
 complete.
 """
 function sync()
@@ -31,14 +31,14 @@ end
 """
     retry_on_oom(f)
 
-Executes function `f`. If a DPU OOM exception is caught, triggers Julia GC 
+Executes function `f`. If a DPU OOM exception is caught, triggers Julia GC
 and retries once.
 """
 function retry_on_oom(f)
     try
         return f()
     catch e
-        # CxxWrap throws exceptions as CxxException. 
+        # CxxWrap throws exceptions as CxxException.
         # We check the message for "DPU OOM".
         if occursin("DPU OOM", sprint(showerror, e))
             @warn "DPU OOM detected. Syncing and triggering GC..."

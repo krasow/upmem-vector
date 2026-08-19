@@ -3,7 +3,7 @@
 please run to commit stuff
 
 ```bash
-bash format.sh 
+bash format.sh
 ```
 
 to run the test suite, enable the upmem env

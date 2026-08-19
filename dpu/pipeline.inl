@@ -15,7 +15,8 @@
     __mram_ptr TYPE *res_ptrs[MAX_HFUSE_CHAINS];                               \
     res_ptrs[0] = rs_ptr;                                                      \
     for (int r = 1; r < MAX_HFUSE_CHAINS; r++)                                 \
-      res_ptrs[r] = (__mram_ptr TYPE *)(args.pipeline.extra_res_offsets[r - 1]);\
+      res_ptrs[r] =                                                            \
+          (__mram_ptr TYPE *)(args.pipeline.extra_res_offsets[r - 1]);         \
                                                                                \
     /* Workspace Layout: input(0), operands(1-3), scratch(4) */                \
     TYPE *input_blk = (TYPE *)dpu_workspace[id];                               \
@@ -37,8 +38,8 @@
     /* Pre-scan for operands and reductions */                                 \
     bool uses_input = false;                                                   \
     bool uses_op[MAX_VFUSE_INPUTS] = {false};                                  \
-    int max_used_op = -1;                                                       \
-    uint32_t scan_chain = 0;                                                    \
+    int max_used_op = -1;                                                      \
+    uint32_t scan_chain = 0;                                                   \
     oi = 0;                                                                    \
     while (oi < n_ops) {                                                       \
       uint8_t op = args.pipeline.ops[oi];                                      \
@@ -59,7 +60,10 @@
         oi += 2; /* Opcode + 1 byte scalar index */                            \
         continue;                                                              \
       }                                                                        \
-      if (IS_OP_ARG_K(op)) { oi += 2; continue; } /* Opcode + 1 byte k */      \
+      if (IS_OP_ARG_K(op)) {                                                   \
+        oi += 2;                                                               \
+        continue;                                                              \
+      } /* Opcode + 1 byte k */                                                \
       if (op == OP_PUSH_INPUT)                                                 \
         uses_input = true;                                                     \
       else if (op >= OP_PUSH_OPERAND_0 &&                                      \
@@ -67,8 +71,7 @@
         int op_idx = op - OP_PUSH_OPERAND_0;                                   \
         uses_op[op_idx] = true;                                                \
         if (op_idx > max_used_op) max_used_op = op_idx;                        \
-      }                                                                        \
-      else if (IS_OP_REDUCTION(op)) {                                          \
+      } else if (IS_OP_REDUCTION(op)) {                                        \
         r_op[scan_chain] = op;                                                 \
         has_r[scan_chain] = true;                                              \
       }                                                                        \
@@ -129,7 +132,7 @@
       TYPE *st_ptr[MAX_PIPELINE_STACK_DEPTH];                                  \
       bool st_is_temp[MAX_PIPELINE_STACK_DEPTH];                               \
       uint32_t sp = 0;                                                         \
-      uint32_t chain_idx = 0;                                                   \
+      uint32_t chain_idx = 0;                                                  \
                                                                                \
       oi = 0;                                                                  \
       while (oi < n_ops) {                                                     \
@@ -236,8 +239,7 @@
           TYPE *s1 = st_ptr[sp - 1];                                           \
           uint8_t idx = args.pipeline.ops[oi + 1];                             \
           TYPE scalar = (TYPE)args.pipeline.scalars[idx];                      \
-          uint8_t base =                                                       \
-              op - (OP_ADD_SCALAR_VAR - OP_ADD_SCALAR);                        \
+          uint8_t base = op - (OP_ADD_SCALAR_VAR - OP_ADD_SCALAR);             \
                                                                                \
           if (!st_is_temp[sp - 1]) {                                           \
             TYPE *dest = scratch_blks[sp - 1];                                 \
@@ -478,7 +480,7 @@
           sp -= (kk - 1);                                                      \
           st_ptr[sp - 1] = arg_out;                                            \
           st_is_temp[sp - 1] = true;                                           \
-          oi++; /* consume k byte; trailing oi++ consumes the op */            \
+          oi++;  /* consume k byte; trailing oi++ consumes the op */           \
         } else { /* REDUCTION */                                               \
           TYPE *s = st_ptr[--sp];                                              \
           switch (op) {                                                        \

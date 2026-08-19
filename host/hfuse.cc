@@ -1,6 +1,7 @@
 #include "fusion.h"
 #include "jit.h"
 #include "runtime.h"
+#include "stats.h"
 
 #if PIPELINE
 
@@ -143,17 +144,18 @@ bool EventQueue::try_hfuse(std::shared_ptr<Event> last,
   if (logger.enabled(2)) {
     auto log = logger.lock(logcat::FUSION);
     log.first() << "horizontal fusion";
-    log.second() << "child #" << e->id << "..#" << e->max_id
-                 << " -> fused #" << last->id << "..#" << last->max_id
+    log.second() << "child #" << e->id << "..#" << e->max_id << " -> fused #"
+                 << last->id << "..#" << last->max_id
                  << "  deps=" << last->dependencies.size();
     log.second() << "reason=independent_same_length";
     log.second() << "shape inputs=" << last_inputs_before << "+"
                  << e->inputs.size() << "=>" << last->inputs.size()
                  << "  extra_outputs=" << last_extra_outputs_before << "=>"
-                 << last->extra_outputs.size() << "  scalars="
-                 << last_scalars.size() << "+" << e_scalars.size() << "=>"
-                 << last->scalars.size();
-    log.second() << "existing expr: " << fusion_rpn_expr_preview(last_rpn, 1, 90);
+                 << last->extra_outputs.size()
+                 << "  scalars=" << last_scalars.size() << "+"
+                 << e_scalars.size() << "=>" << last->scalars.size();
+    log.second() << "existing expr: "
+                 << fusion_rpn_expr_preview(last_rpn, 1, 90);
     log.second() << "new expr: " << fusion_rpn_expr_preview(e_rpn, 1, 90);
     log.second() << "fused expr: " << fusion_rpn_expr_preview(last->rpn_ops);
     log.second() << "kernel after: " << fusion_rpn_short(fused_summary)
@@ -164,6 +166,7 @@ bool EventQueue::try_hfuse(std::shared_ptr<Event> last,
                  << std::endl;
   }
 #endif
+  VECTORDPU_NOTE(horizontal_fusions);
   trace::event_fused(e, last, "");
   trace::inqueue_end(e);
   return true;

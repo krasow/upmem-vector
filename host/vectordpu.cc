@@ -87,8 +87,7 @@ void vec_xfer_from_dpu_span(char* cpu, VectorDescRef base, size_t span_bytes) {
   uint32_t idx_dpu = 0;
 
   DPU_FOREACH(dpu_set, dpu, idx_dpu) {
-    CHECK_UPMEM(
-        dpu_prepare_xfer(dpu, &(cpu[(size_t)idx_dpu * span_bytes])));
+    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu[(size_t)idx_dpu * span_bytes])));
   }
 
   uint32_t mram_location = base->desc[0].ptr;
@@ -434,19 +433,19 @@ void launch_unary(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (unary) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (unary) kernel=" << kernel_id_to_string(kernel_id)
+      << std::endl;
 #endif
 }
 
 #if PIPELINE
-void launch_universal_pipeline(VectorDescRef res, VectorDescRef init,
-                               const std::vector<uint8_t>& ops,
-                               const std::vector<VectorDescRef>& operands,
-                               KernelID kernel_id,
-                               const std::vector<uint32_t>& scalars,
-                               const std::vector<uint32_t>& extra_scalars,
-                               const std::vector<VectorDescRef>& extra_outputs) {
+void launch_universal_pipeline(
+    VectorDescRef res, VectorDescRef init, const std::vector<uint8_t>& ops,
+    const std::vector<VectorDescRef>& operands, KernelID kernel_id,
+    const std::vector<uint32_t>& scalars,
+    const std::vector<uint32_t>& extra_scalars,
+    const std::vector<VectorDescRef>& extra_outputs) {
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
 
@@ -505,8 +504,9 @@ void launch_binary(VectorDescRef res, VectorDescRef lhs, VectorDescRef rhs,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (binary) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (binary) kernel=" << kernel_id_to_string(kernel_id)
+      << std::endl;
 #endif
 }
 
@@ -538,8 +538,9 @@ void launch_binary_scalar(VectorDescRef res, VectorDescRef lhs, uint32_t scalar,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (binary_scalar) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (binary_scalar) kernel="
+      << kernel_id_to_string(kernel_id) << std::endl;
 #endif
 }
 
@@ -571,8 +572,9 @@ void launch_reduction(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock(logcat::QUEUE_APPEND, 2) << "type=COMPUTE (reduction) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (reduction) kernel=" << kernel_id_to_string(kernel_id)
+      << std::endl;
 #endif
 }
 

@@ -1,13 +1,13 @@
 #include "logger.h"
 
-#include "allocator.h"
-#include "kernelids.h"
-#include "queue.h"
-
 #include <filesystem>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+
+#include "allocator.h"
+#include "kernelids.h"
+#include "queue.h"
 
 // External declaration for KERNEL_COUNT from generated headers if possible,
 // or use a safe check.
@@ -131,9 +131,8 @@ void print_vector_desc(Logger& logger, detail::VectorDescRef desc,
 
 void log_allocation(Logger& logger, const std::type_info& type, size_t n,
                     uint64_t vector_id, size_t memory_bytes,
-                    bool has_materialized_layout,
-                    std::string_view debug_name, const char* debug_file,
-                    int debug_line,
+                    bool has_materialized_layout, std::string_view debug_name,
+                    const char* debug_file, int debug_line,
                     bool is_allocation) {
   log_allocation(logger, type.name(), n, vector_id, memory_bytes,
                  has_materialized_layout, debug_name, debug_file, debug_line,
@@ -142,26 +141,22 @@ void log_allocation(Logger& logger, const std::type_info& type, size_t n,
 
 void log_allocation(Logger& logger, const char* type_name, size_t n,
                     uint64_t vector_id, size_t memory_bytes,
-                    bool has_materialized_layout,
-                    std::string_view debug_name, const char* debug_file,
-                    int debug_line,
+                    bool has_materialized_layout, std::string_view debug_name,
+                    const char* debug_file, int debug_line,
                     bool is_allocation) {
   if (type_name == nullptr) type_name = "unknown";
   MemoryTrackerUpdate memory =
       update_memory_tracker(vector_id, memory_bytes, is_allocation);
   auto log = logger.lock(logcat::MEMORY, has_materialized_layout ? 1 : 2);
-  log.first() << (is_allocation ? "alloc" : "free ")
-              << " vec#" << vector_id
+  log.first() << (is_allocation ? "alloc" : "free ") << " vec#" << vector_id
               << " dpu_vector<" << type_name << ">"
-              << " size=" << n
-              << " bytes=" << format_bytes(memory.event_bytes)
+              << " size=" << n << " bytes=" << format_bytes(memory.event_bytes)
               << " active=" << format_bytes(memory.active_bytes);
   if (!debug_name.empty()) log << " name=\"" << debug_name << "\"";
   if (!has_materialized_layout) log << " lazy";
 
-  bool has_source =
-      debug_file != nullptr && std::string_view(debug_file) != "unknown" &&
-      debug_line > 0;
+  bool has_source = debug_file != nullptr &&
+                    std::string_view(debug_file) != "unknown" && debug_line > 0;
   if (has_source) {
     log.second();
     log << "at " << absolute_source_path(debug_file) << ":" << debug_line;
@@ -179,24 +174,21 @@ void log_dpu_launch_args(Logger& logger, const DPU_LAUNCH_ARGS* args,
   auto log = logger.lock(logcat::TASK);
   if (fused_pipeline) {
     log.first() << "launch=fused_pipeline";
-    log.second()
-        << "dpus=" << nr_of_dpus
-        << "  base_task="
-        << kernel_id_to_string(static_cast<KernelID>(first.kernel))
-        << "  base_type="
-        << ktype_to_string(static_cast<KernelCategory>(first.ktype))
-        << "  fused_event_ops=" << fused_event_ops
-        << "  fused_event_chains=" << fused_event_chains;
+    log.second() << "dpus=" << nr_of_dpus << "  base_task="
+                 << kernel_id_to_string(static_cast<KernelID>(first.kernel))
+                 << "  base_type="
+                 << ktype_to_string(static_cast<KernelCategory>(first.ktype))
+                 << "  fused_event_ops=" << fused_event_ops
+                 << "  fused_event_chains=" << fused_event_chains;
     if (!kernel_hash.empty()) log << "  kernel_hash=" << kernel_hash;
     log << std::endl;
   } else {
     log.first() << "launch=kernel";
-    log.second()
-        << "dpus=" << nr_of_dpus
-        << "  kernel=" << kernel_id_to_string(static_cast<KernelID>(first.kernel))
-        << "  type="
-        << ktype_to_string(static_cast<KernelCategory>(first.ktype))
-        << std::endl;
+    log.second() << "dpus=" << nr_of_dpus << "  kernel="
+                 << kernel_id_to_string(static_cast<KernelID>(first.kernel))
+                 << "  type="
+                 << ktype_to_string(static_cast<KernelCategory>(first.ktype))
+                 << std::endl;
   }
 
 // the following code is gross, but it's just for logging purposes

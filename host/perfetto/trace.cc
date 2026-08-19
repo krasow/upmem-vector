@@ -1,9 +1,9 @@
 #include "perfetto/trace.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -243,11 +243,10 @@ static std::string summarize_top_counts(const std::vector<std::string>& tokens,
 
   std::vector<std::pair<std::string, size_t>> sorted(counts.begin(),
                                                      counts.end());
-  std::sort(sorted.begin(), sorted.end(),
-            [](const auto& a, const auto& b) {
-              if (a.second != b.second) return a.second > b.second;
-              return a.first < b.first;
-            });
+  std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+    if (a.second != b.second) return a.second > b.second;
+    return a.first < b.first;
+  });
 
   std::ostringstream out;
   for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
@@ -275,13 +274,12 @@ static std::string summarize_repeated_windows(
   std::vector<std::pair<std::string, size_t>> sorted;
   for (const auto& entry : windows)
     if (entry.second > 1) sorted.push_back(entry);
-  std::sort(sorted.begin(), sorted.end(),
-            [](const auto& a, const auto& b) {
-              if (a.second != b.second) return a.second > b.second;
-              if (a.first.size() != b.first.size())
-                return a.first.size() > b.first.size();
-              return a.first < b.first;
-            });
+  std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+    if (a.second != b.second) return a.second > b.second;
+    if (a.first.size() != b.first.size())
+      return a.first.size() > b.first.size();
+    return a.first < b.first;
+  });
 
   std::ostringstream out;
   for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
@@ -339,16 +337,15 @@ static size_t estimate_jit_unique_exprs(const std::vector<uint8_t>& ops) {
       if (stack.empty()) continue;
       std::string v = stack.back();
       stack.pop_back();
-      stack.push_back(
-          make_expr("unary:" + std::to_string(op) + ":" + v));
+      stack.push_back(make_expr("unary:" + std::to_string(op) + ":" + v));
     } else if (IS_OP_BINARY(op)) {
       if (stack.size() < 2) continue;
       std::string rhs = stack.back();
       stack.pop_back();
       std::string lhs = stack.back();
       stack.pop_back();
-      stack.push_back(make_expr("binary:" + std::to_string(op) + ":" + lhs +
-                                ":" + rhs));
+      stack.push_back(
+          make_expr("binary:" + std::to_string(op) + ":" + lhs + ":" + rhs));
     } else if (IS_OP_TERNARY(op)) {
       if (stack.size() < 3) continue;
       std::string false_val = stack.back();
@@ -357,8 +354,8 @@ static size_t estimate_jit_unique_exprs(const std::vector<uint8_t>& ops) {
       stack.pop_back();
       std::string cond = stack.back();
       stack.pop_back();
-      stack.push_back(make_expr("select:" + cond + ":" + true_val + ":" +
-                                false_val));
+      stack.push_back(
+          make_expr("select:" + cond + ":" + true_val + ":" + false_val));
     } else if (IS_OP_REDUCTION(op)) {
       if (!stack.empty()) stack.pop_back();
     } else if (op == OP_PUSH_INDEX) {
@@ -371,8 +368,8 @@ static size_t estimate_jit_unique_exprs(const std::vector<uint8_t>& ops) {
       uint8_t operand = ops[++i];
       std::string idx = stack.back();
       stack.pop_back();
-      stack.push_back(make_expr("load_indirect:" + std::to_string(operand) +
-                                ":" + idx));
+      stack.push_back(
+          make_expr("load_indirect:" + std::to_string(operand) + ":" + idx));
     } else if (op == OP_ADD_INDIRECT || op == OP_APPLY_INDIRECT) {
       size_t extra = (op == OP_APPLY_INDIRECT) ? 2 : 1;
       if (i + extra < ops.size()) i += extra;
@@ -453,7 +450,8 @@ static std::string vector_to_string(detail::VectorDescRef vec) {
 
 static std::string get_pipeline_breakdown(const Event& e) {
   if (e.rpn_ops.empty()) return "";
-  if (count_decoded_rpn_ops(e.rpn_ops) > 256) return summarize_rpn_ops(e.rpn_ops);
+  if (count_decoded_rpn_ops(e.rpn_ops) > 256)
+    return summarize_rpn_ops(e.rpn_ops);
 
   std::string breakdown;
   std::vector<std::string> stack;
@@ -510,9 +508,8 @@ static std::string get_pipeline_breakdown(const Event& e) {
       std::string cond = stack.back();
       stack.pop_back();
       std::string res = "st[" + std::to_string(stack.size()) + "]";
-      breakdown += std::to_string(op_idx++) + ". " + res +
-                   " = SELECT(" + cond + ", " + true_val + ", " +
-                   false_val + ")\n";
+      breakdown += std::to_string(op_idx++) + ". " + res + " = SELECT(" + cond +
+                   ", " + true_val + ", " + false_val + ")\n";
       stack.push_back(res);
     } else if (IS_OP_SCALAR(op)) {
       if (stack.size() < 1) {
@@ -693,12 +690,13 @@ void shutdown() {
   if (!tracing_enabled_) return;
   if (tracing_session_) {
     Logger& logger = DpuRuntime::get().get_logger();
-    logger.lock(logcat::TRACE_IO) << "Flushing TrackEvent buffers..." << std::endl;
+    logger.lock(logcat::TRACE_IO)
+        << "Flushing TrackEvent buffers..." << std::endl;
     perfetto::TrackEvent::Flush();
     logger.lock(logcat::TRACE_IO) << "Flushing tracing session..." << std::endl;
     bool flushed = tracing_session_->FlushBlocking(5000);
-    logger.lock(logcat::TRACE_IO) << "FlushBlocking result="
-                  << (flushed ? "ok" : "timeout") << std::endl;
+    logger.lock(logcat::TRACE_IO)
+        << "FlushBlocking result=" << (flushed ? "ok" : "timeout") << std::endl;
     logger.lock(logcat::TRACE_IO) << "Stopping tracing session..." << std::endl;
     tracing_session_->StopBlocking();
     logger.lock(logcat::TRACE_IO) << "Reading trace data..." << std::endl;
@@ -712,26 +710,27 @@ void shutdown() {
       std::filesystem::create_directories(trace_path.parent_path(), ec);
       if (ec) {
         logger.lock(logcat::TRACE_IO) << "Failed to create trace directory "
-                      << trace_path.parent_path().string() << ": "
-                      << ec.message() << std::endl;
+                                      << trace_path.parent_path().string()
+                                      << ": " << ec.message() << std::endl;
       }
     }
 
     std::ofstream out(filename, std::ios::binary);
     if (!out) {
-      logger.lock(logcat::TRACE_IO) << "Failed to open trace output " << filename
-                    << std::endl;
+      logger.lock(logcat::TRACE_IO)
+          << "Failed to open trace output " << filename << std::endl;
       return;
     }
     out.write(trace_data.data(), trace_data.size());
     out.close();
     if (!out) {
-      logger.lock(logcat::TRACE_IO) << "Failed while writing trace output " << filename
-                    << std::endl;
+      logger.lock(logcat::TRACE_IO)
+          << "Failed while writing trace output " << filename << std::endl;
       return;
     }
-    logger.lock(logcat::TRACE_IO) << "Trace written to " << filename << " ("
-                  << trace_data.size() << " bytes)" << std::endl;
+    logger.lock(logcat::TRACE_IO)
+        << "Trace written to " << filename << " (" << trace_data.size()
+        << " bytes)" << std::endl;
     tracing_session_.reset();
     perfetto::Tracing::Shutdown();
     logger.lock(logcat::TRACE_IO) << "Perfetto shutdown complete." << std::endl;
@@ -865,8 +864,8 @@ void execution_begin(std::shared_ptr<Event> e) {
     std::string slice_name = trace_string(e->slice_name, 4096);
     std::string ops_summary = summarize_rpn_ops(e->rpn_ops);
     TRACE_EVENT_BEGIN("events", perfetto::DynamicString(slice_name),
-                      perfetto::Track(DPU_TRACK_ID), "id", e->id,
-                      "ops_summary", perfetto::DynamicString(ops_summary),
+                      perfetto::Track(DPU_TRACK_ID), "id", e->id, "ops_summary",
+                      perfetto::DynamicString(ops_summary),
                       [e, base_lambda](perfetto::EventContext& ctx) {
                         base_lambda(ctx);
                         add_event_metadata(ctx, e);

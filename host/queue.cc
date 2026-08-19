@@ -14,6 +14,7 @@
 #include "perfetto/trace.h"
 #include "perfetto/trace_internal.h"
 #include "runtime.h"
+#include "stats.h"
 #include "vectordpu.h"
 
 #ifndef DPURT
@@ -99,7 +100,8 @@ std::string human_bytes(size_t bytes) {
   return out.str();
 }
 
-std::string describe_vector(detail::VectorDescRef vec, size_t transfer_bytes = 0) {
+std::string describe_vector(detail::VectorDescRef vec,
+                            size_t transfer_bytes = 0) {
   if (!vec) return "vec=<none>";
 
   std::ostringstream out;
@@ -164,8 +166,8 @@ std::string describe_transfer_details(const std::shared_ptr<Event>& e) {
   if (count % 100 == 0) {
 #if ENABLE_DPU_LOGGING >= 1
     Logger& logger = DpuRuntime::get().get_logger();
-    logger.lock(logcat::QUEUE_HEARTBEAT, 2) << "callback fired (" << count
-                  << ") for id=" << me->id << std::endl;
+    logger.lock(logcat::QUEUE_HEARTBEAT, 2)
+        << "callback fired (" << count << ") for id=" << me->id << std::endl;
 #endif
   }
 
@@ -254,16 +256,16 @@ bool EventQueue::process_next() {
 #endif
 
 #if ENABLE_DPU_LOGGING >= 2
-  logger.lock(logcat::QUEUE_NEXT, 2) << "id=" << e->id << " type=" << (int)e->op
-                << " deps=" << e->dependencies.size()
-                << " started=" << (int)e->started
-                << " finished=" << (int)e->finished.load() << std::endl;
+  logger.lock(logcat::QUEUE_NEXT, 2)
+      << "id=" << e->id << " type=" << (int)e->op
+      << " deps=" << e->dependencies.size() << " started=" << (int)e->started
+      << " finished=" << (int)e->finished.load() << std::endl;
 #endif
 
 #if ENABLE_DPU_LOGGING >= 2
-  logger.lock(logcat::EVENT, 2) << "id=" << e->id
-                << " type=" << operationtype_to_string(e->op)
-                << " phase=started" << std::endl;
+  logger.lock(logcat::EVENT, 2)
+      << "id=" << e->id << " type=" << operationtype_to_string(e->op)
+      << " phase=started" << std::endl;
 #endif
 
   trace::inqueue_end(e);
@@ -276,10 +278,9 @@ bool EventQueue::process_next() {
       if (dep > max_dep) max_dep = dep;
 #if ENABLE_DPU_LOGGING >= 2
     if (this->get_last_finished_id() < max_dep)
-      logger.lock(logcat::QUEUE_WAIT, 2) << "id=" << e->id
-                    << " waiting for max_dep=" << max_dep
-                    << " (current=" << this->get_last_finished_id() << ")"
-                    << std::endl;
+      logger.lock(logcat::QUEUE_WAIT, 2)
+          << "id=" << e->id << " waiting for max_dep=" << max_dep
+          << " (current=" << this->get_last_finished_id() << ")" << std::endl;
     size_t loop_count = 0;
 #endif
     while (this->get_last_finished_id() < max_dep) {
@@ -287,10 +288,9 @@ bool EventQueue::process_next() {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
 #if ENABLE_DPU_LOGGING >= 2
       if (++loop_count % 1000 == 0)
-        logger.lock(logcat::QUEUE_HEARTBEAT, 2) << "id=" << e->id
-                      << " dependency block on " << max_dep
-                      << " (current=" << this->get_last_finished_id() << ")"
-                      << std::endl;
+        logger.lock(logcat::QUEUE_HEARTBEAT, 2)
+            << "id=" << e->id << " dependency block on " << max_dep
+            << " (current=" << this->get_last_finished_id() << ")" << std::endl;
 #endif
     }
   }
@@ -350,8 +350,8 @@ bool EventQueue::process_next() {
 #if JIT
   if (e->op == Event::OperationType::COMPUTE && e->jit_future.valid()) {
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock(logcat::QUEUE_JIT) << "Awaiting background JIT compilation for id="
-                  << e->id << std::endl;
+    logger.lock(logcat::QUEUE_JIT)
+        << "Awaiting background JIT compilation for id=" << e->id << std::endl;
 #endif
     e->jit_binary_path = e->jit_future.get();
   }
@@ -432,10 +432,10 @@ bool EventQueue::process_next() {
 
   if (!required_binary.empty() && required_binary != current_binary_path_) {
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock(logcat::QUEUE_JIT) << "Switching binary to "
-                  << describe_binary_path(required_binary) << " (was "
-                  << describe_binary_path(current_binary_path_) << ")"
-                  << std::endl;
+    logger.lock(logcat::QUEUE_JIT)
+        << "Switching binary to " << describe_binary_path(required_binary)
+        << " (was " << describe_binary_path(current_binary_path_) << ")"
+        << std::endl;
 #endif
     trace::jit_binary_switch(current_binary_path_, required_binary);
 
@@ -449,9 +449,11 @@ bool EventQueue::process_next() {
 
     dpu_set_t& dpu_set = DpuRuntime::get().dpu_set();
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock(logcat::QUEUE_JIT) << "Loading binary onto "
-                  << DpuRuntime::get().num_dpus() << " DPUs..." << std::endl;
+    logger.lock(logcat::QUEUE_JIT)
+        << "Loading binary onto " << DpuRuntime::get().num_dpus() << " DPUs..."
+        << std::endl;
 #endif
+    VECTORDPU_NOTE(binary_switches);
     DPU_ASSERT(dpu_load(dpu_set, required_binary.c_str(), nullptr));
     current_binary_path_ = required_binary;
 #if ENABLE_DPU_LOGGING >= 1
@@ -464,14 +466,16 @@ bool EventQueue::process_next() {
   // 7. Dispatch
   try {
 #if ENABLE_DPU_LOGGING >= 2
-    logger.lock(logcat::QUEUE_DISPATCH, 2) << "id=" << e->id << " type=" << (int)e->op
-                  << " begin" << std::endl;
+    logger.lock(logcat::QUEUE_DISPATCH, 2)
+        << "id=" << e->id << " type=" << (int)e->op << " begin" << std::endl;
 #endif
     switch (e->op) {
       case Event::OperationType::FENCE:
+        VECTORDPU_NOTE(fences);
         this->add_fence(e);
         break;
       case Event::OperationType::COMPUTE:
+        VECTORDPU_NOTE(compute_launches);
         e->started = true;
 #if PIPELINE
         if (!e->rpn_ops.empty() || e->is_locked_for_jit) {
@@ -497,11 +501,13 @@ bool EventQueue::process_next() {
         e->add_completion_callback(e);
         break;
       case Event::OperationType::DPU_TRANSFER:
+        VECTORDPU_NOTE(dpu_transfers);
         e->started = true;
         e->cb();
         e->add_completion_callback(e);
         break;
       case Event::OperationType::HOST_TRANSFER:
+        VECTORDPU_NOTE(host_transfers);
         e->started = true;
         e->cb();
         e->add_completion_callback(e);
@@ -510,18 +516,19 @@ bool EventQueue::process_next() {
         assert(false && "Unknown event type");
     }
 #if ENABLE_DPU_LOGGING >= 2
-    logger.lock(logcat::QUEUE_DISPATCH, 2) << "id=" << e->id << " type=" << (int)e->op
-                  << " end" << std::endl;
+    logger.lock(logcat::QUEUE_DISPATCH, 2)
+        << "id=" << e->id << " type=" << (int)e->op << " end" << std::endl;
 #endif
   } catch (const DpuOOMException& ex) {
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock(logcat::OOM) << "caught for event id=" << e->id
-                  << " started=" << e->started << " retries=" << e->oom_retries
-                  << std::endl;
+    logger.lock(logcat::OOM)
+        << "caught for event id=" << e->id << " started=" << e->started
+        << " retries=" << e->oom_retries << std::endl;
 #endif
 #if !ENABLE_OOM_RECOVERY
     throw DpuOOMException("DPU OOM: event id=" + std::to_string(e->id));
 #else
+    VECTORDPU_NOTE(oom_retries);
     if (++e->oom_retries > OOM_RECOVERY_RETRIES)
       throw DpuOOMException("DPU OOM: event id=" + std::to_string(e->id) +
                             " failed after " +
@@ -538,7 +545,7 @@ bool EventQueue::process_next() {
     }
 #if ENABLE_DPU_LOGGING >= 1
     logger.lock(logcat::OOM) << "freed failed outputs for event id=" << e->id
-                  << ", requeueing" << std::endl;
+                             << ", requeueing" << std::endl;
 #endif
     auto& alloc = DpuRuntime::get().get_allocator();
     for (auto& out : outputs_to_free) alloc.deallocate_upmem_vector(out.get());
@@ -548,7 +555,8 @@ bool EventQueue::process_next() {
       if (current_event_ == e) current_event_ = nullptr;
     }
 #if ENABLE_DPU_LOGGING >= 1
-    logger.lock(logcat::OOM) << "event id=" << e->id << " requeued" << std::endl;
+    logger.lock(logcat::OOM)
+        << "event id=" << e->id << " requeued" << std::endl;
 #endif
     return NO_PROGRESS;
 #endif
@@ -562,8 +570,8 @@ bool EventQueue::process_next() {
 void EventQueue::process_events(size_t wait_for_id) {
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock(logcat::QUEUE_WAIT, 2) << "begin wait_for_id=" << wait_for_id
-                << std::endl;
+  logger.lock(logcat::QUEUE_WAIT, 2)
+      << "begin wait_for_id=" << wait_for_id << std::endl;
 #endif
   while (true) {
     bool progress = this->process_next();
@@ -578,16 +586,16 @@ void EventQueue::process_events(size_t wait_for_id) {
     auto& runtime = DpuRuntime::get();
     dpu_set_t& dpu_set = runtime.dpu_set();
 #if ENABLE_DPU_LOGGING >= 2
-    logger.lock(logcat::QUEUE_WAIT, 2) << "dpu_sync wait_for_id=" << wait_for_id
-                  << " last_finished=" << this->get_last_finished_id()
-                  << std::endl;
+    logger.lock(logcat::QUEUE_WAIT, 2)
+        << "dpu_sync wait_for_id=" << wait_for_id
+        << " last_finished=" << this->get_last_finished_id() << std::endl;
 #endif
     CHECK_UPMEM(dpu_sync(dpu_set));
     finalize_finished_events();
 #if ENABLE_DPU_LOGGING >= 2
-    logger.lock(logcat::QUEUE_WAIT, 2) << "dpu_sync done wait_for_id=" << wait_for_id
-                  << " last_finished=" << this->get_last_finished_id()
-                  << std::endl;
+    logger.lock(logcat::QUEUE_WAIT, 2)
+        << "dpu_sync done wait_for_id=" << wait_for_id
+        << " last_finished=" << this->get_last_finished_id() << std::endl;
 #endif
 
     if (!progress) std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -595,19 +603,18 @@ void EventQueue::process_events(size_t wait_for_id) {
     static size_t loop_count = 0;
     if (++loop_count % 1000 == 0) {
       std::lock_guard<std::recursive_mutex> lock(mtx_);
-      logger.lock(logcat::QUEUE_HEARTBEAT, 2) << "process_events waiting for "
-                    << wait_for_id
-                    << " (last_finished=" << this->get_last_finished_id()
-                    << " ops=" << operations_.size()
-                    << " running=" << running_events_.size() << ")"
-                    << std::endl;
+      logger.lock(logcat::QUEUE_HEARTBEAT, 2)
+          << "process_events waiting for " << wait_for_id
+          << " (last_finished=" << this->get_last_finished_id()
+          << " ops=" << operations_.size()
+          << " running=" << running_events_.size() << ")" << std::endl;
     }
 #endif
   }
 #if ENABLE_DPU_LOGGING >= 2
-  logger.lock(logcat::QUEUE_WAIT, 2) << "end wait_for_id=" << wait_for_id
-                << " last_finished=" << this->get_last_finished_id()
-                << std::endl;
+  logger.lock(logcat::QUEUE_WAIT, 2)
+      << "end wait_for_id=" << wait_for_id
+      << " last_finished=" << this->get_last_finished_id() << std::endl;
 #endif
 }
 
@@ -623,8 +630,8 @@ void EventQueue::debug_print_queue() {
       auto log = logger.lock(logcat::EVENT_QUEUE, 3);
       log.second() << i++ << ". id=" << e->id
                    << " type=" << operationtype_to_string(e->op)
-                   << " started=" << e->started
-                   << " finished=" << e->finished << std::endl;
+                   << " started=" << e->started << " finished=" << e->finished
+                   << std::endl;
       tmp.pop_front();
     }
   } else {
@@ -645,12 +652,11 @@ void EventQueue::debug_active_events() {
       auto log = logger.lock(logcat::EVENT_QUEUE, 3);
       log.second() << i++ << ". id=" << e->id
                    << " type=" << operationtype_to_string(e->op)
-                   << " started=" << e->started
-                   << " finished=" << e->finished << std::endl;
+                   << " started=" << e->started << " finished=" << e->finished
+                   << std::endl;
     }
   } else {
-    logger.lock(logcat::EVENT_QUEUE, 3) << "active runners empty"
-                                        << std::endl;
+    logger.lock(logcat::EVENT_QUEUE, 3) << "active runners empty" << std::endl;
   }
 #endif
 }
@@ -752,6 +758,7 @@ void EventQueue::submit(std::shared_ptr<Event> e) {
 
   e->id = counter_++;
   e->max_id = e->id;
+  VECTORDPU_NOTE(events_submitted);
 
 #if PIPELINE
   expand_absorbed_inputs(e);

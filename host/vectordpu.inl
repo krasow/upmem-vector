@@ -40,10 +40,9 @@ dpu_vector<T>::dpu_vector(size_t n, uint32_t reserved, bool lazy,
   data_->debug_line = debug_line;
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = runtime.get_logger();
-  log_allocation(logger, typeid(T), n, data_->vector_id,
-                 data_->allocated_footprint_bytes,
-                 !data_->needs_layout_materialization, debug_name, debug_file,
-                 debug_line);
+  log_allocation(
+      logger, typeid(T), n, data_->vector_id, data_->allocated_footprint_bytes,
+      !data_->needs_layout_materialization, debug_name, debug_file, debug_line);
 #endif
 }
 
@@ -140,8 +139,8 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
       << "type=DPU_TRANSFER action=submit id=" << e->id
       << " size=" << cpu_vec.size() << " bytes=" << e->transfer_size
       << std::endl;
-  logger.lock(logcat::QUEUE_APPEND, 2) << "type=DPU_TRANSFER size=" << cpu_vec.size()
-                << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=DPU_TRANSFER size=" << cpu_vec.size() << std::endl;
 #endif
   return vec;
 }
@@ -188,8 +187,8 @@ vector<T> dpu_vector<T>::to_cpu() {
       << "type=HOST_TRANSFER action=submit id=" << e->id
       << " size=" << cpu_vec.size() << " bytes=" << e->transfer_size
       << std::endl;
-  logger.lock(logcat::QUEUE_APPEND, 2) << "type=HOST_TRANSFER size=" << cpu_vec.size()
-                << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=HOST_TRANSFER size=" << cpu_vec.size() << std::endl;
 #endif
 
 // Auto-fence after DPU->HOST transfer if enabled
@@ -284,16 +283,15 @@ struct reduction_batch_result_state {
     }
   }
 
-  std::vector<char> transfer_span(detail::VectorDescRef span_desc,
-                                  size_t span_bytes,
-                                  const std::vector<detail::VectorDescRef>& deps) {
+  std::vector<char> transfer_span(
+      detail::VectorDescRef span_desc, size_t span_bytes,
+      const std::vector<detail::VectorDescRef>& deps) {
     auto& runtime = DpuRuntime::get();
     size_t num_dpus = runtime.num_dpus();
     std::vector<char> cpu(span_bytes * num_dpus);
 
-    auto bound_cb =
-        std::bind(detail::vec_xfer_from_dpu_span, cpu.data(), span_desc,
-                  span_bytes);
+    auto bound_cb = std::bind(detail::vec_xfer_from_dpu_span, cpu.data(),
+                              span_desc, span_bytes);
     std::shared_ptr<Event> e =
         std::make_shared<Event>(Event::OperationType::HOST_TRANSFER, bound_cb);
     e->inputs = deps;
@@ -316,8 +314,7 @@ struct reduction_batch_result_state {
     for (auto& out : outputs) runtime.get_allocator().realize_allocation(out);
 
     size_t num_dpus = runtime.num_dpus();
-    std::vector<uint32_t> bases(num_dpus,
-                                std::numeric_limits<uint32_t>::max());
+    std::vector<uint32_t> bases(num_dpus, std::numeric_limits<uint32_t>::max());
     std::vector<uint32_t> ends(num_dpus, 0);
     output_offsets.assign(outputs.size(), 0);
 
@@ -330,8 +327,7 @@ struct reduction_batch_result_state {
       }
     }
 
-    if (bases.empty() ||
-        bases[0] == std::numeric_limits<uint32_t>::max() ||
+    if (bases.empty() || bases[0] == std::numeric_limits<uint32_t>::max() ||
         ends[0] < bases[0])
       return false;
 
@@ -351,8 +347,7 @@ struct reduction_batch_result_state {
       for (size_t dpu = 0; dpu < num_dpus; ++dpu) {
         if (out->desc[dpu].allocated_bytes != out->desc[0].allocated_bytes)
           return false;
-        if ((size_t)(out->desc[dpu].ptr - bases[dpu]) != expected)
-          return false;
+        if ((size_t)(out->desc[dpu].ptr - bases[dpu]) != expected) return false;
       }
       output_offsets[out_idx] = expected;
     }
@@ -360,8 +355,8 @@ struct reduction_batch_result_state {
     span_desc = std::make_shared<detail::VectorDesc>();
     span_desc->desc.reserve(num_dpus);
     for (size_t dpu = 0; dpu < num_dpus; ++dpu) {
-      span_desc->desc.push_back({bases[dpu], (uint32_t)span_bytes,
-                                 (uint32_t)span_bytes});
+      span_desc->desc.push_back(
+          {bases[dpu], (uint32_t)span_bytes, (uint32_t)span_bytes});
     }
     span_desc->ptr_allocated = false;
     span_desc->reserved_bytes = 0;
@@ -376,8 +371,7 @@ struct reduction_batch_result_state {
     size_t num_dpus = runtime.num_dpus();
     result_t acc = (result_t)(*reinterpret_cast<const T*>(cpu.data() + offset));
     for (size_t dpu = 1; dpu < num_dpus; ++dpu) {
-      T x =
-          *reinterpret_cast<const T*>(cpu.data() + dpu * span_bytes + offset);
+      T x = *reinterpret_cast<const T*>(cpu.data() + dpu * span_bytes + offset);
       acc = apply(acc, x, rid);
     }
     return acc;
@@ -388,9 +382,9 @@ struct reduction_batch_result_state {
     runtime.get_allocator().realize_allocation(outputs[idx]);
     size_t span_bytes =
         outputs[idx]->desc[0].allocated_bytes - outputs[idx]->reserved_bytes;
-    std::vector<char> cpu = transfer_span(outputs[idx], span_bytes,
-                                          std::vector<detail::VectorDescRef>{
-                                              outputs[idx]});
+    std::vector<char> cpu =
+        transfer_span(outputs[idx], span_bytes,
+                      std::vector<detail::VectorDescRef>{outputs[idx]});
     return reduce_from_span(cpu, span_bytes, 0, rids[idx]);
   }
 
@@ -835,7 +829,7 @@ pipeline_result<T> dpu_vector<T>::transform(
     vars.push_back(dpu_expr<T>::operand((uint8_t)i));
   }
 
-dpu_expr<T> expr = build(vars);
+  dpu_expr<T> expr = build(vars);
   return jit(expr.ops(), operands, scalars);
 }
 
@@ -942,7 +936,8 @@ KernelID dpu_reduction_batch<T>::reduction_id(const std::vector<uint8_t>& ops) {
     case OP_PRODUCT:
       return OpInfo<T>::product;
     default:
-      throw std::logic_error("reduction_batch expression must end in a reduction");
+      throw std::logic_error(
+          "reduction_batch expression must end in a reduction");
   }
 }
 
@@ -1050,7 +1045,8 @@ void dpu_reduction_batch<T>::submit() {
                    op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
           size_t operand_idx = op - OP_PUSH_OPERAND_0;
           if (operand_idx >= entry.operands.size()) {
-            throw std::logic_error("reduction_batch operand index out of range");
+            throw std::logic_error(
+                "reduction_batch operand index out of range");
           }
           try {
             candidate_ops.push_back(
@@ -1111,10 +1107,10 @@ void dpu_reduction_batch<T>::submit() {
       extra_outputs.push_back(entries_[batched_entries[i]].output);
     }
 
-    detail::launch_universal_pipeline(
-        entries_[batched_entries[0]].output, primary_->data_desc_ref(),
-        combined_ops, operands, OpInfo<T>::universal_pipeline,
-        combined_scalars, {}, extra_outputs);
+    detail::launch_universal_pipeline(entries_[batched_entries[0]].output,
+                                      primary_->data_desc_ref(), combined_ops,
+                                      operands, OpInfo<T>::universal_pipeline,
+                                      combined_scalars, {}, extra_outputs);
 
     begin += batched_entries.size();
   }
@@ -1246,7 +1242,9 @@ dpu_vector<T> select(const dpu_vector<T>& cond, const dpu_vector<T>& then_vec,
 #if JIT
   return const_cast<dpu_vector<T>&>(cond).jit(ops, {then_vec, else_vec}).vec;
 #elif PIPELINE
-  return const_cast<dpu_vector<T>&>(cond).pipeline(ops, {then_vec, else_vec}).vec;
+  return const_cast<dpu_vector<T>&>(cond)
+      .pipeline(ops, {then_vec, else_vec})
+      .vec;
 #else
   static_assert(sizeof(T) == 0, "select requires JIT or PIPELINE support");
 #endif
@@ -1316,11 +1314,12 @@ uint8_t dpu_pipeline_context<T>::local_id(dpu_local_vector<T>& local) {
 }
 
 template <typename T>
-void dpu_pipeline_context<T>::local_reduce(
-    dpu_local_vector<T>& local, const dpu_pipeline_expr<T>& index,
-    const dpu_pipeline_expr<T>& value) {
+void dpu_pipeline_context<T>::local_reduce(dpu_local_vector<T>& local,
+                                           const dpu_pipeline_expr<T>& index,
+                                           const dpu_pipeline_expr<T>& value) {
   uint8_t id = local_id(local);
-  local_reductions_.push_back({id, detail::local_reduce_opcode(local.reduce_op()),
+  local_reductions_.push_back({id,
+                               detail::local_reduce_opcode(local.reduce_op()),
                                index.ops(), value.ops()});
 }
 
@@ -1334,8 +1333,7 @@ std::vector<uint8_t> dpu_pipeline_context<T>::materialize_ops() const {
     const auto& rhs = local_reductions_[r].index_ops;
     raw_common = std::min(raw_common, rhs.size());
     size_t i = 0;
-    while (i < raw_common &&
-           local_reductions_[0].index_ops[i] == rhs[i]) {
+    while (i < raw_common && local_reductions_[0].index_ops[i] == rhs[i]) {
       ++i;
     }
     raw_common = i;
@@ -1363,7 +1361,8 @@ std::vector<uint8_t> dpu_pipeline_context<T>::materialize_ops() const {
       out.insert(out.end(), reduction.index_ops.begin(),
                  reduction.index_ops.end());
     }
-    out.insert(out.end(), reduction.value_ops.begin(), reduction.value_ops.end());
+    out.insert(out.end(), reduction.value_ops.begin(),
+               reduction.value_ops.end());
     out.push_back(OP_APPLY_INDIRECT);
     out.push_back(reduction.local_id);
     out.push_back(reduction.reduce_op);
@@ -1564,7 +1563,8 @@ void dpu_jit_foreach(dpu_vector<T>& primary,
                      const std::vector<dpu_vector<T>>& operands,
                      const std::vector<uint32_t>& scalars, F f) {
   if (operands.size() > MAX_VFUSE_INPUTS) {
-    throw std::logic_error("dpu_jit_foreach operand count exceeds MAX_VFUSE_INPUTS");
+    throw std::logic_error(
+        "dpu_jit_foreach operand count exceeds MAX_VFUSE_INPUTS");
   }
 
   std::vector<dpu_expr<T>> vars;
@@ -1586,8 +1586,8 @@ void dpu_jit_foreach(dpu_vector<T>& primary,
   }
 
   detail::launch_universal_pipeline(
-      detail::VectorDescRef{}, primary.data_desc_ref(), ops,
-      operand_refs, OpInfo<T>::universal_pipeline, scalars, {}, ctx.locals());
+      detail::VectorDescRef{}, primary.data_desc_ref(), ops, operand_refs,
+      OpInfo<T>::universal_pipeline, scalars, {}, ctx.locals());
 }
 #endif
 
@@ -1628,9 +1628,10 @@ void dpu_jit_foreach(size_t n, F f) {
       {rec.rpn, tname}};
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = runtime.get_logger();
-  logger.lock(logcat::JIT_FOREACH, 2) << "compile start rpn=" << rec.rpn.size()
-                << " locals=" << rec.locals.size()
-                << " operands=" << rec.operands.size() << std::endl;
+  logger.lock(logcat::JIT_FOREACH, 2)
+      << "compile start rpn=" << rec.rpn.size()
+      << " locals=" << rec.locals.size() << " operands=" << rec.operands.size()
+      << std::endl;
 #endif
   std::string binary_path = jit_compile(kernels);
 #if ENABLE_DPU_LOGGING >= 2

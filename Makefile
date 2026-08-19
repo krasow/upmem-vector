@@ -1,4 +1,4 @@
-# https://github.com/CMU-SAFARI/prim-benchmarks/tree/main 
+# https://github.com/CMU-SAFARI/prim-benchmarks/tree/main
 # leveraged the above repository to create Makefile for DPU and host code compilation
 BUILDDIR ?= build
 NR_TASKLETS ?= 12
@@ -69,14 +69,14 @@ CONFIG_STAMP := build.config
 HOST_TARGET := ${BUILDDIR}/lib/libvectordpu.so
 DPU_TARGET := ${BUILDDIR}/bin/runtime.dpu
 TEST_TARGET := ${TEST_DIR}/vectordpu_test
-TEST_FUSION_TARGET := ${TEST_DIR}/fusion_test
 
 COMMON_DIR := common
 HOST_INCLUDES := host
 HOST_SOURCES := $(wildcard ${HOST_DIR}/*.cc) $(wildcard ${HOST_DIR}/perfetto/*.cc)
 DPU_SOURCES := $(wildcard ${DPU_DIR}/*.c)
-TEST_SOURCES := $(filter-out ${TEST_DIR}/horizontal_fusion.cc, $(wildcard ${TEST_DIR}/*.cc))
-FUSION_TEST_SOURCES := ${TEST_DIR}/horizontal_fusion.cc
+# One binary holds every suite; select subsets at run time with --filter.
+TEST_SOURCES := $(wildcard ${TEST_DIR}/*.cc)
+TEST_HEADERS := $(wildcard ${TEST_DIR}/*.h) $(wildcard ${TEST_DIR}/*.inl)
 
 HOST_HEADERS := $(wildcard ${HOST_DIR}/*.inl) $(wildcard ${HOST_DIR}/*.h) $(wildcard ${HOST_DIR}/perfetto/*.h)
 DPU_HEADERS := $(wildcard ${DPU_DIR}/*.inl) $(wildcard ${DPU_DIR}/*.h)
@@ -100,7 +100,7 @@ ifeq ($(TRACE),1)
   LDFLAGS += -L$(PERFETTO_HOME)/lib -lperfetto -ldl -lpthread
 endif
 
-.PHONY: config_check cache_old reconfigure all clean clean-internal test install uninstall print_config make_header
+.PHONY: config_check cache_old reconfigure all clean clean-internal test build-test list-tests install uninstall print_config make_header
 
 GENERATED_TARGETS := dpu/kernels.h host/opinfo.h host/kernelids.h common/opcodes.h
 
@@ -176,18 +176,13 @@ ${HOST_TARGET}: ${HOST_SOURCES} ${HOST_HEADERS} ${COMMON_HEADERS} $(GENERATED_TA
 ${DPU_TARGET}: ${DPU_SOURCES} ${DPU_HEADERS} ${COMMON_HEADERS} $(GENERATED_TARGETS)
 	dpu-upmem-dpurte-clang ${DPU_FLAGS} -o $@ ${DPU_SOURCES}
 
-$(TEST_TARGET): ${TEST_SOURCES} ${HOST_TARGET} ${DPU_TARGET}
+$(TEST_TARGET): ${TEST_SOURCES} ${TEST_HEADERS} ${HOST_TARGET} ${DPU_TARGET}
 	@echo "Building test target: $@"
 	$(CXX) -std=${CXX_STANDARD} $(CXXFLAGS) $(COMMON_FLAGS) -o $@ $(TEST_SOURCES) -I$(HOST_INCLUDES)  \
 		-L$(BUILDDIR)/lib -Wl,-rpath,$(BUILDDIR)/lib -lvectordpu
 
-$(TEST_FUSION_TARGET): ${FUSION_TEST_SOURCES} ${HOST_TARGET} ${DPU_TARGET}
-	@echo "Building fusion test target: $@"
-	$(CXX) -std=${CXX_STANDARD} $(CXXFLAGS) $(COMMON_FLAGS) -o $@ $(FUSION_TEST_SOURCES) -I$(HOST_INCLUDES)  \
-		-L$(BUILDDIR)/lib -Wl,-rpath,$(BUILDDIR)/lib -lvectordpu
-
 clean-internal:
-	$(RM) -r $(BUILDDIR) $(TEST_TARGET) $(TEST_FUSION_TARGET)
+	$(RM) -r $(BUILDDIR) $(TEST_TARGET)
 
 clean: clean-internal
 	$(RM) -r $(CONFIG_STAMP) $(GENERATED_TARGETS) common/config.h
@@ -209,11 +204,25 @@ print_config: reconfigure
 	done
 	@echo "\n"
 
-test: all $(TEST_TARGET) $(TEST_FUSION_TARGET)
-	@printf "\n$(CYAN)Running standard tests...$(NC)\n\n"
-	./$(TEST_TARGET)
-	@printf "\n$(CYAN)Running horizontal fusion tests...$(NC)\n\n"
-	./$(TEST_FUSION_TARGET)
+# TEST_ARGS is forwarded to the runner, e.g.
+#   make test TEST_ARGS="--filter=hfuse --stats"
+#   make test TEST_ARGS="--dpus=8 --isolate=0"
+#
+# --isolate runs every test in its own process.  It is the default because a
+# handful of known runtime bugs (see test/README.md) crash or deadlock the
+# process, and because state left behind by one failing test otherwise changes
+# the outcome of later ones.
+TEST_ARGS ?= --isolate
+
+test: all $(TEST_TARGET)
+	@printf "\n$(CYAN)Running tests...$(NC)\n\n"
+	./$(TEST_TARGET) $(TEST_ARGS)
+
+# Build the test binary without running it.
+build-test: all $(TEST_TARGET)
+
+list-tests: all $(TEST_TARGET)
+	@./$(TEST_TARGET) --list
 bindir := $(DESTDIR)/bin
 libdir := $(DESTDIR)/lib
 includedir := $(DESTDIR)/include/vectordpu

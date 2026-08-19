@@ -121,27 +121,24 @@ void print_vector_desc(Logger& logger, detail::VectorDescRef desc,
 
 void log_allocation(Logger& logger, const std::type_info& type, size_t n,
                     uint64_t vector_id, size_t memory_bytes,
-                    bool has_materialized_layout,
-                    std::string_view debug_name, const char* debug_file,
-                    int debug_line,
+                    bool has_materialized_layout, std::string_view debug_name,
+                    const char* debug_file, int debug_line,
                     bool is_allocation = true);
 
 void log_allocation(Logger& logger, const char* type_name, size_t n,
                     uint64_t vector_id, size_t memory_bytes,
-                    bool has_materialized_layout,
-                    std::string_view debug_name, const char* debug_file,
-                    int debug_line,
+                    bool has_materialized_layout, std::string_view debug_name,
+                    const char* debug_file, int debug_line,
                     bool is_allocation = true);
 
-#define log_deallocation(logger, type, n, vector_id, memory_bytes,          \
-                         has_materialized_layout, debug_name, debug_file,   \
-                         debug_line)                                        \
-  log_allocation(logger, type, n, vector_id, memory_bytes,                  \
-                 has_materialized_layout, debug_name, debug_file,           \
-                 debug_line, false)
+#define log_deallocation(logger, type, n, vector_id, memory_bytes,            \
+                         has_materialized_layout, debug_name, debug_file,     \
+                         debug_line)                                          \
+  log_allocation(logger, type, n, vector_id, memory_bytes,                    \
+                 has_materialized_layout, debug_name, debug_file, debug_line, \
+                 false)
 
 void log_dpu_launch_args(Logger& logger, const DPU_LAUNCH_ARGS* args,
-                         uint32_t nr_of_dpus,
-                         size_t fused_event_ops = 0,
+                         uint32_t nr_of_dpus, size_t fused_event_ops = 0,
                          size_t fused_event_chains = 0,
                          std::string_view kernel_hash = {});

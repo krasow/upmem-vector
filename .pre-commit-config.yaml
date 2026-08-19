@@ -1,0 +1,36 @@
+# pre-commit install    (once per clone)
+# pre-commit run --all-files
+
+exclude: |
+  (?x)^(
+    build/.*|
+    julia/lib/wrapper/build/.*|
+    common/(config|opcodes)\.h|
+    host/(opinfo|kernelids)\.h|
+    dpu/kernels\.h
+  )$
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=512]
+
+  - repo: local
+    hooks:
+      - id: clang-format
+        name: clang-format
+        # System binary, not mirrors-clang-format: .clang-format targets the
+        # clang-format 12 the UPMEM SDK ships.
+        entry: clang-format -i --style=file
+        language: system
+        # Matched by name because nothing recognises .inl.
+        files: \.(c|cc|cpp|h|hpp|inl)$
