@@ -1023,7 +1023,9 @@ void dpu_reduction_batch<T>::submit() {
 
     auto try_append_entry = [&](size_t entry_idx, bool required) -> bool {
       const Entry& entry = entries_[entry_idx];
-      if (batched_entries.size() >= MAX_HFUSE_CHAINS) return false;
+      if (batched_entries.size() >= MAX_HFUSE_CHAINS ||
+          batched_entries.size() >= MAX_SAFE_HFUSED_REDUCTION_CHAINS)
+        return false;
 
       std::vector<detail::VectorDescRef> candidate_combined = combined;
       std::vector<uint8_t> candidate_ops = combined_ops;
@@ -1057,7 +1059,7 @@ void dpu_reduction_batch<T>::submit() {
             if (required) throw;
             return false;
           }
-        } else if (IS_OP_SCALAR_VAR(op)) {
+        } else if (IS_OP_SCALAR_VAR(op) || op == OP_PUSH_SCALAR_VAR) {
           candidate_ops.push_back(op);
           if (i + 1 >= entry.ops.size()) {
             throw std::logic_error(

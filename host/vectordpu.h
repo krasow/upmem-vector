@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "jit.h"
@@ -51,6 +52,8 @@ using std::vector;
                    std::source_location loc = std::source_location::current()
 
 // Forward declarations
+void dpu_fence();
+
 template <typename T>
 class dpu_vector;
 
@@ -263,6 +266,34 @@ struct lazy_reduction_result {
 template <typename T>
 using dpu_future = lazy_reduction_result<T>;
 
+// A collection of lazy DPU results. Keeping the producers queued until get()
+// lets independent computations become horizontal fusion chains.
+template <typename T>
+class dpu_future_vector {
+ public:
+  using future_type = dpu_future<T>;
+  using result_type = typename dpu_vector<T>::reduction_result_t;
+
+  void reserve(size_t count) { futures_.reserve(count); }
+  void push_back(future_type future) {
+    futures_.push_back(std::move(future));
+  }
+
+  size_t size() const { return futures_.size(); }
+  bool empty() const { return futures_.empty(); }
+
+  std::vector<result_type> get() {
+    std::vector<result_type> results;
+    results.reserve(futures_.size());
+    if (!futures_.empty()) dpu_fence();
+    for (auto& future : futures_) results.push_back(future.get());
+    return results;
+  }
+
+ private:
+  std::vector<future_type> futures_;
+};
+
 #if PIPELINE
 template <typename T>
 class dpu_reduction_batch {
@@ -414,6 +445,19 @@ class dpu_pipeline_expr {
   }
 
   dpu_pipeline_expr combine(const dpu_pipeline_expr& rhs, uint8_t op) const {
+    // Keep scalar variables as scalar operations instead of materializing
+    // them as a third stack value. Besides shortening the RPN, this lets the
+    // generic interpreter evaluate accumulator + column * scalar_var with its
+    // two-vector stack.
+    if (rhs.ops_.size() == 2 && rhs.ops_[0] == OP_PUSH_SCALAR_VAR &&
+        op >= OP_ADD && op <= OP_LE) {
+      auto out = *this;
+      out.ops_.push_back(
+          (uint8_t)(op + (OP_ADD_SCALAR_VAR - OP_ADD)));
+      out.ops_.push_back(rhs.ops_[1]);
+      return out;
+    }
+
     dpu_pipeline_expr out;
     out.ops_.reserve(ops_.size() + rhs.ops_.size() + 1);
     out.ops_.insert(out.ops_.end(), ops_.begin(), ops_.end());
@@ -422,6 +466,76 @@ class dpu_pipeline_expr {
     return out;
   }
 };
+
+// Horizontal argmin/argmax over K lanes, evaluated per element. `.label` is
+// the winning lane index (lowers to the variadic OP_ARGMIN_K/OP_ARGMAX_K op);
+// `.value` is the winning value (an elementwise min/max select-chain, since no
+// dedicated min-of-vectors op exists yet). Both use a strict comparison so
+// ties keep the lowest lane index. kmeans reads `.label` to drive the
+// centroid scatter-add; inertia/convergence reads `.value`.
+template <typename T>
+struct dpu_arg_expr {
+  dpu_pipeline_expr<T> label;
+  dpu_pipeline_expr<T> value;
+};
+
+template <typename T>
+dpu_arg_expr<T> detail_arg_k_lanes(
+    const std::vector<dpu_pipeline_expr<T>>& lanes, uint8_t arg_op) {
+  std::vector<uint8_t> label_ops;
+  for (const auto& lane : lanes) {
+    const auto& o = lane.ops();
+    label_ops.insert(label_ops.end(), o.begin(), o.end());
+  }
+  label_ops.push_back(arg_op);
+  label_ops.push_back((uint8_t)lanes.size());
+
+  const bool is_min = (arg_op == (uint8_t)OP_ARGMIN_K);
+  dpu_pipeline_expr<T> best = lanes[0];
+  for (size_t j = 1; j < lanes.size(); ++j) {
+    dpu_pipeline_expr<T> take = is_min ? (lanes[j] < best) : (best < lanes[j]);
+    best = take.select(lanes[j], best);
+  }
+  return {dpu_pipeline_expr<T>(std::move(label_ops)), best};
+}
+
+// (a) over K candidate EXPRESSIONS, per element (used inside transform /
+//     reduce / dpu_jit_foreach lambdas).
+template <typename T>
+dpu_arg_expr<T> argmin(const std::vector<dpu_pipeline_expr<T>>& lanes) {
+  return detail_arg_k_lanes(lanes, (uint8_t)OP_ARGMIN_K);
+}
+template <typename T>
+dpu_arg_expr<T> argmax(const std::vector<dpu_pipeline_expr<T>>& lanes) {
+  return detail_arg_k_lanes(lanes, (uint8_t)OP_ARGMAX_K);
+}
+
+// (b) over K whole VECTORS, by itself -- launches its own fused kernel and
+//     returns the per-element winning-lane-index vector.
+template <typename T>
+dpu_vector<T> argmin(std::vector<dpu_vector<T>>& lanes) {
+  std::vector<dpu_vector<T>> operands(lanes.begin() + 1, lanes.end());
+  return lanes[0]
+      .transform(
+          [](const std::vector<dpu_pipeline_expr<T>>& x) {
+            return argmin(std::vector<dpu_pipeline_expr<T>>(x.begin(), x.end()))
+                .label;
+          },
+          operands)
+      .vec;
+}
+template <typename T>
+dpu_vector<T> argmax(std::vector<dpu_vector<T>>& lanes) {
+  std::vector<dpu_vector<T>> operands(lanes.begin() + 1, lanes.end());
+  return lanes[0]
+      .transform(
+          [](const std::vector<dpu_pipeline_expr<T>>& x) {
+            return argmax(std::vector<dpu_pipeline_expr<T>>(x.begin(), x.end()))
+                .label;
+          },
+          operands)
+      .vec;
+}
 
 template <typename T>
 lazy_reduction_result<T> min_squared_distance(std::vector<dpu_vector<T>>& cols,
@@ -531,8 +645,6 @@ void dpu_jit_foreach(dpu_vector<T>& primary,
                      const std::vector<dpu_vector<T>>& operands,
                      const std::vector<uint32_t>& scalars, F f);
 #endif
-
-void dpu_fence();
 
 namespace detail {
 void vec_xfer_from_dpu_span(char* cpu, VectorDescRef base, size_t span_bytes);

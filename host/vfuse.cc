@@ -378,6 +378,13 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
                op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT ||
                op == OP_APPLY_INDIRECT) {
       k += OP_INLINE_BYTES(op);
+    } else if (IS_OP_ARG_K(op)) {
+      // Variadic arg op carries an inline k byte; skip it so the scan stays
+      // aligned, and clear the accumulator-tail flags (an arg op is never a
+      // bare add/asr accumulator collapse).
+      k += OP_INLINE_BYTES(op);
+      e_ends_with_add = false;
+      e_ends_with_asr_scalar = false;
     } else if (op == OP_ADD) {
       e_ends_with_add = true;
       e_ends_with_asr_scalar = false;

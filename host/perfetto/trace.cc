@@ -133,6 +133,7 @@ std::string opcode_to_string(uint8_t op) {
     case OP_PUSH_OPERAND_7:
     case OP_PUSH_OPERAND_8:
     case OP_PUSH_OPERAND_9:
+    case OP_PUSH_OPERAND_10:
       return "";
     default:
       return "UNK(" + std::to_string(op) + ")";

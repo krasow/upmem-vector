@@ -59,6 +59,7 @@
         oi += 2; /* Opcode + 1 byte scalar index */                            \
         continue;                                                              \
       }                                                                        \
+      if (IS_OP_ARG_K(op)) { oi += 2; continue; } /* Opcode + 1 byte k */      \
       if (op == OP_PUSH_INPUT)                                                 \
         uses_input = true;                                                     \
       else if (op >= OP_PUSH_OPERAND_0 &&                                      \
@@ -458,6 +459,26 @@
                 s3[i] = (s3[i] != (TYPE)0) ? s2[i] : s1[i];                    \
             }                                                                  \
           }                                                                    \
+        } else if (IS_OP_ARG_K(op)) {                                          \
+          uint8_t kk = args.pipeline.ops[oi + 1];                              \
+          TYPE *arg_out = scratch_blks[sp - kk];                               \
+          for (i = 0; i < b_e; i++) {                                          \
+            TYPE arg_best = st_ptr[sp - kk][i];                                \
+            TYPE arg_idx = (TYPE)0;                                            \
+            for (uint8_t jj = 1; jj < kk; jj++) {                              \
+              TYPE arg_v = st_ptr[sp - kk + jj][i];                            \
+              if (op == OP_ARGMIN_K ? (arg_v < arg_best)                       \
+                                    : (arg_v > arg_best)) {                    \
+                arg_best = arg_v;                                              \
+                arg_idx = (TYPE)jj;                                            \
+              }                                                                \
+            }                                                                  \
+            arg_out[i] = arg_idx;                                              \
+          }                                                                    \
+          sp -= (kk - 1);                                                      \
+          st_ptr[sp - 1] = arg_out;                                            \
+          st_is_temp[sp - 1] = true;                                           \
+          oi++; /* consume k byte; trailing oi++ consumes the op */            \
         } else { /* REDUCTION */                                               \
           TYPE *s = st_ptr[--sp];                                              \
           switch (op) {                                                        \

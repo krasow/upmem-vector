@@ -495,6 +495,40 @@ extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
                                                s2.value + " : " + s1.value));
         }
 
+      } else if (IS_OP_ARG_K(op)) {
+        // Variadic horizontal argmin/argmax over k stacked lanes. Pop the k
+        // lanes (lane 0 pushed first) and fold a running (best_val, best_idx)
+        // with a strict comparison so ties keep the lowest lane index. Push
+        // the winning index. The k count is a single inline byte.
+        uint8_t k = rpn_ops[++op_idx];
+        if (k == 0 || stack.size() < k) {
+          fprintf(stderr,
+                  "[JIT-DBG] STACK UNDERFLOW at arg op %u, k=%u, stack=%zu\n",
+                  (unsigned)op, (unsigned)k, stack.size());
+          abort();
+        }
+        std::vector<StackValue> lanes(stack.end() - k, stack.end());
+        stack.erase(stack.end() - k, stack.end());
+        const char* cmp = (op == OP_ARGMIN_K) ? " < " : " > ";
+        StackValue best_val = lanes[0];
+        StackValue best_idx = leaf("0", "argidx0");
+        for (uint8_t j = 1; j < k; ++j) {
+          std::string csig = "argcmp:" + std::to_string(op) + ":" +
+                             lanes[j].id + ":" + best_val.id;
+          StackValue cond = emit_cached(
+              csig, "(" + lanes[j].value + cmp + best_val.value + ")");
+          best_idx = emit_cached(
+              "argidx:" + std::to_string(op) + ":" + std::to_string((int)j) +
+                  ":" + cond.id + ":" + best_idx.id,
+              cond.value + " ? " + std::to_string((int)j) + " : " +
+                  best_idx.value);
+          best_val = emit_cached(
+              "argval:" + std::to_string(op) + ":" + lanes[j].id + ":" +
+                  cond.id + ":" + best_val.id,
+              cond.value + " ? " + lanes[j].value + " : " + best_val.value);
+        }
+        stack.push_back(best_idx);
+
       } else if (IS_OP_REDUCTION(op)) {
         StackValue s = stack.back();
         stack.pop_back();

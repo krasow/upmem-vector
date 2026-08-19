@@ -5,8 +5,6 @@
 #if PIPELINE
 
 namespace {
-constexpr size_t MAX_SAFE_HFUSED_REDUCTION_CHAINS = 4;
-
 size_t count_reduction_chains(const std::vector<uint8_t>& rpn) {
   size_t count = 0;
   bool chain_has_reduction = false;
@@ -99,7 +97,7 @@ bool EventQueue::try_hfuse(std::shared_ptr<Event> last,
       e_mapped.push_back(op);
       for (int m = 0; m < SCALAR_INLINE_BYTES && k + 1 < e_rpn.size(); ++m)
         e_mapped.push_back(e_rpn[++k]);
-    } else if (IS_OP_SCALAR_VAR(op)) {
+    } else if (IS_OP_SCALAR_VAR(op) || op == OP_PUSH_SCALAR_VAR) {
       e_mapped.push_back(op);
       if (k + 1 < e_rpn.size())
         e_mapped.push_back(last_scalars.size() + e_rpn[++k]);

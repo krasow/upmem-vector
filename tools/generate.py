@@ -50,8 +50,6 @@ class DPUReduceOp(DPUOp):
     @staticmethod
     def make(name, symbol):
         return lambda type, kid: DPUReduceOp(name, symbol, type, kid)
-    
-
 
 def declare_unary_op(name, symbol):
     return lambda type, kid: DPUUnaryOp(name, symbol, type, kid)
@@ -78,6 +76,7 @@ ops = [
     DPUReduceOp.make('max', 'MAX'),
     DPUReduceOp.make('sum', 'SUM'),
     DPUReduceOp.make('product', 'PRODUCT'),
+
 ]
 
 types = [
@@ -142,7 +141,7 @@ for type in types:
              all_ops.append((kernel_id, op_instance))
              group.append(op_instance)
              kernel_id += 1
-             
+
     grouped_ops.append((type, group))
 
 
@@ -180,6 +179,11 @@ pipeline_ops = [
     ('product', 'PRODUCT'),
     # Ternary
     ('select', 'SELECT'),
+    # Variadic horizontal arg-reduction over K stacked lanes (pops k, pushes
+    # the winning lane index; carries k as one inline byte). Lowest-index
+    # tie-break. Not a reduction over N -- it is elementwise like SELECT.
+    ('argmin_k', 'ARGMIN_K'),
+    ('argmax_k', 'ARGMAX_K'),
     # Stack Machine
     ('push_input', 'PUSH_INPUT'),
     ('push_operand_0', 'PUSH_OPERAND_0'),
@@ -192,6 +196,10 @@ pipeline_ops = [
     ('push_operand_7', 'PUSH_OPERAND_7'),
     ('push_operand_8', 'PUSH_OPERAND_8'),
     ('push_operand_9', 'PUSH_OPERAND_9'),
+    # MAX_VFUSE_INPUTS defaults to 11, so reserve an opcode for every
+    # operand slot. Without operand 10, OP_PUSH_OPERAND_0 + 10 aliases
+    # OP_ADD_SCALAR_VAR and the JIT decodes scalar additions as input loads.
+    ('push_operand_10', 'PUSH_OPERAND_10'),
     ('add_scalar_var', 'ADD_SCALAR_VAR'),
     ('sub_scalar_var', 'SUB_SCALAR_VAR'),
     ('mul_scalar_var', 'MUL_SCALAR_VAR'),
@@ -229,6 +237,7 @@ with open("common/opcodes.h", "w") as out:
     out.write('#define IS_OP_SCALAR_VAR(op) ((op) >= OP_ADD_SCALAR_VAR && (op) <= OP_LE_SCALAR_VAR)\n')
     out.write('#define IS_OP_REDUCTION(op) ((op) >= OP_MIN && (op) <= OP_PRODUCT)\n')
     out.write('#define IS_OP_TERNARY(op) ((op) == OP_SELECT)\n')
+    out.write('#define IS_OP_ARG_K(op) ((op) == OP_ARGMIN_K || (op) == OP_ARGMAX_K)\n')
     out.write('#define IS_OP_INDIRECT_UPDATE(op) ((op) == OP_ADD_INDIRECT || (op) == OP_APPLY_INDIRECT)\n')
     out.write('#define OP_INLINE_BYTES(op) \\\n')
     out.write('    (IS_OP_SCALAR(op) ? 4 : \\\n')
@@ -236,7 +245,8 @@ with open("common/opcodes.h", "w") as out:
     out.write('      (((op) == OP_PUSH_SCALAR) ? 4 : \\\n')
     out.write('       ((op) == OP_PUSH_SCALAR_VAR ? 1 : \\\n')
     out.write('       (((op) == OP_LOAD_INDIRECT || (op) == OP_ADD_INDIRECT) ? 1 : \\\n')
-    out.write('        ((op) == OP_APPLY_INDIRECT ? 2 : 0))))))\n\n')
+    out.write('        ((op) == OP_APPLY_INDIRECT ? 2 : \\\n')
+    out.write('         (IS_OP_ARG_K(op) ? 1 : 0)))))))\n\n')
 
     out.write('#endif // OPCODES_H\n')
 

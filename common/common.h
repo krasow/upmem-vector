@@ -31,6 +31,13 @@ enum KernelCategory {
 #ifndef MAX_VFUSE_INPUTS
 #define MAX_VFUSE_INPUTS 11
 #endif
+#ifdef __cplusplus
+static_assert(OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1 <= OP_PUSH_OPERAND_10,
+              "MAX_VFUSE_INPUTS exceeds the reserved operand opcode range");
+#else
+_Static_assert(OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1 <= OP_PUSH_OPERAND_10,
+               "MAX_VFUSE_INPUTS exceeds the reserved operand opcode range");
+#endif
 #ifndef MAX_PIPELINE_STACK_DEPTH
 #define MAX_PIPELINE_STACK_DEPTH 2
 #endif
@@ -42,6 +49,17 @@ enum KernelCategory {
 #endif
 #ifndef MAX_HFUSE_CHAINS
 #define MAX_HFUSE_CHAINS 10
+#endif
+#ifndef MAX_SAFE_HFUSED_REDUCTION_CHAINS
+// Generated JIT kernels have dedicated storage for every configured result
+// slot. The generic interpreter is verified through eight simultaneous
+// reductions; keep its last two slots unavailable until its ninth-chain
+// result corruption is resolved.
+#if JIT
+#define MAX_SAFE_HFUSED_REDUCTION_CHAINS MAX_HFUSE_CHAINS
+#else
+#define MAX_SAFE_HFUSED_REDUCTION_CHAINS 8
+#endif
 #endif
 #ifndef OOM_RECOVERY_RETRIES
 #define OOM_RECOVERY_RETRIES 2
