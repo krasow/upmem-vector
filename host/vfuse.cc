@@ -30,6 +30,205 @@ std::string fused_kernel_hash(const std::shared_ptr<Event>& e) {
 }
 #endif
 
+bool rpn_contains_indirect(const std::vector<uint8_t>& rpn) {
+  for (size_t i = 0; i < rpn.size(); ++i) {
+    uint8_t op = rpn[i];
+    if (op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT ||
+        op == OP_APPLY_INDIRECT || op == OP_PUSH_INDEX)
+      return true;
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
+  }
+  return false;
+}
+
+// Whether `e` is the tail of an accumulator chain -- its last value-producing
+// opcode is a bare ADD or an arithmetic-shift-by-scalar.
+//
+// This is the one case where absorbing a shared intermediate on-stack is still
+// correct: linreg's error accumulator forms `previous_error + dx[j]*w[j]`, and
+// the previous value is consumed and immediately replaced by the next one, so
+// nothing else can observe the skipped MRAM write.  Product and reduction
+// chains reading a shared intermediate are not safe and must stay rejected.
+bool consumes_accumulator_chain(const std::shared_ptr<Event>& e) {
+  bool ends_with_add = e->rpn_ops.empty() && e->opcode == OP_ADD;
+  bool ends_with_asr_scalar = e->rpn_ops.empty() && e->opcode == OP_ASR_SCALAR;
+
+  for (size_t k = 0; k < e->rpn_ops.size(); ++k) {
+    uint8_t op = e->rpn_ops[k];
+    if (IS_OP_SCALAR(op)) {
+      ends_with_asr_scalar = op == OP_ASR_SCALAR;
+      k += SCALAR_INLINE_BYTES;
+    } else if (IS_OP_SCALAR_VAR(op)) {
+      ends_with_asr_scalar = op == OP_ASR_SCALAR_VAR;
+      k += SCALAR_VAR_INDEX_BYTES;
+    } else if (op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR ||
+               op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT ||
+               op == OP_APPLY_INDIRECT) {
+      k += OP_INLINE_BYTES(op);
+    } else if (IS_OP_ARG_K(op)) {
+      // Carries an inline k byte; skip it so the scan stays aligned.  An arg
+      // op is never a bare accumulator collapse.
+      k += OP_INLINE_BYTES(op);
+      ends_with_add = false;
+      ends_with_asr_scalar = false;
+    } else if (op == OP_ADD) {
+      ends_with_add = true;
+      ends_with_asr_scalar = false;
+    } else if (IS_OP_BINARY(op) || IS_OP_UNARY(op) || IS_OP_REDUCTION(op) ||
+               IS_OP_TERNARY(op)) {
+      ends_with_add = false;
+      ends_with_asr_scalar = false;
+    }
+  }
+  return ends_with_add || ends_with_asr_scalar;
+}
+
+bool is_commutative(uint8_t op) {
+  return op == OP_ADD || op == OP_MUL || op == OP_EQ;
+}
+
+// Shape of the producer before the merge, for the fusion log.
+struct VfuseBefore {
+  size_t inputs = 0;
+  size_t extra_outputs = 0;
+  size_t producer_scalars = 0;
+  size_t consumer_scalars = 0;
+  std::vector<uint8_t> producer_rpn;
+  std::vector<uint8_t> consumer_rpn;
+};
+
+void log_vertical_fusion(const std::shared_ptr<Event>& last,
+                         const std::shared_ptr<Event>& e,
+                         const VfuseBefore& before) {
+#if ENABLE_DPU_LOGGING >= 1
+  Logger& logger = DpuRuntime::get().get_logger();
+  if (!logger.enabled(2)) return;
+
+  FusionRpnSummary summary = summarize_fusion_rpn(last->rpn_ops);
+  auto log = logger.lock(logcat::FUSION);
+  log.first() << "vertical fusion";
+  log.second() << "child #" << e->id << "..#" << e->max_id << " -> fused #"
+               << last->id << "..#" << last->max_id
+               << "  deps=" << last->dependencies.size();
+  log.second() << "reason=dependent_on_stack_output";
+  log.second() << "shape inputs=" << before.inputs << "+" << e->inputs.size()
+               << "=>" << last->inputs.size()
+               << "  extra_outputs=" << before.extra_outputs << "=>"
+               << last->extra_outputs.size()
+               << "  scalars=" << before.producer_scalars << "+"
+               << before.consumer_scalars << "=>" << last->scalars.size();
+  log.second() << "producer expr: "
+               << fusion_rpn_expr_preview(before.producer_rpn, 1, 90);
+  log.second() << "consumer expr: "
+               << fusion_rpn_expr_preview(before.consumer_rpn, 1, 90,
+                                          "producer_out", 1)
+               << "  [producer_out = producer expr]";
+  log.second() << "fused expr: " << fusion_rpn_expr_preview(last->rpn_ops);
+  log.second() << "kernel after: " << fusion_rpn_short(summary)
+#if JIT
+               << "  kernel_hash=" << fused_kernel_hash(last)
+#endif
+               << "  opcode mix: " << fusion_op_counts(summary) << std::endl;
+#else
+  (void)last;
+  (void)e;
+  (void)before;
+#endif
+}
+
+// A consumer chain rewritten into the producer's operand frame.
+struct MappedChain {
+  bool ok = false;
+  std::vector<uint8_t> rpn;                   // consumer ops, producer frame
+  std::vector<detail::VectorDescRef> inputs;  // merged operand table
+};
+
+// Rewrites the consumer's operand pushes onto the producer's operand table.
+// The producer's result is already on the WRAM stack, so a consumer push of it
+// is dropped (and a second reference becomes an explicit DUP).  Returns a
+// failed MappedChain when the operand budget is exhausted or when the rewrite
+// would reorder a non-commutative operator's arguments.
+MappedChain map_consumer_onto_producer(
+    const std::vector<uint8_t>& consumer_rpn,
+    const std::vector<detail::VectorDescRef>& consumer_inputs,
+    const std::vector<detail::VectorDescRef>& producer_inputs,
+    const detail::VectorDescRef& on_stack, size_t producer_scalar_count) {
+  MappedChain mapped;
+  mapped.inputs = producer_inputs;
+
+  auto push_op_for = [&](const detail::VectorDescRef& vec) -> uint8_t {
+    if (vec == on_stack) return PUSH_OP_ALREADY_ON_STACK;
+    if (!mapped.inputs.empty() && mapped.inputs[0] == vec) return OP_PUSH_INPUT;
+    for (size_t i = 1; i < mapped.inputs.size(); ++i)
+      if (mapped.inputs[i] == vec)
+        return (uint8_t)(OP_PUSH_OPERAND_0 + (i - 1));
+    if (mapped.inputs.size() < MAX_COMBINED_INPUTS) {
+      mapped.inputs.push_back(vec);
+      // Slot 0 is the primary, so a new entry at index n takes operand n-1.
+      return (uint8_t)(OP_PUSH_OPERAND_0 + (mapped.inputs.size() - 2));
+    }
+    return PUSH_OP_BUDGET_EXCEEDED;
+  };
+
+  bool primary_on_stack = false;
+  bool stacked_without_primary = false;
+
+  for (size_t k = 0; k < consumer_rpn.size(); ++k) {
+    uint8_t op = consumer_rpn[k];
+    if (op == OP_PUSH_INPUT) {
+      uint8_t push = push_op_for(consumer_inputs[0]);
+      if (push == PUSH_OP_BUDGET_EXCEEDED) return {};
+      if (push == PUSH_OP_ALREADY_ON_STACK)
+        primary_on_stack = true;
+      else
+        mapped.rpn.push_back(push);
+
+    } else if (op >= OP_PUSH_OPERAND_0 &&
+               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
+      size_t idx = op - OP_PUSH_OPERAND_0 + 1;
+      if (idx >= consumer_inputs.size()) return {};
+      uint8_t push = push_op_for(consumer_inputs[idx]);
+      if (push == PUSH_OP_BUDGET_EXCEEDED) return {};
+      if (push == PUSH_OP_ALREADY_ON_STACK) {
+        if (primary_on_stack) mapped.rpn.push_back(OP_DUP);
+        stacked_without_primary = true;
+      } else {
+        mapped.rpn.push_back(push);
+      }
+
+    } else if (IS_OP_SCALAR(op)) {
+      mapped.rpn.push_back(op);
+      for (int m = 0; m < SCALAR_INLINE_BYTES && k + 1 < consumer_rpn.size();
+           ++m)
+        mapped.rpn.push_back(consumer_rpn[++k]);
+
+    } else if (IS_OP_SCALAR_VAR(op)) {
+      // Scalar slots shift up by the producer's scalar table size.
+      mapped.rpn.push_back(op);
+      if (k + 1 < consumer_rpn.size())
+        mapped.rpn.push_back(
+            (uint8_t)(producer_scalar_count + consumer_rpn[++k]));
+
+    } else if (OP_INLINE_BYTES(op) > 0) {
+      mapped.rpn.push_back(op);
+      for (size_t m = 0; m < OP_INLINE_BYTES(op) && k + 1 < consumer_rpn.size();
+           ++m)
+        mapped.rpn.push_back(consumer_rpn[++k]);
+
+    } else {
+      // The only stacked operand is the right-hand one, so a non-commutative
+      // operator would apply with its arguments swapped.
+      if (stacked_without_primary && IS_OP_BINARY(op) && !is_commutative(op))
+        return {};
+      stacked_without_primary = false;
+      mapped.rpn.push_back(op);
+    }
+  }
+
+  mapped.ok = true;
+  return mapped;
+}
+
 uint8_t get_or_add_push_op(std::vector<detail::VectorDescRef>& inputs,
                            const detail::VectorDescRef& vec) {
   if (!vec) return PUSH_OP_BUDGET_EXCEEDED;
@@ -94,6 +293,206 @@ bool append_absorbed_rpn_inline(const detail::VectorDescRef& vec,
   }
   return true;
 }
+// Whether `e` reads `vec` as one of its inputs.
+bool reads_input(const std::shared_ptr<Event>& e,
+                 const detail::VectorDescRef& vec) {
+  for (const auto& in : e->inputs)
+    if (in == vec) return true;
+  return false;
+}
+
+// Absorbing a value on-stack skips its MRAM write, so it is only safe while at
+// most one queued event references it -- the producer's own output slot.
+//
+// This is what makes a *retroactive* fusion reject a multi-consumer named
+// output: by then the consumer is itself queued, so it contributes references
+// of its own and the count exceeds one.  With linreg's `error_shifted` read by
+// 10 reductions, try_vfuse(accumulator, first_reduction) bails here and the
+// MRAM materialisation is kept.  Fusion during submit passes cleanly because
+// the consumer is not in the queue yet.
+//
+// (The original form added the consumer's own input refs to both sides of the
+// comparison, which cancels; this is the same predicate written out.)
+bool absorbing_is_safe(const detail::VectorDescRef& vec,
+                       size_t internal_reference_count) {
+  return !vec || internal_reference_count <= 1;
+}
+
+void log_absorb_producer(const std::shared_ptr<Event>& consumer,
+                         size_t erased_id, size_t erased_max_id,
+                         size_t deps_before) {
+#if ENABLE_DPU_LOGGING >= 1
+  Logger& logger = DpuRuntime::get().get_logger();
+  if (!logger.enabled(2)) return;
+  auto log = logger.lock(logcat::FUSION);
+  log.first() << "absorb producer";
+  log.second() << "producer #" << erased_id << "..#" << erased_max_id
+               << " -> consumer #" << consumer->id << "..#" << consumer->max_id
+               << "  deps=" << deps_before << "=>"
+               << consumer->dependencies.size();
+  log.second() << "reason=inline_absorbed_input" << std::endl;
+#else
+  (void)consumer;
+  (void)erased_id;
+  (void)erased_max_id;
+  (void)deps_before;
+#endif
+}
+
+// An absorbed producer inlined into its consumer.
+struct InlinedProgram {
+  bool ok = false;
+  std::vector<detail::VectorDescRef> inputs;
+  std::vector<uint8_t> rpn;
+  std::vector<uint32_t> scalars;
+};
+
+// Gives `e` an explicit RPN when it is still a bare opcode, so the inliner has
+// something to rewrite.
+void ensure_explicit_rpn(const std::shared_ptr<Event>& e) {
+  if (!e->rpn_ops.empty()) return;
+  for (size_t k = 0; k < e->inputs.size(); ++k)
+    e->rpn_ops.push_back(k == 0 ? OP_PUSH_INPUT : OP_PUSH_OPERAND_0 + (k - 1));
+  if (e->is_scalar) {
+    e->rpn_ops.push_back(map_to_var_op(e->opcode));
+    e->rpn_ops.push_back(0);
+    e->scalars.push_back(e->scalar_value);
+  } else {
+    e->rpn_ops.push_back(e->opcode);
+  }
+}
+
+// Consumer uses random access (`vec[idx]`), so the absorbed producer can only
+// be inlined where the consumer would have loaded it: the PUSH_INDEX +
+// LOAD_INDIRECT(slot 0) pair.  Anything else still needs the producer in MRAM.
+InlinedProgram inline_through_indirect(const std::shared_ptr<Event>& e,
+                                       const detail::VectorDescRef& producer) {
+  InlinedProgram result;
+  bool rewritten = false;
+
+  for (size_t k = 0; k < e->rpn_ops.size(); ++k) {
+    uint8_t op = e->rpn_ops[k];
+    if (op == OP_PUSH_INDEX && k + 2 < e->rpn_ops.size() &&
+        e->rpn_ops[k + 1] == OP_LOAD_INDIRECT && e->rpn_ops[k + 2] == 0) {
+      if (!append_absorbed_rpn_inline(producer, result.inputs, result.rpn))
+        return {};
+      rewritten = true;
+      k += 2;
+    } else if (op == OP_LOAD_INDIRECT) {
+      return {};  // indirect load of something else: needs real MRAM
+    } else if (op >= OP_PUSH_OPERAND_0 &&
+               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
+      size_t idx = op - OP_PUSH_OPERAND_0 + 1;
+      if (idx >= e->inputs.size()) return {};
+      uint8_t push = get_or_add_push_op(result.inputs, e->inputs[idx]);
+      if (push == PUSH_OP_BUDGET_EXCEEDED) return {};
+      result.rpn.push_back(push);
+    } else if (op == OP_PUSH_INPUT) {
+      return {};  // a direct read of the absorbed vector alongside a load
+    } else if (IS_OP_SCALAR_VAR(op)) {
+      result.rpn.push_back(op);
+      if (k + 1 < e->rpn_ops.size()) result.rpn.push_back(e->rpn_ops[++k]);
+    } else if (OP_INLINE_BYTES(op) > 0) {
+      result.rpn.push_back(op);
+      for (size_t b = 0; b < OP_INLINE_BYTES(op) && k + 1 < e->rpn_ops.size();
+           ++b)
+        result.rpn.push_back(e->rpn_ops[++k]);
+    } else {
+      result.rpn.push_back(op);
+    }
+  }
+
+  if (!rewritten) return {};
+  result.scalars = e->scalars;
+  result.ok = true;
+  return result;
+}
+
+// Consumer reads the absorbed vector as its primary input, so its RPN is
+// spliced in wherever the consumer pushes that input, and the consumer's own
+// operand and scalar slots shift up past the producer's.
+InlinedProgram inline_directly(const std::shared_ptr<Event>& e,
+                               const detail::VectorDescRef& producer) {
+  InlinedProgram result;
+  const std::vector<detail::VectorDescRef>& producer_inputs =
+      producer->absorbed_inputs;
+  const size_t operand_shift = producer_inputs.size();
+  const size_t scalar_shift = producer->absorbed_scalars.size();
+
+  result.inputs.reserve(operand_shift + e->inputs.size() - 1);
+  for (const auto& vec : producer_inputs) result.inputs.push_back(vec);
+  for (size_t k = 1; k < e->inputs.size(); ++k)
+    result.inputs.push_back(e->inputs[k]);
+  if (result.inputs.size() > MAX_COMBINED_INPUTS) return {};
+
+  result.scalars = producer->absorbed_scalars;
+  for (size_t k = 0; k < e->rpn_ops.size(); ++k) {
+    uint8_t op = e->rpn_ops[k];
+    if (op == OP_PUSH_INPUT) {
+      result.rpn.insert(result.rpn.end(), producer->absorbed_rpn.begin(),
+                        producer->absorbed_rpn.end());
+    } else if (op >= OP_PUSH_OPERAND_0 &&
+               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
+      uint8_t slot = op - OP_PUSH_OPERAND_0;
+      result.rpn.push_back(OP_PUSH_OPERAND_0 +
+                           (uint8_t)(operand_shift - 1 + slot));
+    } else if (IS_OP_SCALAR_VAR(op)) {
+      result.rpn.push_back(op);
+      if (k + 1 < e->rpn_ops.size())
+        result.rpn.push_back(e->rpn_ops[++k] + (uint8_t)scalar_shift);
+    } else {
+      result.rpn.push_back(op);
+    }
+  }
+  result.scalars.insert(result.scalars.end(), e->scalars.begin(),
+                        e->scalars.end());
+  result.ok = true;
+  return result;
+}
+
+void log_inline_input(const std::shared_ptr<Event>& e,
+                      const detail::VectorDescRef& producer,
+                      size_t inputs_before, size_t scalars_before,
+                      const std::vector<uint8_t>& rpn_before,
+                      const InlinedProgram& result) {
+#if ENABLE_DPU_LOGGING >= 1
+  Logger& logger = DpuRuntime::get().get_logger();
+  if (!logger.enabled(2)) return;
+
+  FusionRpnSummary after = summarize_fusion_rpn(result.rpn);
+  auto log = logger.lock(logcat::FUSION);
+  log.first() << "inline input";
+  log.second() << "producer #" << producer->last_producer_id << " -> consumer #"
+               << e->id;
+  log.second() << "reason=indirect_load_of_absorbed_vector";
+  log.second() << "shape inputs=" << inputs_before << "=>"
+               << result.inputs.size() << "  scalars=" << scalars_before << "=>"
+               << result.scalars.size();
+  log.second() << "consumer expr before: "
+               << fusion_rpn_expr_preview(rpn_before, 1, 90);
+  log.second() << "consumer expr after: "
+               << fusion_rpn_expr_preview(result.rpn);
+  log.second() << "kernel after: " << fusion_rpn_short(after)
+#if JIT
+               << "  kernel_hash="
+               << jit_signature_hash(Signature{
+                      result.rpn,
+                      jit_canonical_type_name(e->output ? e->output->type_name
+                                                        : nullptr)})
+#endif
+               << "  opcode mix: " << fusion_op_counts(after) << std::endl;
+#else
+  (void)producer;
+  (void)inputs_before;
+  (void)scalars_before;
+  (void)rpn_before;
+  (void)result;
+  fprintf(stderr,
+          "[VFUSE] inlined absorbed input into indirect consumer id=%zu\n",
+          e->id);
+#endif
+}
+
 }  // namespace
 
 // Inline the RPN of an absorbed intermediate into `e` so it can be computed
@@ -114,142 +513,28 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
     in_vec->is_shared_intermediate = false;
     return;
   }
-  if (e->rpn_ops.empty()) {
-    for (size_t k = 0; k < e->inputs.size(); ++k)
-      e->rpn_ops.push_back(k == 0 ? OP_PUSH_INPUT
-                                  : OP_PUSH_OPERAND_0 + (k - 1));
-    if (e->is_scalar) {
-      e->rpn_ops.push_back(map_to_var_op(e->opcode));
-      e->rpn_ops.push_back(0);
-      e->scalars.push_back(e->scalar_value);
-    } else {
-      e->rpn_ops.push_back(e->opcode);
-    }
-  }
+  ensure_explicit_rpn(e);
 
-  std::vector<detail::VectorDescRef> new_inputs;
-  std::vector<uint8_t> new_rpn;
-  std::vector<uint32_t> new_scalars;
-  bool contains_indirect = false;
-  for (size_t k = 0; k < e->rpn_ops.size(); ++k) {
-    uint8_t op = e->rpn_ops[k];
-    if (op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT ||
-        op == OP_APPLY_INDIRECT || op == OP_PUSH_INDEX) {
-      contains_indirect = true;
-      break;
-    }
-    if (OP_INLINE_BYTES(op) > 0) k += OP_INLINE_BYTES(op);
-  }
+  const bool contains_indirect = rpn_contains_indirect(e->rpn_ops);
+  const size_t inputs_before = e->inputs.size();
+  const size_t scalars_before = e->scalars.size();
+  const std::vector<uint8_t> rpn_before = e->rpn_ops;
 
-  if (contains_indirect) {
-    bool rewritten = false;
-    for (size_t k = 0; k < e->rpn_ops.size(); ++k) {
-      uint8_t op = e->rpn_ops[k];
-      if (op == OP_PUSH_INDEX && k + 2 < e->rpn_ops.size() &&
-          e->rpn_ops[k + 1] == OP_LOAD_INDIRECT && e->rpn_ops[k + 2] == 0) {
-        if (!append_absorbed_rpn_inline(in_vec, new_inputs, new_rpn)) return;
-        rewritten = true;
-        k += 2;
-      } else if (op == OP_LOAD_INDIRECT) {
-        return;
-      } else if (op >= OP_PUSH_OPERAND_0 &&
-                 op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
-        size_t idx = op - OP_PUSH_OPERAND_0 + 1;
-        if (idx >= e->inputs.size()) return;
-        uint8_t push = get_or_add_push_op(new_inputs, e->inputs[idx]);
-        if (push == PUSH_OP_BUDGET_EXCEEDED) return;
-        new_rpn.push_back(push);
-      } else if (op == OP_PUSH_INPUT) {
-        return;
-      } else if (IS_OP_SCALAR_VAR(op)) {
-        new_rpn.push_back(op);
-        if (k + 1 < e->rpn_ops.size()) new_rpn.push_back(e->rpn_ops[++k]);
-      } else if (OP_INLINE_BYTES(op) > 0) {
-        new_rpn.push_back(op);
-        for (size_t b = 0; b < OP_INLINE_BYTES(op) && k + 1 < e->rpn_ops.size();
-             ++b)
-          new_rpn.push_back(e->rpn_ops[++k]);
-      } else {
-        new_rpn.push_back(op);
-      }
-    }
-    if (!rewritten) {
-      return;
-    }
-    new_scalars = e->scalars;
-#if ENABLE_DPU_LOGGING >= 1
-    Logger& logger = DpuRuntime::get().get_logger();
-    FusionRpnSummary consumer_after = summarize_fusion_rpn(new_rpn);
-    if (logger.enabled(2)) {
-      auto log = logger.lock(logcat::FUSION);
-      log.first() << "inline input";
-      log.second() << "producer #" << in_vec->last_producer_id
-                   << " -> consumer #" << e->id;
-      log.second() << "reason=indirect_load_of_absorbed_vector";
-      log.second() << "shape inputs=" << e->inputs.size() << "=>"
-                   << new_inputs.size() << "  scalars=" << e->scalars.size()
-                   << "=>" << new_scalars.size();
-      log.second() << "consumer expr before: "
-                   << fusion_rpn_expr_preview(e->rpn_ops, 1, 90);
-      log.second() << "consumer expr after: "
-                   << fusion_rpn_expr_preview(new_rpn);
-      log.second() << "kernel after: " << fusion_rpn_short(consumer_after)
-#if JIT
-                   << "  kernel_hash="
-                   << jit_signature_hash(Signature{
-                          new_rpn,
-                          jit_canonical_type_name(
-                              e->output ? e->output->type_name : nullptr)})
-#endif
-                   << "  opcode mix: " << fusion_op_counts(consumer_after)
-                   << std::endl;
-    }
-#else
-    fprintf(stderr,
-            "[VFUSE] inlined absorbed input into indirect consumer id=%zu\n",
-            e->id);
-#endif
-  } else {
-    const auto& ai = in_vec->absorbed_inputs;
-    size_t N = ai.size();
-    size_t prefix_scalars = in_vec->absorbed_scalars.size();
+  InlinedProgram inlined = contains_indirect
+                               ? inline_through_indirect(e, in_vec)
+                               : inline_directly(e, in_vec);
+  if (!inlined.ok) return;
+  if (contains_indirect)
+    log_inline_input(e, in_vec, inputs_before, scalars_before, rpn_before,
+                     inlined);
 
-    new_inputs.reserve(N + e->inputs.size() - 1);
-    for (auto& v : ai) new_inputs.push_back(v);
-    for (size_t k = 1; k < e->inputs.size(); ++k)
-      new_inputs.push_back(e->inputs[k]);
-
-    if (new_inputs.size() > MAX_COMBINED_INPUTS) return;
-
-    new_scalars = in_vec->absorbed_scalars;
-
-    for (size_t k = 0; k < e->rpn_ops.size(); ++k) {
-      uint8_t op = e->rpn_ops[k];
-      if (op == OP_PUSH_INPUT) {
-        new_rpn.insert(new_rpn.end(), in_vec->absorbed_rpn.begin(),
-                       in_vec->absorbed_rpn.end());
-      } else if (op >= OP_PUSH_OPERAND_0 &&
-                 op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
-        uint8_t X = op - OP_PUSH_OPERAND_0;
-        new_rpn.push_back(OP_PUSH_OPERAND_0 + (uint8_t)(N - 1 + X));
-      } else if (IS_OP_SCALAR_VAR(op)) {
-        new_rpn.push_back(op);
-        if (k + 1 < e->rpn_ops.size())
-          new_rpn.push_back(e->rpn_ops[++k] + (uint8_t)prefix_scalars);
-      } else {
-        new_rpn.push_back(op);
-      }
-    }
-    new_scalars.insert(new_scalars.end(), e->scalars.begin(), e->scalars.end());
-  }
-
-  if (new_inputs.size() > MAX_COMBINED_INPUTS) return;
+  if (inlined.inputs.size() > MAX_COMBINED_INPUTS) return;
 
   // Clear absorbed state — future ops that read this vector get it from MRAM.
   auto absorbed_vec = std::move(in_vec);
-  e->inputs = std::move(new_inputs);
-  e->rpn_ops = normalize_associative_rpn(new_rpn);
-  e->scalars = std::move(new_scalars);
+  e->inputs = std::move(inlined.inputs);
+  e->rpn_ops = normalize_associative_rpn(inlined.rpn);
+  e->scalars = std::move(inlined.scalars);
   e->is_scalar = false;
   if (absorbed_vec->last_producer_id != 0)
     e->absorbed_producer_ids.insert(absorbed_vec->last_producer_id);
@@ -312,18 +597,7 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
         absorbed_vec->last_producer_id = e->id;
         it = operations_.erase(it);
         VECTORDPU_NOTE(absorbed_producers);
-#if ENABLE_DPU_LOGGING >= 1
-        Logger& logger = DpuRuntime::get().get_logger();
-        if (logger.enabled(2)) {
-          auto log = logger.lock(logcat::FUSION);
-          log.first() << "absorb producer";
-          log.second() << "producer #" << erased_id << "..#" << erased_max_id
-                       << " -> consumer #" << e->id << "..#" << e->max_id
-                       << "  deps=" << deps_before << "=>"
-                       << e->dependencies.size();
-          log.second() << "reason=inline_absorbed_input" << std::endl;
-        }
-#endif
+        log_absorb_producer(e, erased_id, erased_max_id, deps_before);
       } else {
         ++it;
       }
@@ -346,11 +620,7 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   // rpn rewriter doesn't remap the single-byte operand index that follows
   // LOAD_INDIRECT, so after merging it would still reference slot 0 of a
   // combined inputs list that no longer corresponds to the absorbed vec.
-  for (uint8_t op : e->rpn_ops) {
-    if (op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT ||
-        op == OP_APPLY_INDIRECT || op == OP_PUSH_INDEX)
-      return false;
-  }
+  if (rpn_contains_indirect(e->rpn_ops)) return false;
 
   // Safety: the on-stack value is the last chain's output.
   detail::VectorDescRef on_stack =
@@ -365,73 +635,19 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   // the next accumulator value.  Keeping this case fusable lets the
   // accumulator collapse into one JIT kernel while still rejecting product and
   // reduction chains that read shared materialized intermediates.
-  bool e_ends_with_add = e->rpn_ops.empty() && e->opcode == OP_ADD;
-  bool e_ends_with_asr_scalar =
-      e->rpn_ops.empty() && e->opcode == OP_ASR_SCALAR;
-  for (size_t k = 0; k < e->rpn_ops.size(); ++k) {
-    uint8_t op = e->rpn_ops[k];
-    if (IS_OP_SCALAR(op)) {
-      e_ends_with_asr_scalar = op == OP_ASR_SCALAR;
-      k += SCALAR_INLINE_BYTES;
-    } else if (IS_OP_SCALAR_VAR(op)) {
-      e_ends_with_asr_scalar = op == OP_ASR_SCALAR_VAR;
-      k += SCALAR_VAR_INDEX_BYTES;
-    } else if (op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR ||
-               op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT ||
-               op == OP_APPLY_INDIRECT) {
-      k += OP_INLINE_BYTES(op);
-    } else if (IS_OP_ARG_K(op)) {
-      // Variadic arg op carries an inline k byte; skip it so the scan stays
-      // aligned, and clear the accumulator-tail flags (an arg op is never a
-      // bare add/asr accumulator collapse).
-      k += OP_INLINE_BYTES(op);
-      e_ends_with_add = false;
-      e_ends_with_asr_scalar = false;
-    } else if (op == OP_ADD) {
-      e_ends_with_add = true;
-      e_ends_with_asr_scalar = false;
-    } else if (IS_OP_BINARY(op) || IS_OP_UNARY(op) || IS_OP_REDUCTION(op) ||
-               IS_OP_TERNARY(op)) {
-      e_ends_with_add = false;
-      e_ends_with_asr_scalar = false;
-    }
-  }
-  bool consumes_accumulator_chain = e_ends_with_add || e_ends_with_asr_scalar;
-  if (on_stack && on_stack->is_shared_intermediate &&
-      !consumes_accumulator_chain)
+  const bool accumulator_tail = consumes_accumulator_chain(e);
+  if (on_stack && on_stack->is_shared_intermediate && !accumulator_tail)
     return false;
 
-  // Absorbing on_stack skips its MRAM write.  Reject if any other event in
-  // the queue still reads vec — they would see stale MRAM.  The deliberate
-  // double-counting of e's own input refs (once via count_internal_references
-  // when e is already in operations_, once via the e->inputs scan below)
-  // makes this check reject retroactive vfuses that would absorb a
-  // multi-consumer named output: e.g. linreg's `error_shifted` is read by
-  // 10 independent reductions, so after the first reduction has been
-  // folded in, the retroactive try_vfuse(accumulator, first_reduction)
-  // sees lib=3 > internal=2 and bails — keeping error_shifted's MRAM
-  // materialisation intact.  Non-retroactive fusion during submit passes
-  // cleanly because e isn't yet in the queue.
-  auto check_safety = [&](detail::VectorDescRef vec) {
-    if (!vec) return true;
-    size_t internal = 1;
-    for (const auto& in : e->inputs)
-      if (in == vec) internal++;
-    size_t lib = count_internal_references(vec);
-    for (const auto& in : e->inputs)
-      if (in == vec) lib++;
-    return lib <= internal;
-  };
-  if (!consumes_accumulator_chain && !check_safety(on_stack)) return false;
+  if (!accumulator_tail &&
+      !absorbing_is_safe(on_stack, count_internal_references(on_stack)))
+    return false;
 
-  bool e_uses_on_stack = false;
-  for (const auto& in : e->inputs)
-    if (in == on_stack) {
-      e_uses_on_stack = true;
-      break;
-    }
-  if (!e_uses_on_stack) return false;
+  // There is nothing to fuse unless e actually consumes the stacked value.
+  if (!reads_input(e, on_stack)) return false;
 
+  // e must not also read one of the producer's *other* chain outputs; only the
+  // stacked one is available without a materialised MRAM buffer.
   for (const auto& in : e->inputs) {
     if (!in || in == on_stack) continue;
     if (in == last->output) return false;
@@ -448,92 +664,20 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   size_t last_inputs_before = last->inputs.size();
   size_t last_extra_outputs_before = last->extra_outputs.size();
 
-  std::vector<detail::VectorDescRef> combined = last->inputs;
-  auto get_push_op = [&](detail::VectorDescRef vec) -> uint8_t {
-    if (vec == on_stack) return PUSH_OP_ALREADY_ON_STACK;
-    if (!combined.empty() && combined[0] == vec) return OP_PUSH_INPUT;
-    for (size_t i = 1; i < combined.size(); ++i)
-      if (combined[i] == vec) return (uint8_t)(OP_PUSH_OPERAND_0 + (i - 1));
-    if (combined.size() < MAX_COMBINED_INPUTS) {
-      combined.push_back(vec);
-      // New element is at index (combined.size()-1); its operand slot is one
-      // less (slot 0 is the primary), so operand_index = combined.size() - 2.
-      return (uint8_t)(OP_PUSH_OPERAND_0 + (combined.size() - 2));
-    }
-    return PUSH_OP_BUDGET_EXCEEDED;
-  };
-
-  auto is_commutative = [](uint8_t op) {
-    return op == OP_ADD || op == OP_MUL || op == OP_EQ;
-  };
-
-  std::vector<uint8_t> e_mapped;
-  bool possible = true;
-  bool primary_on_stack = false;
-  bool secondary_on_stack_no_primary = false;
-
-  for (size_t k = 0; k < e_rpn.size(); ++k) {
-    uint8_t op = e_rpn[k];
-    if (op == OP_PUSH_INPUT) {
-      uint8_t push = get_push_op(e->inputs[0]);
-      if (push == PUSH_OP_BUDGET_EXCEEDED) {
-        possible = false;
-        break;
-      }
-      if (push != PUSH_OP_ALREADY_ON_STACK)
-        e_mapped.push_back(push);
-      else
-        primary_on_stack = true;
-    } else if (op >= OP_PUSH_OPERAND_0 &&
-               op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
-      size_t idx = op - OP_PUSH_OPERAND_0 + 1;
-      if (idx >= e->inputs.size()) {
-        possible = false;
-        break;
-      }
-      uint8_t push = get_push_op(e->inputs[idx]);
-      if (push == PUSH_OP_BUDGET_EXCEEDED) {
-        possible = false;
-        break;
-      }
-      if (push == PUSH_OP_ALREADY_ON_STACK) {
-        if (primary_on_stack) e_mapped.push_back(OP_DUP);
-        secondary_on_stack_no_primary = true;
-      } else {
-        e_mapped.push_back(push);
-      }
-    } else if (IS_OP_SCALAR(op)) {
-      e_mapped.push_back(op);
-      for (int m = 0; m < SCALAR_INLINE_BYTES && k + 1 < e_rpn.size(); ++m)
-        e_mapped.push_back(e_rpn[++k]);
-    } else if (IS_OP_SCALAR_VAR(op)) {
-      e_mapped.push_back(op);
-      if (k + 1 < e_rpn.size())
-        e_mapped.push_back(last_scalars.size() + e_rpn[++k]);
-    } else if (OP_INLINE_BYTES(op) > 0) {
-      e_mapped.push_back(op);
-      for (size_t m = 0; m < OP_INLINE_BYTES(op) && k + 1 < e_rpn.size(); ++m)
-        e_mapped.push_back(e_rpn[++k]);
-    } else {
-      if (secondary_on_stack_no_primary && IS_OP_BINARY(op) &&
-          !is_commutative(op))
-        return false;
-      secondary_on_stack_no_primary = false;
-      e_mapped.push_back(op);
-    }
-  }
-
-  if (!possible || last_rpn.size() + e_mapped.size() > MAX_VFUSE_OPS)
-    return false;
+  MappedChain mapped = map_consumer_onto_producer(
+      e_rpn, e->inputs, last->inputs, on_stack, last_scalars.size());
+  if (!mapped.ok) return false;
+  if (last_rpn.size() + mapped.rpn.size() > MAX_VFUSE_OPS) return false;
   if (last_scalars.size() + e_scalars.size() > MAX_PIPELINE_SCALARS)
     return false;
 
   last->rpn_ops = last_rpn;
-  last->rpn_ops.insert(last->rpn_ops.end(), e_mapped.begin(), e_mapped.end());
+  last->rpn_ops.insert(last->rpn_ops.end(), mapped.rpn.begin(),
+                       mapped.rpn.end());
   last->rpn_ops = normalize_associative_rpn(last->rpn_ops);
   last->scalars = last_scalars;
   last->scalars.insert(last->scalars.end(), e_scalars.begin(), e_scalars.end());
-  last->inputs = combined;
+  last->inputs = mapped.inputs;
 
   if (last->extra_outputs.empty())
     last->output = e->output;
@@ -560,38 +704,12 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   for (auto& out : e->extra_outputs)
     if (out) out->last_producer_id = last->id;
 
-  FusionRpnSummary rpn_summary = summarize_fusion_rpn(last->rpn_ops);
   last->slice_name = compact_rpn_label(last->rpn_ops);
+  log_vertical_fusion(
+      last, e,
+      VfuseBefore{last_inputs_before, last_extra_outputs_before,
+                  last_scalars.size(), e_scalars.size(), last_rpn, e_rpn});
 
-#if ENABLE_DPU_LOGGING >= 1
-  Logger& logger = DpuRuntime::get().get_logger();
-  if (logger.enabled(2)) {
-    auto log = logger.lock(logcat::FUSION);
-    log.first() << "vertical fusion";
-    log.second() << "child #" << e->id << "..#" << e->max_id << " -> fused #"
-                 << last->id << "..#" << last->max_id
-                 << "  deps=" << last->dependencies.size();
-    log.second() << "reason=dependent_on_stack_output";
-    log.second() << "shape inputs=" << last_inputs_before << "+"
-                 << e->inputs.size() << "=>" << last->inputs.size()
-                 << "  extra_outputs=" << last_extra_outputs_before << "=>"
-                 << last->extra_outputs.size()
-                 << "  scalars=" << last_scalars.size() << "+"
-                 << e_scalars.size() << "=>" << last->scalars.size();
-    log.second() << "producer expr: "
-                 << fusion_rpn_expr_preview(last_rpn, 1, 90);
-    log.second() << "consumer expr: "
-                 << fusion_rpn_expr_preview(e_rpn, 1, 90, "producer_out", 1)
-                 << "  [producer_out = producer expr]";
-    log.second() << "fused expr: " << fusion_rpn_expr_preview(last->rpn_ops);
-    log.second() << "kernel after: " << fusion_rpn_short(rpn_summary)
-#if JIT
-                 << "  kernel_hash=" << fused_kernel_hash(last)
-#endif
-                 << "  opcode mix: " << fusion_op_counts(rpn_summary)
-                 << std::endl;
-  }
-#endif
   VECTORDPU_NOTE(vertical_fusions);
   trace::event_fused(e, last, "");
   trace::inqueue_end(e);
