@@ -2,6 +2,8 @@
 #include <perfetto/trace.h>
 #include <perfetto/trace_internal.h>
 
+#include <algorithm>
+
 #include "jit.h"
 #include "runtime.h"
 #include "stats.h"
@@ -446,6 +448,14 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
                                ? inline_through_indirect(e, in_vec)
                                : inline_directly(e, in_vec);
   if (!inlined.ok) return;
+
+    // MAX_VFUSE_OPS is the size of the generic interpreter's args.pipeline.ops
+    // buffer, so it only binds when there is no JIT: a generated kernel has its
+    // program baked into C and can be any length.  Without this the interpreter
+    // silently truncated the tail of an over-long inlined program.
+#if !JIT
+  if (inlined.rpn.size() > MAX_VFUSE_OPS) return;
+#endif
   if (contains_indirect)
     log_inline_input(e, in_vec, inputs_before, scalars_before, rpn_before,
                      inlined);
@@ -465,66 +475,15 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
   absorbed_vec->absorbed_inputs.clear();
   absorbed_vec->is_shared_intermediate = false;
 
-  // The event that produced absorbed_vec has been inlined into e.  We want to
-  // erase it from operations_ ONLY when no one else needs absorbed_vec's MRAM
-  // output:
-  //  - No other queued event reads it as an input.
-  //  - No external holder (a live dpu_vector still bound to absorbed_vec)
-  //    could submit another consumer.  The hist benchmark trips this case:
-  //    `buckets` is kept on the caller's stack while N independent
-  //    `sum(buckets == i)` events are submitted one at a time.  Erasing
-  //    buckets' producer after the first sum leaves the next N-1 sums
-  //    reading uninitialised MRAM.
-  //
-  // For absorbed_vec's use_count at this point we've already released e's old
-  // inputs[0] ref (via the std::move above), so queue refs are: the producer's
-  // output (the event we might erase) + the `absorbed_vec` local we hold here.
-  // Anything more means an external dpu_vector still has it.
-  bool other_consumers = false;
-  for (const auto& op : operations_)
-    for (const auto& inp : op->inputs)
-      if (inp == absorbed_vec) {
-        other_consumers = true;
-        break;
-      }
-
-  size_t internal_refs = count_internal_references(absorbed_vec);
-  // Allow transient queue-owned refs and temporary locals to keep the use
-  // count elevated.  Only treat the vector as externally held when the count
-  // stays well above the internal reference count.
-  bool external_holder = absorbed_vec.use_count() > internal_refs + 5;
-
-  if (!other_consumers) {
-    for (auto it = operations_.begin(); it != operations_.end();) {
-      auto& op = *it;
-      bool erasable_seed = op->opcode == OP_NEGATE;
-      if (op->output == absorbed_vec && op->extra_outputs.empty() &&
-          (!external_holder || erasable_seed || contains_indirect)) {
-        size_t erased_id = op->id;
-        size_t erased_max_id = op->max_id;
-        size_t deps_before = e->dependencies.size();
-        // Close the perfetto slice opened by event_enqueued so the absorbed
-        // producer's track doesn't hang open for the rest of the trace.
-        trace::event_fused(op, e, "");
-        // The absorbed producer is never going to execute, so nothing will
-        // mark it finished.  Transfer its id range into e so that when e
-        // eventually completes, last_finished_id advances past the erased id
-        // and anyone still waiting on it is unblocked.
-        e->max_id = std::max(e->max_id, op->max_id);
-        e->dependencies.insert(op->dependencies.begin(),
-                               op->dependencies.end());
-        // Redirect the absorbed_vec's producer so consumers that add a
-        // dependency on absorbed_vec from here on wait for e, not the erased
-        // producer.
-        absorbed_vec->last_producer_id = e->id;
-        it = operations_.erase(it);
-        VECTORDPU_NOTE(absorbed_producers);
-        log_absorb_producer(e, erased_id, erased_max_id, deps_before);
-      } else {
-        ++it;
-      }
-    }
-  }
+  // absorbed_vec's producer may now be redundant: e recomputes it inline.  But
+  // whether it is *actually* redundant cannot be known here -- a consumer that
+  // needs its MRAM output may not have been submitted yet, and a temporary
+  // holding the vector may not have died yet.  So only mark it, and let
+  // EventQueue::output_still_needed decide when the event reaches the head of
+  // the queue, by which point every consumer in this batch is visible.
+  for (auto& op : operations_)
+    if (op->output == absorbed_vec && op->extra_outputs.empty())
+      op->output_was_inlined = true;
 }
 
 // Vertical fusion: e depends on last's output (on-stack value).
@@ -594,15 +553,22 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
   else
     last->extra_outputs.back() = e->output;
 
-  // Record full merged RPN on the current chain output so future consumers can
-  // inline the latest fused producer instead of waiting on the pre-fused
-  // intermediate id.
-  detail::VectorDescRef fused_output =
-      last->extra_outputs.empty() ? last->output : last->extra_outputs.back();
-  if (fused_output && !last->inputs.empty()) {
-    fused_output->absorbed_rpn = last->rpn_ops;
-    fused_output->absorbed_scalars = last->scalars;
-    fused_output->absorbed_inputs = last->inputs;
+  // Record the merged program on the chain's output so a future consumer can
+  // inline it instead of waiting on the pre-fused intermediate.
+  //
+  // Only for a single-chain event.  Once the event is horizontally fused its
+  // rpn_ops describe *every* chain, separated by OP_NEXT_CHAIN, and that is not
+  // a recipe for any one output -- splicing it into a consumer's expression
+  // yields nonsense.  `(a+b)*c - (d-a)` returned `d-a` because the subtraction
+  // inlined a two-chain program as if it were one value.
+  const bool single_chain =
+      last->extra_outputs.empty() &&
+      std::find(last->rpn_ops.begin(), last->rpn_ops.end(),
+                (uint8_t)OP_NEXT_CHAIN) == last->rpn_ops.end();
+  if (single_chain && last->output && !last->inputs.empty()) {
+    last->output->absorbed_rpn = last->rpn_ops;
+    last->output->absorbed_scalars = last->scalars;
+    last->output->absorbed_inputs = last->inputs;
   }
 
   detail::adopt_fused_event(last, e);

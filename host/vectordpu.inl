@@ -12,6 +12,18 @@
 
 #include "perfetto/trace.h"
 
+namespace detail {
+// Handle bookkeeping for VectorDesc::handle_count.  Fusion consults it to tell
+// "nobody can build another op on this vector" from "the queue still has a
+// reference".
+inline void retain_handle(const VectorDescRef& desc) {
+  if (desc) desc->handle_count++;
+}
+inline void release_handle(const VectorDescRef& desc) {
+  if (desc && desc->handle_count > 0) desc->handle_count--;
+}
+}  // namespace detail
+
 template <typename T>
 dpu_vector<T>::dpu_vector() noexcept : size_(0), reserved_(0) {}
 
@@ -38,6 +50,7 @@ dpu_vector<T>::dpu_vector(size_t n, uint32_t reserved, bool lazy,
   data_->debug_name = debug_name;
   data_->debug_file = debug_file;
   data_->debug_line = debug_line;
+  detail::retain_handle(data_);
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = runtime.get_logger();
   log_allocation(
@@ -56,6 +69,7 @@ dpu_vector<T>::dpu_vector(const dpu_vector& other)
       debug_line(other.debug_line),
       copied(false) {
   other.copied = true;
+  detail::retain_handle(data_);
 }
 
 template <typename T>
@@ -67,12 +81,14 @@ dpu_vector<T>::dpu_vector(dpu_vector&& other) noexcept
       debug_file(other.debug_file),
       debug_line(other.debug_line),
       copied(false) {
-  // ownership handled by shared_ptr
+  // The moved-from handle gives up its reference, so the count is unchanged.
 }
 
 template <typename T>
 dpu_vector<T>& dpu_vector<T>::operator=(const dpu_vector& other) {
   if (this != &other) {
+    detail::release_handle(data_);
+    detail::retain_handle(other.data_);
     data_ = other.data_;
     size_ = other.size_;
     reserved_ = other.reserved_;
@@ -86,6 +102,7 @@ dpu_vector<T>& dpu_vector<T>::operator=(const dpu_vector& other) {
 template <typename T>
 dpu_vector<T>& dpu_vector<T>::operator=(dpu_vector&& other) noexcept {
   if (this != &other) {
+    detail::release_handle(data_);
     data_ = std::move(other.data_);
     size_ = other.size_;
     reserved_ = other.reserved_;
@@ -97,7 +114,9 @@ dpu_vector<T>& dpu_vector<T>::operator=(dpu_vector&& other) noexcept {
 }
 
 template <typename T>
-dpu_vector<T>::~dpu_vector() {}
+dpu_vector<T>::~dpu_vector() {
+  detail::release_handle(data_);
+}
 
 template <typename T>
 void dpu_vector<T>::add_fence() {
@@ -148,34 +167,37 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
 template <typename T>
 vector<T> dpu_vector<T>::to_cpu() {
   auto desc = this->data_desc_ref();
-  // Allocate CPU buffer large enough to hold all data
-  size_t total_size = this->size();
   auto& runtime = DpuRuntime::get();
-  size_t num_dpus = runtime.num_dpus();
-  size_t min_xfer = 8;  // 8 bytes
+  runtime.get_allocator().realize_allocation(desc);
 
-  // Compute bytes per DPU
-  size_t bytes_per_dpu = (total_size * sizeof(T)) / num_dpus;
+  // One transfer size applies to every DPU, so ragged shards have to land in a
+  // padded staging buffer and be compacted afterwards.  When every shard's
+  // payload already fills the stride we read straight into the result.
+  const detail::ShardLayout layout = detail::shard_layout(*desc);
+  const size_t result_elems = layout.total_logical / sizeof(T);
 
-  // Ensure at least 8 bytes per DPU
-  if (total_size == num_dpus && bytes_per_dpu < min_xfer) {
-    // Round up to the number of elements that makes 8 bytes per DPU
-    size_t elems_per_dpu =
-        (min_xfer + sizeof(T) - 1) / sizeof(T);  // ceil(min_xfer /sizeof(T))
-    total_size = num_dpus * elems_per_dpu;
+  vector<T> cpu_vec(result_elems);
+  vector<char> staging;
+  char* cpu_buffer;
+  if (layout.needs_padding) {
+    staging.resize(layout.padded_bytes());
+    cpu_buffer = staging.data();
+  } else {
+    cpu_buffer = reinterpret_cast<char*>(cpu_vec.data());
   }
 
-  vector<T> cpu_vec(total_size);
-
-  char* cpu_buffer = reinterpret_cast<char*>(cpu_vec.data());
-  auto bound_cb = std::bind(detail::vec_xfer_from_dpu, cpu_buffer, desc);
+  const size_t stride = layout.stride;
+  auto bound_cb = [cpu_buffer, desc, stride]() {
+    detail::vec_xfer_from_dpu_strided(cpu_buffer, desc, stride);
+  };
   auto& event_queue = runtime.get_event_queue();
 
   std::shared_ptr<Event> e =
       std::make_shared<Event>(Event::OperationType::HOST_TRANSFER, bound_cb);
   e->inputs = {desc};
   e->host_ptr = cpu_buffer;
-  e->transfer_size = cpu_vec.size() * sizeof(T);
+  e->transfer_size =
+      layout.needs_padding ? layout.padded_bytes() : cpu_vec.size() * sizeof(T);
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
@@ -191,23 +213,32 @@ vector<T> dpu_vector<T>::to_cpu() {
       << "type=HOST_TRANSFER size=" << cpu_vec.size() << std::endl;
 #endif
 
-// Auto-fence after DPU->HOST transfer if enabled
-#if ENABLE_AUTO_FENCING == 1
+  // A staged read has to complete before it can be compacted, so it fences
+  // regardless of ENABLE_AUTO_FENCING.
+  const bool must_wait = layout.needs_padding || ENABLE_AUTO_FENCING == 1;
+  if (must_wait) {
 #if ENABLE_DPU_LOGGING >= 2
-  logger.lock(logcat::TRANSFER, 2)
-      << "type=HOST_TRANSFER action=wait id=" << e->id << std::endl;
+    logger.lock(logcat::TRANSFER, 2)
+        << "type=HOST_TRANSFER action=wait id=" << e->id << std::endl;
 #endif
-  event_queue.process_events(e->id);
+    event_queue.process_events(e->id);
 #if ENABLE_DPU_LOGGING >= 2
-  logger.lock(logcat::TRANSFER, 2)
-      << "type=HOST_TRANSFER action=done id=" << e->id << std::endl;
+    logger.lock(logcat::TRANSFER, 2)
+        << "type=HOST_TRANSFER action=done id=" << e->id << std::endl;
 #endif
-// need the event to be completed before reading printf output
 #if ENABLE_DPU_PRINTING == 1
-  // read and print DPU logs to host stdout
-  runtime.debug_read_dpu_log();
+    // Needs the event finished before the DPU log can be read.
+    runtime.debug_read_dpu_log();
 #endif
-#endif
+  }
+
+  if (layout.needs_padding) {
+    char* out = reinterpret_cast<char*>(cpu_vec.data());
+    for (size_t dpu = 0; dpu < layout.logical.size(); ++dpu) {
+      std::memcpy(out, staging.data() + dpu * stride, layout.logical[dpu]);
+      out += layout.logical[dpu];
+    }
+  }
 
   return cpu_vec;
 }

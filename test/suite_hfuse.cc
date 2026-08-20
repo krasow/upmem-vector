@@ -266,15 +266,14 @@ TEST(hfuse, weighted_sums_fuse_vertically_and_horizontally) {
   CHECK_FUSIONS_GE(k, count - 1);
 }
 
-// The histogram shape: one derived vector feeding N masked counts.
+// The histogram shape: one derived vector feeding N masked counts.  This used
+// to deadlock, and before that to return zeros.
 //
-// KNOWN BUG 1 (README), many-consumer form: the first sum absorbs the bucket
-// vector and erases its producer, and the remaining seven wait forever on an
-// event id that will never complete.
-TEST_KNOWN_FATAL_IF_FUSED(
-    hfuse, histogram_shape_counts_are_correct,
-    "deadlocks in EventQueue::process_next: 8 consumers of one "
-    "absorbed intermediate") {
+// It does not collapse to a single pass.  `buckets` is a named variable held
+// across the loop, so its producer must run -- eight consumers read it -- and
+// the mask producers stay queued until their handles go, sitting between the
+// reductions that horizontal fusion would otherwise merge.
+TEST(hfuse, histogram_shape_counts_are_correct) {
   const size_t n = 4096;
   const T bins = 8;
   const T depth = 3;
@@ -304,8 +303,8 @@ TEST_KNOWN_FATAL_IF_FUSED(
                tf::str(expected[i]));
   }
 
-  // Bucket vector plus 8 masked counts: well inside one or two passes.
-  CHECK_KERNELS_LE(k, 3);
+  // One pass for `buckets`, one per masked count.
+  CHECK_KERNELS_LE(k, 1 + (size_t)bins);
 }
 
 // --------------------------------------------------------------------------

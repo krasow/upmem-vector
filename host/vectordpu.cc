@@ -2,6 +2,8 @@
 
 #include <detail/fusion.h>
 
+#include <stdexcept>
+
 #include "logger.h"
 #include "perfetto/trace.h"
 #include "vectordesc.h"
@@ -15,6 +17,13 @@
 namespace detail {
 VectorDesc::~VectorDesc() {
   auto& runtime = DpuRuntime::get();
+  // The runtime owns the logger and the allocator, and shutdown() destroys
+  // both.  A descriptor outliving it has nothing left to report to and no MRAM
+  // to give back -- the DPU set is already freed -- so there is nothing to do.
+  // This is the normal case for a garbage-collected binding, where finalizers
+  // run after atexit.
+  if (!runtime.is_initialized()) return;
+
   if (vector_id != 0) {
 #if ENABLE_DPU_LOGGING >= 1
     Logger& logger = runtime.get_logger();
@@ -58,26 +67,29 @@ void vec_xfer_to_dpu(char* cpu, VectorDescRef desc) {
                             xfer_size, DPU_XFER_ASYNC));
 }
 
-void vec_xfer_from_dpu(char* cpu, VectorDescRef desc) {
+// Reads every shard into `cpu` at a uniform `stride`.  The caller must have
+// sized `cpu` for stride * num_dpus, since one transfer size applies to the
+// whole DPU set; see ShardLayout.
+void vec_xfer_from_dpu_strided(char* cpu, VectorDescRef desc, size_t stride) {
   auto& runtime = DpuRuntime::get();
   runtime.get_allocator().realize_allocation(desc);
   dpu_set_t& dpu_set = runtime.dpu_set();
   dpu_set_t dpu;
 
   uint32_t idx_dpu = 0;
-  size_t element = 0;
-
   DPU_FOREACH(dpu_set, dpu, idx_dpu) {
-    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu[element])));
-    element += desc->desc[idx_dpu].size_bytes - desc->reserved_bytes;
+    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu[(size_t)idx_dpu * stride])));
   }
 
-  uint32_t mram_location = desc->desc[0].ptr;
-  size_t xfer_size = desc->desc[0].allocated_bytes - desc->reserved_bytes;
   trace::scoped_event trace_scoped("transfer", "vec_xfer_from_dpu");
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
-                            DPU_MRAM_HEAP_POINTER_NAME, mram_location,
-                            xfer_size, DPU_XFER_ASYNC));
+                            DPU_MRAM_HEAP_POINTER_NAME, desc->desc[0].ptr,
+                            stride, DPU_XFER_ASYNC));
+}
+
+void vec_xfer_from_dpu(char* cpu, VectorDescRef desc) {
+  DpuRuntime::get().get_allocator().realize_allocation(desc);
+  vec_xfer_from_dpu_strided(cpu, desc, shard_layout(*desc).stride);
 }
 
 void vec_xfer_from_dpu_span(char* cpu, VectorDescRef base, size_t span_bytes) {
@@ -350,6 +362,16 @@ void internal_launch_universal_pipeline(
       }
     }
 
+#if !JIT
+    // The interpreter reads args.pipeline.ops, which is MAX_VFUSE_OPS long.
+    // Truncating here would silently drop the tail of the program, so fail
+    // loudly instead -- every path that builds an RPN is supposed to bound it.
+    if (ops.size() > MAX_VFUSE_OPS)
+      throw std::runtime_error("RPN program of " + std::to_string(ops.size()) +
+                               " opcodes exceeds MAX_VFUSE_OPS (" +
+                               std::to_string(MAX_VFUSE_OPS) +
+                               "); rebuild with JIT=1 or raise MAX_VFUSE_OPS");
+#endif
     args[i].pipeline.num_ops =
         std::min((size_t)ops.size(), (size_t)MAX_VFUSE_OPS);
 
@@ -460,6 +482,11 @@ void launch_universal_pipeline(
   e->output = res;
   e->rpn_ops = ops;
   e->kid = kernel_id;
+  // The interpreter path dispatches pipeline_kid, and the universal pipeline is
+  // the only kernel that can run an arbitrary RPN program -- so it is both.
+  // Leaving it 0 silently ran kernel 0 (binary add) for every explicit
+  // pipeline() call under JIT=0.
+  e->pipeline_kid = kernel_id;
   e->scalars = scalars;
   e->extra_scalars = extra_scalars;
   e->extra_outputs = extra_outputs;

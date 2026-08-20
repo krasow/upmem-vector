@@ -67,7 +67,8 @@ void print_args(DPU_LAUNCH_ARGS args) {
                                  ? (num_elems - block_loc)                     \
                                  : BLOCK_SIZE;                                 \
                                                                                \
-      uint32_t block_bytes = block_elems * sizeof(TYPE);                       \
+      uint32_t block_bytes =                                                   \
+          ((block_elems * sizeof(TYPE)) + 7) & ~(uint32_t)7;                   \
                                                                                \
       /* Copy block from MRAM to WRAM */                                       \
       mram_read((__mram_ptr void const *)(rhs_ptr + block_loc), rhs_block,     \

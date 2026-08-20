@@ -41,6 +41,13 @@ class Event : public std::enable_shared_from_this<Event> {
   std::string jit_binary_path;
   std::string jit_kernel_hash;
   bool is_locked_for_jit = false;
+  // This event's output was inlined into a later consumer, so it may not need
+  // to run.  Whether it does is decided later, once the vector's last handle
+  // has gone: see EventQueue::output_still_needed.  `inlined_into` names the
+  // consumer that absorbed it, so the id range can be handed over if the event
+  // is dropped.
+  bool output_was_inlined = false;
+  size_t inlined_into = 0;
   int jit_sub_kernel_idx = -1;
   std::shared_future<std::string> jit_future;
   std::shared_future<void> dpu_future;
@@ -139,6 +146,7 @@ class EventQueue {
   void switch_dpu_binary(const std::shared_ptr<Event>& e);
   void dispatch(const std::shared_ptr<Event>& e);
   void requeue_after_oom(const std::shared_ptr<Event>& e);
+  bool output_still_needed(const std::shared_ptr<Event>& e);
 
   // submit() stages.
   void await_queue_space();

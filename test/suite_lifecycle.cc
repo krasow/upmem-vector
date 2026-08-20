@@ -15,29 +15,28 @@ using T = int32_t;
 // copy / move semantics
 // --------------------------------------------------------------------------
 
-// KNOWN BUG 8 (README): the copy constructor and copy assignment just share the
-// VectorDescRef, so `copy = original` is a second handle on one buffer and the
-// `copied` flag is set but never consulted -- there is no copy-on-write.  This
-// asserts the value semantics the interface implies; if handle semantics are
-// deliberate, delete this test and document it on the class instead.
-TEST_XFAIL(lifecycle, copy_is_independent,
-           "copy ctor shares the VectorDescRef, so writes through the copy are "
-           "visible through the original") {
+// dpu_vector is a handle: a copy shares the DPU buffer rather than duplicating
+// it, so a write through either is visible through both.  Copying MRAM to give
+// value semantics would be a silent, expensive transfer, so aliasing is the
+// deliberate choice -- `Array(v)`/`to_cpu()` is how you take a snapshot.
+TEST(lifecycle, copy_shares_the_buffer) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::random_vector<T>(n, -50, 50);
 
   dpu_vector<T> original = dpu_vector<T>::from_cpu(a);
-  dpu_vector<T> copy = original;
-  copy += (T)1000;
+  std::vector<T> snapshot = original.to_cpu();
 
-  std::vector<T> original_host = original.to_cpu();
-  std::vector<T> copy_host = copy.to_cpu();
+  dpu_vector<T> alias = original;
+  alias += (T)1000;
 
-  std::vector<T> expected_copy(n);
-  for (size_t i = 0; i < n; ++i) expected_copy[i] = a[i] + 1000;
+  std::vector<T> expected(n);
+  for (size_t i = 0; i < n; ++i) expected[i] = a[i] + 1000;
 
-  CHECK_VEC_EQ(original_host, a);
-  CHECK_VEC_EQ(copy_host, expected_copy);
+  // Both handles observe the write.
+  CHECK_VEC_EQ(alias.to_cpu(), expected);
+  CHECK_VEC_EQ(original.to_cpu(), expected);
+  // The earlier snapshot is unaffected: that is how you keep a value.
+  CHECK_VEC_EQ(snapshot, a);
 }
 
 TEST(lifecycle, move_preserves_contents) {
@@ -162,21 +161,26 @@ TEST(lifecycle, chained_ops_under_memory_pressure) {
 // runtime shutdown
 // --------------------------------------------------------------------------
 
-// KNOWN BUG 6 (README): shutdown() resets logger_ and allocator_, but
-// ~VectorDesc still calls both, so any dpu_vector still in scope at shutdown --
-// the natural shape for main() -- crashes the process after all the work
-// succeeded.  Only meaningful as the last thing a process does, so it is not
-// run here; reproduce with:
+// Destroying a vector after DpuRuntime::shutdown() is safe: ~VectorDesc returns
+// early once the runtime is down, since the logger and allocator it would use
+// are gone and the DPU set is already freed.
 //
-//   DpuRuntime::get().init(8);
-//   auto v = dpu_vector<int>::from_cpu(host);
-//   DpuRuntime::get().shutdown();
-//   return 0;                      // <-- segfault in ~VectorDesc
+// This matters most for garbage-collected bindings.  Julia runs CxxWrap
+// finalizers after atexit, so a surviving handle is always destroyed *after*
+// shutdown; before the guard that segfaulted in log_allocation on every exit.
 //
-// Fix: no-op ~VectorDesc once the runtime is down, or keep those two alive.
-TEST_KNOWN_FATAL(
-    lifecycle, destruct_after_shutdown,
-    "~VectorDesc uses the logger and allocator that shutdown() has "
-    "already destroyed; see the comment above this test") {
-  SKIP("would tear down the test process");
+// Not runnable in-process: the runner drains the queue after each test, and a
+// test that shuts the runtime down leaves nothing to drain.  Covered instead by
+// the Julia test suite, which exercises exactly this ordering.
+TEST_KNOWN_FATAL(lifecycle, destruct_after_shutdown,
+                 "shuts the runtime down, which the runner cannot continue "
+                 "past; the guard itself is covered by the Julia suite") {
+  const size_t n = tf::elements();
+  std::vector<T> host = tf::constant_vector<T>(n, 7);
+
+  dpu_vector<T> survivor = dpu_vector<T>::from_cpu(host);
+  CHECK_VEC_EQ(survivor.to_cpu(), host);
+
+  DpuRuntime::get().shutdown();
+  // `survivor` is destroyed as this scope ends, after shutdown.
 }

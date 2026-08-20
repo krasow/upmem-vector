@@ -163,13 +163,13 @@ TEST(elementwise, eq_scalar) {
 // --------------------------------------------------------------------------
 // compound assignment (in-place)
 //
-// KNOWN BUG 4 (README): chaining two or more in-place ops without an
-// intervening fence double-applies the earlier one, because for an in-place op
-// the recorded absorbed_rpn is self-referential (output is also an input) and
-// stays valid only until the producer runs.  Five in a row deadlock.
-//
-//   a = 40; a += 10; a -= 3   =>  57, not 47
-//   a = 40; a >>= 1; a >>= 1  =>  5,  not 10
+// Chained in-place ops had two separate bugs, both fixed:
+//   * the recorded absorbed_rpn was self-referential, so a consumer inlining it
+//     re-read a buffer the producer had already overwritten
+//     (EventQueue::enqueue now skips that registration when the output aliases
+//     an input); and
+//   * a fused event could take a dependency on an event it had just absorbed,
+//     which never completes (detail::adopt_fused_event now filters those).
 // --------------------------------------------------------------------------
 
 TEST(elementwise, compound_single_op_scalar) {
@@ -231,9 +231,7 @@ TEST(elementwise, compound_chain_fenced) {
   CHECK_VEC_EQ(actual, expected);
 }
 
-TEST_XFAIL_IF_FUSED(
-    elementwise, compound_chain_two_scalar_ops,
-    "in-place chain double-applies the first op: 40 +=10 -=3 yields 57") {
+TEST(elementwise, compound_chain_two_scalar_ops) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::constant_vector<T>(n, 40);
 
@@ -245,9 +243,7 @@ TEST_XFAIL_IF_FUSED(
   CHECK_VEC_EQ(actual, tf::constant_vector<T>(n, 47));
 }
 
-TEST_XFAIL_IF_FUSED(
-    elementwise, compound_chain_two_shifts,
-    "in-place chain double-applies the first op: 40 >>=1 >>=1 yields 5") {
+TEST(elementwise, compound_chain_two_shifts) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::constant_vector<T>(n, 40);
 
@@ -259,8 +255,7 @@ TEST_XFAIL_IF_FUSED(
   CHECK_VEC_EQ(actual, tf::constant_vector<T>(n, 10));
 }
 
-TEST_XFAIL_IF_FUSED(elementwise, compound_chain_vector_ops,
-                    "in-place chain double-applies earlier ops") {
+TEST(elementwise, compound_chain_vector_ops) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::random_vector<T>(n, -50, 50);
   std::vector<T> b = tf::random_vector<T>(n, 1, 50);
@@ -286,9 +281,7 @@ TEST_XFAIL_IF_FUSED(elementwise, compound_chain_vector_ops,
   CHECK_VEC_EQ(actual, expected);
 }
 
-TEST_KNOWN_FATAL_IF_FUSED(elementwise, compound_chain_five_scalar_ops,
-                          "5 chained in-place scalar ops deadlock in "
-                          "EventQueue::process_next's dependency wait") {
+TEST(elementwise, compound_chain_five_scalar_ops) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::constant_vector<T>(n, 40);
 
@@ -351,8 +344,7 @@ TEST(elementwise, repeated_readback_is_stable) {
 
 // KNOWN BUG 1 (README): an intermediate with two readers is absorbed into the
 // first, so the second reads unwritten MRAM as zeros.
-TEST_XFAIL_IF_FUSED(elementwise, shared_intermediate_two_consumers,
-                    "2nd consumer of an absorbed intermediate reads zeros") {
+TEST(elementwise, shared_intermediate_two_consumers) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::random_vector<T>(n, -50, 50);
   std::vector<T> b = tf::random_vector<T>(n, -50, 50);
@@ -408,15 +400,11 @@ void check_add_at_size(size_t n) {
 
 // Rounded to what the readback path handles; see suite_sharding.cc for the
 // rest.
-TEST(elementwise, size_one_block) {
-  check_add_at_size(tf::safe_elements(BLOCK_SIZE));
-}
+TEST(elementwise, size_one_block) { check_add_at_size(BLOCK_SIZE); }
 
-TEST(elementwise, size_two_blocks) {
-  check_add_at_size(tf::safe_elements(BLOCK_SIZE * 2));
-}
+TEST(elementwise, size_two_blocks) { check_add_at_size(BLOCK_SIZE * 2); }
 
-TEST(elementwise, size_large) { check_add_at_size(tf::safe_elements(65536)); }
+TEST(elementwise, size_large) { check_add_at_size(65537); }
 
 TEST(elementwise, size_one_element_per_dpu) {
   check_add_at_size(DpuRuntime::get().num_dpus());
@@ -424,12 +412,9 @@ TEST(elementwise, size_one_element_per_dpu) {
 
 TEST(elementwise, size_single_element) { check_add_at_size(1); }
 
-// KNOWN BUG 5 (README): to_cpu pads `total_size` up to 8 bytes per DPU, so a
-// vector of exactly num_dpus int32 reads back with twice as many entries and
-// the caller cannot tell padding from data by size alone.
-TEST_XFAIL(elementwise, to_cpu_size_matches_vector_size,
-           "to_cpu pads the result to 8 bytes per DPU when the vector has "
-           "exactly one element per DPU") {
+// to_cpu returns exactly as many elements as the vector holds.  It used to pad
+// the result to 8 bytes per DPU when a shard held one element.
+TEST(elementwise, to_cpu_size_matches_vector_size) {
   const size_t n = DpuRuntime::get().num_dpus();
   std::vector<T> a = tf::constant_vector<T>(n, 3);
   dpu_vector<T> da = dpu_vector<T>::from_cpu(a);

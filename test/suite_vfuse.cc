@@ -123,18 +123,15 @@ TEST(vfuse, long_scalar_chain_stays_one_kernel) {
   CHECK_KERNELS_EQ(k, 1);
 }
 
-// KNOWN BUG 7 (README): expand_absorbed_inputs concatenates RPN without the
-// MAX_VFUSE_OPS check that try_vfuse/try_hfuse apply, so this becomes one
-// kernel whose RPN is several times the budget.  Harmless under JIT=1 (opcodes
-// are baked into generated C); under JIT=0 the interpreter path clamps the copy
-// and silently drops the tail -- hence the config-dependent marker.
-#if JIT || !PIPELINE
+// A chain far longer than MAX_VFUSE_OPS.
+//
+// That limit is the size of the generic interpreter's args.pipeline.ops buffer,
+// so it only binds when there is no JIT -- a generated kernel carries its
+// program in C and can be any length.  With JIT=0 the inliner stops before
+// overflowing (the chain then costs more passes); with JIT=1 it collapses to
+// one.  Either way the values are right; the interpreter used to truncate the
+// tail silently.
 TEST(vfuse, chain_far_beyond_max_ops_is_correct) {
-#else
-TEST_XFAIL(vfuse, chain_far_beyond_max_ops_is_correct,
-           "absorbed inlining ignores MAX_VFUSE_OPS and the interpreter path "
-           "truncates the RPN, dropping the tail of the expression") {
-#endif
   const size_t n = tf::elements();
   std::vector<T> a = tf::random_vector<T>(n, -1000, 1000);
   dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
@@ -259,6 +256,11 @@ TEST(vfuse, repeated_operand_reuses_one_slot) {
 // --------------------------------------------------------------------------
 
 // Nothing fuses onto a finished reduction, but the work feeding it does.
+//
+// Two variants, because when the result is read matters.  A producer is only
+// dropped once the vector's last handle has gone (see
+// EventQueue::output_still_needed), and reading inside the same full-expression
+// that built it keeps the temporary alive, costing one extra pass.
 TEST(vfuse, reduction_terminates_the_chain) {
   const size_t n = tf::elements();
   Inputs in = make_inputs(n, -20, 20);
@@ -267,6 +269,26 @@ TEST(vfuse, reduction_terminates_the_chain) {
   StatsSnapshot k = tf::measure([&] {
     // (a + b) fuses into the sum, giving one kernel for the whole expression.
     actual = (int64_t)sum(in.da + in.db).get();
+  });
+
+  int64_t expected = 0;
+  for (size_t i = 0; i < n; ++i) expected += (int64_t)in.a[i] + in.b[i];
+  CHECK_EQ(actual, expected);
+  // `sum(a + b).get()` reads inside the expression, so the `a + b` temporary is
+  // still alive when the fence runs and its producer cannot be dropped.
+  CHECK_KERNELS_EQ(k, 2);
+}
+
+// Holding the future first lets the temporary die, so the producer is dropped
+// and the whole expression collapses into one pass.
+TEST(vfuse, reduction_of_expression_is_one_kernel) {
+  const size_t n = tf::elements();
+  Inputs in = make_inputs(n, -20, 20);
+
+  int64_t actual = 0;
+  StatsSnapshot k = tf::measure([&] {
+    auto future = sum(in.da + in.db);
+    actual = (int64_t)future.get();
   });
 
   int64_t expected = 0;
@@ -324,9 +346,7 @@ TEST(vfuse, host_readback_of_intermediate_splits_chain) {
 //   shared = a * b;  left = shared + c  -> 16 (ok);  right = shared - d -> -100
 //
 // A fence after the producer avoids it.
-TEST_XFAIL_IF_FUSED(vfuse, diamond_dependency_is_correct,
-                    "2nd consumer of an absorbed intermediate reads zeros "
-                    "(producer erased, MRAM never written)") {
+TEST(vfuse, diamond_dependency_is_correct) {
   const size_t n = tf::elements();
   Inputs in = make_inputs(n, -30, 30);
 
@@ -361,9 +381,7 @@ TEST_XFAIL_IF_FUSED(vfuse, diamond_dependency_is_correct,
 // With a=2 b=3 c=4 d=10, `(a+b)*c - (d-a)` returns 8 -- exactly `d-a`, so the
 // left intermediate was absorbed and read back as 0.  The fenced arm below is
 // correct, which is what makes this a fusion bug rather than an arithmetic one.
-TEST_XFAIL_IF_FUSED(
-    vfuse, fused_matches_fenced_evaluation,
-    "binary op over two fresh intermediates loses one operand") {
+TEST(vfuse, fused_matches_fenced_evaluation) {
   const size_t n = tf::elements();
   Inputs in = make_inputs(n, -25, 25);
 
@@ -404,10 +422,7 @@ TEST_XFAIL_IF_FUSED(
 }
 
 // Minimal form of the bug above.
-TEST_XFAIL_IF_FUSED(
-    vfuse, binary_op_over_two_intermediates,
-    "left intermediate is absorbed but never materialised; the op reads "
-    "zeros for it") {
+TEST(vfuse, binary_op_over_two_intermediates) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::constant_vector<T>(n, 2);
   std::vector<T> b = tf::constant_vector<T>(n, 3);

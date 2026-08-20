@@ -14,6 +14,7 @@
 #include <stats.h>
 #include <vectordpu.h>
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <iomanip>
@@ -58,6 +59,16 @@ bool EventQueue::process_next() {
 
   log_next_operation(e);
   trace::inqueue_end(e);
+
+  // Its consumer recomputes this inline and nothing else can read it, so the
+  // event is redundant.  Retire it without launching, keeping its id range so
+  // anything waiting on it is released.
+  if (!output_still_needed(e)) {
+    VECTORDPU_NOTE(absorbed_producers);
+    begin_running(e);
+    e->mark_finished();
+    return YES_PROGRESS;
+  }
 
   await_dependencies(e);
   grow_fusion_batch(e);
@@ -256,8 +267,17 @@ void EventQueue::enqueue(const std::shared_ptr<Event>& e) {
 #if PIPELINE
   // Record how to recompute this output so a later consumer can inline it
   // instead of reading MRAM (see EventQueue::expand_absorbed_inputs).
+  //
+  // Never for an in-place op.  There the output *is* an input, so the recorded
+  // expression is self-referential and only valid until this event runs -- a
+  // consumer that inlines it afterwards re-reads a buffer this event already
+  // overwrote, applying it twice (`a += b; a -= b` yielded a + b).
+  const bool writes_in_place =
+      e->output && std::find(e->inputs.begin(), e->inputs.end(), e->output) !=
+                       e->inputs.end();
   if (e->op == Event::OperationType::COMPUTE && !IS_OP_REDUCTION(e->opcode) &&
-      e->output && !e->inputs.empty() && e->extra_outputs.empty()) {
+      e->output && !e->inputs.empty() && e->extra_outputs.empty() &&
+      !writes_in_place) {
     std::vector<uint8_t> rpn;
     std::vector<uint32_t> scalars;
     detail::build_default_rpn(e, rpn, scalars);

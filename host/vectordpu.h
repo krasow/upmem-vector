@@ -147,6 +147,12 @@ struct reduction_result<int32_t> {
 };
 #endif
 
+// A vector living in DPU memory.
+//
+// This is a *handle*: copying one shares the underlying MRAM rather than
+// duplicating it, so a write through any copy is visible through all of them.
+// Duplicating would mean a silent device-side transfer on every assignment;
+// take a snapshot with to_cpu() instead.
 template <typename T>
 class dpu_vector {
  public:

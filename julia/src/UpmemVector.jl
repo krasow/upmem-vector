@@ -56,6 +56,6 @@ include("types.jl")
 include("operations.jl")
 include("display.jl")
 
-export DpuVector, fence, sync
+export DpuVector, DpuFuture, fence, sync
 
 end # module UpmemVector

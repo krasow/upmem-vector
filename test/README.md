@@ -97,53 +97,127 @@ The `*_IF_FUSED` variants apply only when `PIPELINE=1`.
 
 All open as of writing; each has a test that documents it.
 
-1. **A shared intermediate with 2+ consumers returns zeros to all but the
-   first.** `expand_absorbed_inputs` inlines the producer into the first
-   consumer and erases it, so MRAM is never written; later consumers were not
-   yet submitted when the `other_consumers` scan ran, and the `external_holder`
-   guard (`use_count() > internal_refs + 5`) is too slack to fire.
-   `shared = a*b; left = shared+c; right = shared-d` → `right` reads 0. With 8
-   consumers (histogram) it deadlocks instead. A fence after the producer avoids
-   it. — `vfuse.diamond_dependency_is_correct`,
-   `elementwise.shared_intermediate_two_consumers`,
-   `hfuse.histogram_shape_counts_are_correct`
+1. ~~**A shared intermediate with 2+ consumers returns zeros to all but the
+   first.**~~ **Fixed.** The erase decision was made at submit time, when later
+   consumers did not exist yet, and guessed at live callers from
+   `shared_ptr::use_count()` with a `+ 5` fudge — unreliable because
+   `absorbed_inputs` on *other* descriptors also hold references. Now:
+   * `VectorDesc::handle_count` counts live `dpu_vector` handles exactly, so
+     "no caller can build another op on this vector" is a fact, not a guess;
+   * `expand_absorbed_inputs` only *marks* the producer
+     (`Event::output_was_inlined`) instead of erasing it, and
+     `EventQueue::output_still_needed` decides at dispatch — by which point
+     every consumer in the batch is queued and temporaries have died.
 
-2. **`to_cpu()` corrupts data — and sometimes the heap — unless every per-DPU
-   shard is 8-byte aligned.** `vec_xfer_from_dpu` advances the host pointer by
-   `size_bytes` per DPU but transfers `align8(size_bytes)` to every DPU. For
-   `int32_t`, `n` must be a multiple of `2 * num_dpus`; at 8 DPUs n=4099 loses
-   2561/4099 lanes and n=15/17 abort in glibc. Fix: transfer each DPU's own
-   `allocated_bytes` and pad the host buffer per shard. `tf::safe_elements()`
-   exists to dodge this and should go once it is fixed. — `sharding` suite
+   Cost: a producer is only dropped once the vector's last handle has gone, so
+   reading a result inside the same full-expression that built it keeps the
+   temporary alive and costs one extra pass. `sum(a + b).get()` is 2 passes;
+   `auto f = sum(a + b); f.get();` is 1. See
+   `vfuse.reduction_terminates_the_chain` and
+   `vfuse.reduction_of_expression_is_one_kernel`, which pin both.
 
-3. **A binary op over two fresh intermediates loses one operand.**
-   `(a+b)*c - (d-a)` returns `d-a`. — `vfuse.binary_op_over_two_intermediates`
 
-4. **Chained in-place compound assignment double-applies earlier ops.** For an
-   in-place op the recorded `absorbed_rpn` is self-referential, so the consumer
-   re-reads a buffer the producer already overwrote: `a=40; a+=10; a-=3` → 57.
-   Five in a row deadlock. Fix: in `EventQueue::submit`, skip the `absorbed_rpn`
-   registration when `e->output` aliases an input. —
-   `elementwise.compound_chain_*`
+2. ~~**`to_cpu()` corrupts data — and sometimes the heap — unless every per-DPU
+   shard is 8-byte aligned.**~~ **Fixed**, and it was three faults at once:
+   * `vec_xfer_from_dpu` advanced the host pointer by `size_bytes` per DPU but
+     pushed `align8(size_bytes)` to every DPU. A transfer is one
+     `dpu_push_xfer`, which applies a single size *and* a single MRAM offset to
+     the whole set, so ragged shards both over-ran their host slot and let the
+     per-DPU addresses drift apart. `allocated_bytes` is now uniform across
+     DPUs, and `to_cpu` reads into a padded staging buffer and compacts.
+   * the eager and lazy allocation paths computed the layout independently, so a
+     vector and a result of the same shape could disagree.
+   * a one-element shard was silently widened to two, which is what made
+     `to_cpu` return an oversized vector (bug 5).
 
-5. **`to_cpu()` can return more elements than the vector holds** — a vector of
-   exactly `num_dpus` int32 reads back with `2 * num_dpus`, which also makes
-   `max()` of a 1-element vector return 0. —
-   `elementwise.to_cpu_size_matches_vector_size`, `reductions.single_element_min_max`
+   Verified across 1…65537 elements at 8 and 64 DPUs. `tf::safe_elements()` is
+   gone and the suite's default element count is now a ragged prime (4099).
+   — `sharding` suite
 
-6. **Destroying a `dpu_vector` after `shutdown()` segfaults** — `~VectorDesc`
-   uses the logger and allocator that `shutdown()` already reset. —
-   `lifecycle.destruct_after_shutdown`
 
-7. **Absorbed inlining ignores `MAX_VFUSE_OPS`.** `try_vfuse`/`try_hfuse` bail
-   over budget; `expand_absorbed_inputs` does not. Harmless under `JIT=1`, but
-   the interpreter path clamps with `num_ops = min(ops.size(), MAX_VFUSE_OPS)`
-   and silently drops the tail (16 of 80 `+1` steps at `MAX_VFUSE_OPS=128`). —
-   `vfuse.chain_far_beyond_max_ops_is_correct`
+3. ~~**A binary op over two fresh intermediates loses one operand.**~~
+   **Fixed.** `try_vfuse` recorded its whole merged program as the "recipe" for
+   one output. Once the event is horizontally fused that program spans *every*
+   chain, separated by `OP_NEXT_CHAIN`, so splicing it into a consumer yields
+   nonsense — `(a+b)*c - (d-a)` returned `d-a` because the subtraction inlined a
+   two-chain program as if it were a single value. The recipe is now recorded
+   only for single-chain events. —
+   `vfuse.binary_op_over_two_intermediates`,
+   `vfuse.fused_matches_fenced_evaluation`
 
-8. **`dpu_vector`'s copy is shallow** — `a = b` aliases the same MRAM. May be
-   intentional; if so, document it and consider `share()`/`clone()`. —
-   `lifecycle.copy_is_independent`
+
+4. ~~**Chained in-place compound assignment double-applies earlier ops.**~~
+   **Fixed**, and it was two bugs behind one symptom:
+   * the recorded `absorbed_rpn` was self-referential for an in-place op, so a
+     consumer inlining it re-read a buffer the producer had overwritten
+     (`a=40; a+=10; a-=3` → 57). `EventQueue::enqueue` now skips the
+     registration when the output aliases an input.
+   * a fused event could take a dependency on an event it had just absorbed,
+     which never completes — that was the five-in-a-row deadlock (event 2
+     waiting on event 3, which had been merged into event 2).
+     `detail::adopt_fused_event` now drops dependencies inside
+     `[last->id, last->max_id]`, the range the fused event stands for.
+   — `elementwise.compound_chain_*`, all passing
+
+5. ~~**`to_cpu()` can return more elements than the vector holds.**~~ **Fixed**
+   with bug 2 — the result length now comes from the sum of the shard payloads,
+   and the one-element-shard widening that caused it is gone. —
+   `elementwise.to_cpu_size_matches_vector_size`,
+   `reductions.single_element_min_max`
+
+
+6. ~~**Destroying a `dpu_vector` after `shutdown()` segfaults.**~~ **Fixed:**
+   `~VectorDesc` now returns early when the runtime is down, since the logger
+   and allocator it would use are gone and the DPU set is already freed. This
+   crashed the Julia bindings on every exit, because CxxWrap finalizers run
+   after `atexit`. Covered by the Julia suite;
+   `lifecycle.destruct_after_shutdown` records why the C++ runner cannot host
+   it (it drains the queue after every test).
+
+7. ~~**Absorbed inlining ignores `MAX_VFUSE_OPS`.**~~ **Fixed.** That limit is
+   the size of the interpreter's `args.pipeline.ops` buffer, so it only binds
+   when there is no JIT — a generated kernel carries its program in C and can be
+   any length. `expand_absorbed_inputs` now stops inlining before overflowing it
+   under `JIT=0`, and `internal_launch_universal_pipeline` throws instead of
+   silently truncating. — `vfuse.chain_far_beyond_max_ops_is_correct`
+
+
+8. ~~**`dpu_vector`'s copy is shallow.**~~ **By design** — it is a handle type,
+   confirmed with the author. Copying MRAM on every assignment would be a
+   silent, expensive device transfer; `to_cpu()` is how you take a snapshot.
+   Documented on the class and pinned by `lifecycle.copy_shares_the_buffer`.
+
+9. ~~**Every explicit `pipeline()` call ran kernel 0 (binary add) under
+   `JIT=0`.**~~ **Fixed.** `launch_compute` dispatches `e->pipeline_kid` on the
+   interpreter path, but `launch_universal_pipeline` only set `e->kid`, leaving
+   `pipeline_kid` at its default 0 — kernel id 0 is `binary_int32_t_add`. The
+   interpreter never ran, so results were whatever stale MRAM had been recycled
+   into the result buffer. `launch_binary` passes `pipeline_kid` explicitly,
+   which is why operator-built expressions worked and only the explicit RPN API
+   broke. Fixed by setting both ids in `launch_universal_pipeline`. — the
+   `pipeline.rpn_*`, `expr_builder_*` and `reduce_*` tests under `JIT=0`
+
+10. ~~**Ragged shards lost their last lane in every static DPU kernel.**~~
+    **Fixed.** MRAM DMA only honours transfer lengths that are multiples of 8
+    bytes and rounds a ragged tail *down*, so a shard holding an odd number of
+    4-byte elements silently dropped its final element — both on the read and
+    the write. `binary.inl`, `unary.inl`, `reduce.inl` and `pipeline.inl` all
+    passed `block_elems * sizeof(TYPE)` straight to `mram_read`/`mram_write`.
+    The JIT codegen already rounded up via `b_b_aligned`, which is why `JIT=1`
+    was unaffected. Shards are `align8` padded by the allocator, so rounding the
+    transfer up stays inside the allocation. — `sharding.unaligned_sizes_are_correct`,
+    `sharding.sizes_around_one_block_are_correct`, `reductions.sum_at_all_sizes`
+
+Bugs 9 and 10 were found by running the suite under `PIPELINE=1 JIT=0`, which
+had never been exercised end-to-end — the tests that catch them already existed
+and passed under `JIT=1`. **Run all three configurations**; a green `JIT=1` run
+says nothing about the interpreter path.
+
+Note that `MAX_PIPELINE_STACK_DEPTH` is 2 and cannot practically be raised —
+`.data.stacks` overflows WRAM at 8 — so the interpreter genuinely cannot run
+deep RPN programs. That is a resource limit, not a bug: `JIT=1` bakes the
+program into C and has no stack buffer.
+
 
 ## Adding a test
 

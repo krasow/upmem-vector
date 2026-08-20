@@ -72,12 +72,8 @@ TEST(reductions, single_element) {
   CHECK_EQ((int64_t)sum(da).get(), (int64_t)42);
 }
 
-// KNOWN BUG 5 (README): to_cpu pads a one-element-per-DPU vector out to 8 bytes
-// per DPU and get() folds the whole padded buffer, so the zero padding wins the
-// max.  min survives here only because the value is negative.
-TEST_XFAIL(reductions, single_element_min_max,
-           "max of a 1-element vector returns 0: to_cpu padding is folded into "
-           "the cross-DPU reduction") {
+// min/max over a single element used to fold in to_cpu's zero padding.
+TEST(reductions, single_element_min_max) {
   std::vector<T> a = {-7};
   dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
   dpu_vector<T> db = dpu_vector<T>::from_cpu(a);
@@ -127,10 +123,10 @@ TEST(reductions, sum_of_zeros) {
 
 // Sum of ones == element count, at every size the readback path handles.
 // Catches a reduction that loses or double-counts a block or shard tail.
-TEST(reductions, sum_at_safe_sizes) {
-  for (size_t hint : {(size_t)1, (size_t)BLOCK_SIZE, (size_t)BLOCK_SIZE * 2,
-                      (size_t)1000, (size_t)9973, (size_t)65536}) {
-    const size_t n = tf::safe_elements(hint);
+TEST(reductions, sum_at_all_sizes) {
+  for (size_t n :
+       {(size_t)1, (size_t)BLOCK_SIZE - 1, (size_t)BLOCK_SIZE,
+        (size_t)BLOCK_SIZE * 2, (size_t)1000, (size_t)9973, (size_t)65537}) {
     std::vector<T> a = tf::constant_vector<T>(n, 1);
     dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
     int64_t actual = (int64_t)sum(da).get();
@@ -140,20 +136,6 @@ TEST(reductions, sum_at_safe_sizes) {
       return;
     }
   }
-}
-
-// KNOWN BUG 2 (README): the same check at an unaligned shard size.  The
-// reduction is fine; the readback of the partial buffer is not, so the
-// host-side fold sees garbage.
-TEST_XFAIL(reductions, sum_at_ragged_sizes,
-           "unaligned per-DPU shards corrupt the partial-result readback") {
-  const size_t n = BLOCK_SIZE - 1;
-  std::vector<T> a = tf::constant_vector<T>(n, 1);
-  dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
-  int64_t actual = (int64_t)sum(da).get();
-  if (actual != (int64_t)n)
-    tf::fail("n=" + tf::str(n) + ": sum of ones is " + tf::str(actual) +
-             ", expected " + tf::str(n));
 }
 
 // Must see the fused values, not the intermediate's never-written MRAM.

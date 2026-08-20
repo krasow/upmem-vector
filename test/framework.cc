@@ -24,7 +24,8 @@ std::vector<TestCase>& registry() {
 }
 
 Outcome g_outcome;
-// Overridden after init from the real DPU count; see safe_elements.
+// Prime, so the per-DPU shard and the per-tasklet block both have a ragged tail
+// at every DPU count.
 size_t g_elements = 4099;
 uint32_t g_dpus = 64;
 bool g_verbose = false;
@@ -135,28 +136,6 @@ void reseed(uint64_t seed) { g_rng.seed((std::mt19937::result_type)seed); }
 std::mt19937& rng() { return g_rng; }
 
 void drain() { dpu_fence(); }
-
-namespace {
-// Every per-DPU shard must be a whole number of 8-byte words.
-size_t element_granularity() {
-  uint32_t num_dpus = DpuRuntime::get().is_initialized()
-                          ? DpuRuntime::get().num_dpus()
-                          : g_dpus;
-  if (num_dpus == 0) num_dpus = 1;
-  return (size_t)num_dpus * 2;
-}
-}  // namespace
-
-bool is_safe_element_count(size_t n) {
-  const size_t granularity = element_granularity();
-  return n != 0 && n % granularity == 0;
-}
-
-size_t safe_elements(size_t hint) {
-  const size_t granularity = element_granularity();
-  if (hint < granularity) return granularity;
-  return ((hint + granularity - 1) / granularity) * granularity;
-}
 
 namespace {
 
@@ -490,15 +469,7 @@ int main(int argc, char** argv) {
   // to_cpu only reads back correctly when every shard is a whole number of
   // 8-byte words, so default to a size that is and warn about one that is not
   // -- otherwise every value check would compare against corrupted data.
-  if (elements_from_cli) {
-    if (!is_safe_element_count(g_elements) && !child_mode)
-      std::cout << "WARNING: --elements=" << g_elements
-                << " is not a multiple of " << (allocated * 2)
-                << "; readback is known to corrupt data at this size "
-                   "(see the sharding suite)\n";
-  } else {
-    g_elements = safe_elements(32 * (size_t)allocated);
-  }
+  (void)allocated;
   if (!child_mode) std::cout << "elements  " << g_elements << "\n\n";
 
   size_t passed = 0, failed = 0, skipped = 0, selected = 0, xfailed = 0;

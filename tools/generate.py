@@ -256,10 +256,10 @@ with open("dpu/kernels.h", "w") as out:
     out.write('#include "./binary.inl"\n')
     out.write('#include "./reduce.inl"\n')
     out.write('#include "./unary.inl"\n')
-    out.write('#ifdef PIPELINE\n')
+    out.write('#if PIPELINE\n')
     out.write('#include "./pipeline.inl"\n')
     out.write('#endif\n')
-    out.write('#ifndef PIPELINE\n')
+    out.write('#if !PIPELINE\n')
     out.write('#define DEFINE_UNIVERSAL_PIPELINE_KERNEL(a)\n')
     out.write('#endif\n\n')
 
@@ -269,7 +269,7 @@ with open("dpu/kernels.h", "w") as out:
     # Generate macros (definitions) first
     for id, op in all_ops:
         if op.name == "universal_pipeline":
-             out.write('#ifdef PIPELINE\n')
+             out.write('#if PIPELINE\n')
              op.generate_macro(out)
              out.write('#endif\n')
         else:
@@ -279,7 +279,7 @@ with open("dpu/kernels.h", "w") as out:
     out.write('int (*kernels[KERNEL_COUNT])(void) = {\n')
     for id, op in all_ops:
         if op.name == "universal_pipeline":
-             out.write('#ifdef PIPELINE\n')
+             out.write('#if PIPELINE\n')
              out.write(f'    {op.kernel_name()}, // {id}\n')
              out.write('#else\n')
              out.write(f'    NULL, // {id}\n')

@@ -492,6 +492,30 @@ void EventQueue::await_jit_binary(const std::shared_ptr<Event>& e) {
   (void)e;
 #endif
 }
+// Whether an event whose output was inlined into a consumer must still run.
+//
+// Called when the event reaches the head of the queue, which is the first point
+// where the answer is knowable: every consumer submitted before this fence is
+// already queued, and any temporary that held the vector has been destroyed.
+// If nothing can read the MRAM output any more, the event is redundant -- the
+// consumer recomputes it inline.
+bool EventQueue::output_still_needed(const std::shared_ptr<Event>& e) {
+  if (!e->output_was_inlined) return true;
+  if (!e->output) return true;
+
+  // A live handle means the caller can still build another op on this vector.
+  if (e->output->handle_count > 0) return true;
+
+  std::lock_guard<std::recursive_mutex> lock(mtx_);
+  for (const auto& queued : operations_)
+    for (const auto& in : queued->inputs)
+      if (in == e->output) return true;
+  for (const auto& running : running_events_)
+    for (const auto& in : running->inputs)
+      if (in == e->output) return true;
+  return false;
+}
+
 void EventQueue::begin_running(const std::shared_ptr<Event>& e) {
   std::lock_guard<std::recursive_mutex> lock(mtx_);
   if (running_events_.empty()) trace::execution_begin(e);

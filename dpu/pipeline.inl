@@ -101,7 +101,7 @@
     for (blk = id << BLOCK_SIZE_LOG2; blk < n;                                 \
          blk += (NR_TASKLETS << BLOCK_SIZE_LOG2)) {                            \
       b_e = (blk + BLOCK_SIZE >= n) ? (n - blk) : BLOCK_SIZE;                  \
-      b_b = b_e * sizeof(TYPE);                                                \
+      b_b = ((b_e * sizeof(TYPE)) + 7) & ~(uint32_t)7;                         \
                                                                                \
       /* 1. Fetch operands (with deduplication) */                             \
       if (uses_input)                                                          \

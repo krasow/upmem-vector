@@ -19,7 +19,8 @@
       uint32_t block_elems = (block_loc + BLOCK_SIZE >= num_elems)          \
                                  ? (num_elems - block_loc)                  \
                                  : BLOCK_SIZE;                              \
-      uint32_t block_bytes = block_elems * sizeof(TYPE);                    \
+      uint32_t block_bytes =                                                \
+          ((block_elems * sizeof(TYPE)) + 7) & ~(uint32_t)7;                \
                                                                             \
       mram_read((__mram_ptr void const *)(lhs_ptr + block_loc), lhs_block,  \
                 block_bytes);                                               \
@@ -54,7 +55,8 @@
       uint32_t block_elems = (block_loc + BLOCK_SIZE >= num_elems)         \
                                  ? (num_elems - block_loc)                 \
                                  : BLOCK_SIZE;                             \
-      uint32_t block_bytes = block_elems * sizeof(TYPE);                   \
+      uint32_t block_bytes =                                               \
+          ((block_elems * sizeof(TYPE)) + 7) & ~(uint32_t)7;               \
                                                                            \
       mram_read((__mram_ptr void const *)(lhs_ptr + block_loc), lhs_block, \
                 block_bytes);                                              \

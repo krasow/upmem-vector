@@ -9,6 +9,7 @@
 #include <logger.h>
 #include <queue.h>
 
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -71,9 +72,24 @@ inline void adopt_fused_event(const std::shared_ptr<Event>& last,
                               const std::shared_ptr<Event>& e) {
   last->max_id = std::max(last->max_id, e->id);
   last->kid = last->pipeline_kid;
-  for (const auto& in : e->inputs)
-    if (in && in->last_producer_id != 0 && in->last_producer_id != last->id)
-      last->dependencies.insert(in->last_producer_id);
+
+  // Fusion only ever merges the queue tail, so [last->id, last->max_id] is
+  // exactly the set of events `last` now stands for.  A dependency inside that
+  // range is on something absorbed, which will never complete on its own --
+  // waiting for it deadlocks.  This happens with in-place ops, where an input
+  // and the output are the same vector, so its last_producer_id names an event
+  // we just swallowed.
+  auto absorbed = [&last](size_t id) {
+    return id >= last->id && id <= last->max_id;
+  };
+  for (const auto& in : e->inputs) {
+    if (!in || in->last_producer_id == 0) continue;
+    if (absorbed(in->last_producer_id)) continue;
+    last->dependencies.insert(in->last_producer_id);
+  }
+  // An earlier merge may have recorded an id that only now became absorbed.
+  for (auto it = last->dependencies.begin(); it != last->dependencies.end();)
+    it = absorbed(*it) ? last->dependencies.erase(it) : std::next(it);
   if (e->output) e->output->last_producer_id = last->id;
   for (auto& out : e->extra_outputs)
     if (out) out->last_producer_id = last->id;

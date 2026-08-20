@@ -94,6 +94,109 @@ const N = 4096  # safe vector length for all DPU counts/tasklets
         @test Array(result) == abs.(-(((a_data .+ b_data) .- a_data)))
     end
 
+    @testset "comparisons and select" begin
+        a_data = Int32.(collect(1:N))
+        b_data = Int32.(collect(N:-1:1))
+        a = DpuVector(a_data)
+        b = DpuVector(b_data)
+
+        @test Array(a < b) == Int32.(a_data .< b_data)
+        @test Array(a == Int32(7)) == Int32.(a_data .== 7)
+
+        # select(cond, then, else), elementwise on the mask.
+        cond = DpuVector(Int32.(a_data .< b_data))
+        picked = select_op(cond, a, b)
+        @test Array(picked) == ifelse.(a_data .< b_data, a_data, b_data)
+    end
+
+    @testset "lazy reductions" begin
+        a = DpuVector(Int32.(collect(1:N)))
+        b = DpuVector(fill(Int32(2), N))
+
+        fa = lazy_sum(a)
+        fb = lazy_sum(b)
+        @test get(fa) == Int64(N) * Int64(N + 1) ÷ 2
+        @test get(fb) == 2 * N
+
+        @test lazy_minimum(a) isa DpuFuture
+        @test get(lazy_maximum(a)) == N
+    end
+
+    @testset "reductions fuse into one kernel pass" begin
+        # The point of the lazy API: queue several reductions, read none, and
+        # they share a kernel.  Eight vectors is inside MAX_HFUSE_CHAINS.
+        vectors = [DpuVector(fill(Int32(i), 1024)) for i in 1:8]
+        UpmemVector.dpu_sync()
+
+        before = UpmemVector.stat_compute_launches()
+        totals = sums(vectors)
+        after = UpmemVector.stat_compute_launches()
+
+        @test totals == [1024 * i for i in 1:8]
+        # Without fusion this would be 8 passes.
+        @test after - before <= 2
+    end
+
+    @testset "broadcasting" begin
+        a_data = Int32.(collect(1:N))
+        b_data = fill(Int32(3), N)
+        a = DpuVector(a_data)
+        b = DpuVector(b_data)
+
+        @test Array(a .+ b)   == a_data .+ b_data
+        @test Array(a .- b)   == a_data .- b_data
+        @test Array(a .* b)   == a_data .* b_data
+        @test Array(a .* 2)   == a_data .* Int32(2)
+        @test Array(2 .* a)   == a_data .* Int32(2)
+        @test Array(.-a)      == -a_data
+        @test Array(abs.(.-a)) == a_data
+        @test Array(a .>> 1)  == a_data .>> Int32(1)
+        @test Array(a .< b)   == Int32.(a_data .< b_data)
+    end
+
+    @testset "in-place operations" begin
+        # Chaining these used to double-apply the earlier op, and five in a row
+        # deadlocked outright.
+        acc = DpuVector(fill(Int32(40), N))
+        add!(acc, 10)
+        sub!(acc, 3)
+        mul!(acc, 4)
+        div!(acc, 2)
+        shr!(acc, 1)
+        @test Array(acc) == fill(Int32(47), N)
+
+        v = DpuVector(fill(Int32(5), N))
+        w = DpuVector(fill(Int32(2), N))
+        @test Array(add!(v, w)) == fill(Int32(7), N)
+        @test Array(mul!(v, w)) == fill(Int32(14), N)
+        @test Array(sub!(v, w)) == fill(Int32(12), N)
+        @test Array(div!(v, w)) == fill(Int32(6), N)
+
+        # An in-place op returns the same vector, not a copy.
+        x = DpuVector(fill(Int32(1), N))
+        @test add!(x, 1) === x
+
+        @test_throws ArgumentError apply!(x, 1, Ops.SCALAR_EQ)
+    end
+
+    @testset "ragged lengths" begin
+        # Any length is safe now.  These used to come back corrupt: the host
+        # readback pushed align8(shard) into unpadded slots, so a length that
+        # was not a multiple of 2*num_dpus silently lost lanes.
+        for n in (1, 2, 7, 15, 17, 33, 100, 1000, 4099, 9973)
+            data = Int32.(collect(1:n))
+            v = DpuVector(data)
+            @test length(v) == n
+            back = Array(v)
+            @test length(back) == n
+            @test back == data
+
+            w = DpuVector(fill(Int32(3), n))
+            @test Array(v + w) == data .+ Int32(3)
+            @test sum(v) == sum(Int64.(data))
+        end
+    end
+
     @testset "display" begin
         v = DpuVector(Int32.(collect(1:N)))
         buf = IOBuffer()

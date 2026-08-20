@@ -23,17 +23,20 @@ size_t total_allocated_footprint_from_layout(const detail::VectorDesc& vec) {
   return total;
 }
 
+// Every shard is allocated the same number of bytes -- see
+// materialize_descriptor_layout for why.
+size_t uniform_shard_bytes(size_t n, size_t reserved, size_t size_type,
+                           size_t num_dpus) {
+  const size_t elems_per_dpu = n / num_dpus;
+  const size_t remainder = n % num_dpus;
+  const size_t widest = elems_per_dpu + (remainder ? 1 : 0);
+  return align8(widest * size_type + reserved);
+}
+
 size_t total_allocated_footprint(size_t n, size_t reserved, size_t size_type,
                                  size_t num_dpus) {
   if (n == 0) return 0;
-
-  size_t elems_per_dpu = n / num_dpus;
-  size_t remainder = n % num_dpus;
-  if (elems_per_dpu * size_type == 4) elems_per_dpu = 2;
-
-  size_t base_bytes = align8(elems_per_dpu * size_type + reserved);
-  size_t remainder_bytes = align8((elems_per_dpu + 1) * size_type + reserved);
-  return (num_dpus - remainder) * base_bytes + remainder * remainder_bytes;
+  return num_dpus * uniform_shard_bytes(n, reserved, size_type, num_dpus);
 }
 }  // namespace
 
@@ -74,8 +77,7 @@ detail::VectorDescRef allocator::allocate_upmem_vector(std::size_t n,
     is_synchronized_ = false;
   }
   std::lock_guard<std::recursive_mutex> lock(this->lock);
-  size_t eff = n / num_dpus_, rem = n % num_dpus_;
-  if (eff * size_type == 4) eff = 2;
+  const size_t eff = n / num_dpus_, rem = n % num_dpus_;
 
   auto vec = std::make_shared<detail::VectorDesc>();
   assign_vector_id(*vec);
@@ -90,12 +92,17 @@ detail::VectorDescRef allocator::allocate_upmem_vector(std::size_t n,
     return vec;
   }
 
+  // Must match materialize_descriptor_layout exactly: the eager and lazy paths
+  // produce descriptors for the same vector shape, and a transfer reads one
+  // MRAM offset and one size for the whole DPU set.
+  const size_t uniform_bytes =
+      uniform_shard_bytes(n, reserved, size_type, num_dpus_);
+
   vec->desc.reserve(num_dpus_);
   for (size_t i = 0; i < num_dpus_; i++) {
-    size_t sz = (eff + (i < rem ? 1 : 0)) * size_type + reserved;
-    size_t aligned_sz = align8(sz);
-    vec->desc.push_back(
-        {raw_allocate(i, aligned_sz), (uint32_t)sz, (uint32_t)aligned_sz});
+    const size_t sz = (eff + (i < rem ? 1 : 0)) * size_type + reserved;
+    vec->desc.push_back({raw_allocate(i, uniform_bytes), (uint32_t)sz,
+                         (uint32_t)uniform_bytes});
   }
   return vec;
 }
@@ -152,16 +159,21 @@ void allocator::materialize_descriptor_layout(detail::VectorDesc* data) {
     return;
   }
 
-  size_t elems_per_dpu = n / num_dpus_;
-  size_t remainder = n % num_dpus_;
-  if (elems_per_dpu * size_type == 4) elems_per_dpu = 2;
+  const size_t elems_per_dpu = n / num_dpus_;
+  const size_t remainder = n % num_dpus_;
+
+  // `size_bytes` is per-shard payload, so kernels still see the right element
+  // count.  `allocated_bytes` is deliberately the SAME on every DPU: a host
+  // transfer is one dpu_push_xfer, which applies a single size *and* a single
+  // MRAM offset to the whole set.  Uneven allocations would both over-read the
+  // short shards and let the per-DPU addresses drift out of lockstep.
+  const size_t uniform = uniform_shard_bytes(n, reserved, size_type, num_dpus_);
 
   data->desc.reserve(num_dpus_);
   for (size_t i = 0; i < num_dpus_; i++) {
-    size_t sz =
+    const size_t sz =
         (elems_per_dpu + (i < remainder ? 1 : 0)) * size_type + reserved;
-    size_t aligned_sz = align8(sz);
-    data->desc.push_back({0, (uint32_t)sz, (uint32_t)aligned_sz});
+    data->desc.push_back({0, (uint32_t)sz, (uint32_t)uniform});
   }
   data->needs_layout_materialization = false;
 }

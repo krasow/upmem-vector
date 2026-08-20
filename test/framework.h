@@ -222,12 +222,6 @@ constexpr size_t fusion_lookahead() { return (size_t)FUSION_LOOKAHEAD; }
 // Turns a limit into an expected kernel count.
 constexpr size_t ceil_div(size_t a, size_t b) { return (a + b - 1) / b; }
 
-// Smallest element count >= `hint` that to_cpu reads back correctly, i.e. a
-// multiple of 2 * num_dpus.  Works around known bug 2 (README); delete both of
-// these once the readback is fixed.
-size_t safe_elements(size_t hint);
-bool is_safe_element_count(size_t n);
-
 }  // namespace tf
 
 // ---------------------------------------------------------------------------

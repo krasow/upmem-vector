@@ -80,3 +80,25 @@ function fence(v::DpuVector)
 end
 
 export fence
+
+# ---- DpuFuture -- a queued reduction whose value has not been read ----
+
+"""
+    DpuFuture
+
+The result of a reduction that has been queued but not read.  Leaving several
+futures unread lets the runtime merge their reductions into one kernel pass;
+calling [`get`](@ref) forces them all to complete.
+"""
+mutable struct DpuFuture
+    handle::UpmemVector.DpuFutureInt32
+end
+
+"""
+    get(f::DpuFuture) -> Int64
+
+Read a queued reduction, blocking until the DPUs have produced it.
+"""
+Base.get(f::DpuFuture) = retry_on_oom(() -> UpmemVector.cpp_get(f.handle))
+
+export DpuFuture
