@@ -1,0 +1,63 @@
+# Runs on the PIM box: the tests need real DPU ranks and the UPMEM toolchain.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hw:
+    name: BACKEND=hw PIPELINE=1 JIT=1
+    runs-on: [self-hosted, Linux, X64, PIM]
+    timeout-minutes: 15 # a deadlocked DPU test would hold the runner
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Must match across every make call: config_check cleans on any flag diff.
+      BUILD_FLAGS: PIPELINE=1 JIT=1 BACKEND=hw
+      UPMEM_NO_OS_WARNING: 1
+      # A small slice of the box's 2560 DPUs, so runs do not contend for ranks.
+      # Julia reads NR_DPUS; the C++ suite takes --dpus and defaults to 64, and
+      # its sharding tests scale with the count.
+      NR_DPUS: 8
+      TEST_ARGS: --isolate --dpus=8
+      JULIA_BIN_DIR: /scratch/david/julia-1.11.3/bin
+    steps:
+      - uses: actions/checkout@v4
+
+      # Each step is a fresh shell, so export once instead of sourcing per step.
+      - name: Set up the UPMEM environment
+        run: |
+          source /usr/upmem_env.sh
+          {
+            echo "UPMEM_HOME=$UPMEM_HOME"
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+            echo "PYTHONPATH=$PYTHONPATH"
+          } >> "$GITHUB_ENV"
+          echo "$UPMEM_HOME/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # cmake
+          echo "$JULIA_BIN_DIR" >> "$GITHUB_PATH"
+
+      - name: Report the toolchain
+        run: |
+          for t in dpu-upmem-dpurte-clang dpu-pkg-config g++ cmake julia python3; do
+            printf '%-26s %s\n' "$t" "$(command -v "$t" || echo MISSING)"
+          done
+          echo "DPU ranks: $(ls -d /dev/dpu_rank* 2>/dev/null | wc -l)"
+
+      # Records the configuration in the prefix and builds the Julia wrapper too.
+      - name: Build and install
+        run: make install $BUILD_FLAGS
+
+      - name: C++ tests
+        run: make test $BUILD_FLAGS TEST_ARGS="$TEST_ARGS"
+
+      - name: Julia tests
+        run: make -C julia test
+
+      - name: Installed configuration
+        if: always()
+        run: make -C julia config
