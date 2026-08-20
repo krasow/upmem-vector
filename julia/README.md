@@ -40,10 +40,14 @@ loaded library reports for itself and refuses a mismatch instead of silently
 running the wrong configuration. From Julia:
 
 ```julia
-installinfo()      # provenance, as recorded at wrapper build time
-configuration()    # what the loaded libvectordpu says it is -- ground truth
+PolymerPIM.versioninfo()   # all of it, printed
+installinfo()              # provenance, as recorded at wrapper build time
+configuration()            # what the loaded libvectordpu says it is -- ground truth
 ndpus(), ntasklets()
 ```
+
+`versioninfo` is not exported, since `InteractiveUtils` exports one too; call it
+qualified.
 
 DPUs are claimed on the first allocation, so `NR_DPUS` has to be set before it
 (default 8); `ndpus()` reports the count either way. Tasklets per DPU are fixed
@@ -92,6 +96,35 @@ host loop.
 Only within one expression — `d = d .+ 1` in a loop is still a pass per
 statement.
 
+## Inspecting the generated kernel
+
+A broadcast becomes one RPN program and one JIT-compiled C kernel.
+`@code_jitted` shows that kernel without compiling or launching anything:
+
+```julia
+julia> @code_jitted a .+ b .* c
+JIT kernel k_9a0cf153d43a1c54 -- 5 opcodes, 2 operands, 16 elements
+  build/jit/k_9a0cf153d43a1c54.c (not compiled yet)
+
+#include <barrier.h>
+...
+int k_9a0cf153d43a1c54(void) {
+...
+```
+
+The source is generated on the spot, so nothing exists on disk yet -- the path is
+where the kernel *will* land, and `iscompiled(code)` says whether it has. The
+first launch of a program writes `build/jit/k_<hash>.c` and `.o`, plus one
+`main_<n>.c` per compiled batch holding the launch args, tasklet barrier and WRAM
+workspace its kernels share. `<hash>` is the cache key, so the same expression
+later reuses that object instead of regenerating it. Once written, the file is
+byte-identical to what `@code_jitted` printed.
+
+The result is a `JittedCode` -- `.source`, `.ops`, `.hash`, `.path` are all
+readable, and `code_jitted` takes a `DpuExpr` or a raw opcode stream directly.
+`a + b` and `sum(a)` run on statically compiled kernels and have no generated
+source.
+
 ## Reductions
 
 Reading a reduction immediately forces it. Leave several unread and they share
@@ -105,6 +138,26 @@ get(f), get(g)
 ```
 
 `lazy_prod`, `lazy_minimum`, `lazy_maximum` too.
+
+Reducing an expression is one pass if the function arrives as an argument:
+
+```julia
+sum(abs, a)                     # 1 pass -- traced into the program
+mapreduce(abs, +, a)            # same, op in (+, *, min, max)
+
+sum(abs.(a))                    # 2 passes -- see below
+reduce_expr(a, b) do x
+    sum(x[1] * x[2])            # 1 pass, two vectors
+end
+```
+
+`sum(abs.(a))` and `sum(a .+ b)` cost **two** passes: Julia lowers them to
+`sum(materialize(...))`, so the broadcast becomes an intermediate before `sum`
+sees anything, and no `sum(::Broadcasted)` method can intercept it. Use
+`sum(f, v)` for one vector and `reduce_expr` for several.
+
+`sum.(a .+ b)` is not a reduction at all -- `sum.` broadcasts `sum` over each
+element, which is identity on integers -- so it raises rather than lowering.
 
 ## Expressions
 

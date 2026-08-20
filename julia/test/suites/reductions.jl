@@ -42,3 +42,25 @@ end
     # Without fusion this would be 8 passes.
     @test after - before <= 2
 end
+
+# `sum(f, v)` takes f as an argument, so unlike `sum(f.(v))` there is no
+# intermediate to materialise: one program, one pass.
+@testset "mapped reductions are one pass" begin
+    a = DpuVector(Int32.(-N÷2:N÷2-1))
+    host = Array(a)
+
+    @test sum(abs, a) == sum(abs, host)
+    @test sum(x -> x * 2, a) == sum(x -> x * 2, host)
+    @test maximum(abs, a) == maximum(abs, host)
+    @test minimum(x -> -abs(x), a) == minimum(x -> -abs(x), host)
+    @test mapreduce(abs, +, a) == mapreduce(abs, +, host)
+    @test mapreduce(abs, max, a) == mapreduce(abs, max, host)
+
+    before = PolymerPIM.stat_compute_launches()
+    sum(abs, a)
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+
+    @test_throws ArgumentError mapreduce(abs, -, a)
+    @test_throws MethodError sum(sqrt, a)
+end

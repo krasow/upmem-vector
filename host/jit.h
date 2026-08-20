@@ -25,6 +25,17 @@ std::string jit_batch_hash(const std::vector<Signature>& kernels);
 // Compiles a batch of unique RPN sequences into a single DPU binary
 std::string jit_compile(const std::vector<Signature>& kernels);
 
+// The generated C for one kernel, rendered without compiling or writing files.
+// Same text jit_compile() puts in <jit_build_dir()>/k_<jit_signature_hash()>.c.
+std::string jit_kernel_source(const Signature& sig);
+
+// The scaffolding every kernel in a batch shares: launch args, tasklet barrier,
+// WRAM workspace.  Emitted once per batch as main_<n>.c.
+std::string jit_main_source();
+
+// Where jit_compile() writes its sources, objects and linked binaries.
+std::string jit_build_dir();
+
 // Returns true if the kernel is found in the specified binary
 bool jit_find_kernel_in_binary(const Signature& sig,
                                const std::string& bin_path, int& out_idx);

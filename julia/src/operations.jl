@@ -75,6 +75,40 @@ Base.prod(v::DpuVector)    = reduce_op(v, Opcodes.OP_PRODUCT)
 Base.minimum(v::DpuVector) = reduce_op(v, Opcodes.OP_MIN)
 Base.maximum(v::DpuVector) = reduce_op(v, Opcodes.OP_MAX)
 
+# `sum(f, v)` is the one-pass spelling: f arrives as a function, so there is no
+# intermediate to materialise the way `sum(f.(v))` has.  f is traced once over a
+# DpuExpr, and the terminal is appended to the program it builds.
+for (f, terminal) in ((:sum, :sum), (:prod, :prod),
+                      (:minimum, :minimum), (:maximum, :maximum))
+    @eval Base.$f(f, v::DpuVector) =
+        get(dpu_pipeline_reduce(v, $terminal(_trace(f))))
+end
+
+const MAPREDUCE_TERMINALS = Dict{Any,Function}(
+    (+) => sum, (*) => prod, min => minimum, max => maximum)
+
+"""
+    mapreduce(f, op, v::DpuVector)
+
+One kernel pass: `f` is traced into the program and `op` becomes its reduction
+terminal. `op` must be `+`, `*`, `min` or `max`.
+"""
+function Base.mapreduce(f, op, v::DpuVector)
+    terminal = get(MAPREDUCE_TERMINALS, op, nothing)
+    terminal === nothing && throw(ArgumentError(
+        "mapreduce over a DpuVector needs op in (+, *, min, max), got $op"))
+    return get(dpu_pipeline_reduce(v, terminal(_trace(f))))
+end
+
+# Trace a host function over the expression builders.  Anything outside the
+# supported op set raises here rather than silently falling back to the host.
+function _trace(f)
+    e = f(input())
+    e isa DpuExpr || throw(ArgumentError(
+        "$f did not build a DpuVector expression (got $(typeof(e)))"))
+    return e
+end
+
 # ---- in-place operations ----
 #
 # These write through the existing DPU buffer.  Chaining them is the
@@ -196,7 +230,11 @@ end
 # Lower a whole tree to (program, primary, operands).  Deliberately not via
 # Broadcast.flatten: that rewrites the tree into a synthesised closure over
 # Pick{} leaves, which erases the operator identities this dispatches on.
-function _lower_tree(bc::Base.Broadcast.Broadcasted)
+#
+# @noinline is load-bearing on Julia 1.11.3: when a caller discards `primary`,
+# inlining this lets SROA drop `_leaf`'s store to st.primary while keeping the
+# check below, so a perfectly good broadcast reports "contains no DpuVector".
+@noinline function _lower_tree(bc::Base.Broadcast.Broadcasted)
     st = _Lowering()
     e = _lower(bc, st)
     st.primary === nothing &&

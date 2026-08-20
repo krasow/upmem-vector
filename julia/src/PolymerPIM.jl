@@ -150,10 +150,12 @@ include("opcodes.jl")
 include("types.jl")
 include("expr.jl")
 include("operations.jl")
+include("jit.jl")
 include("display.jl")
 
 export DpuVector, DpuFuture, fence, sync
 export MAX_VFUSE_INPUTS, MAX_PIPELINE_SCALARS, MAX_LOCAL_SCRATCH_VECTORS
 export installinfo, configuration, ndpus, ntasklets
+export code_jitted, @code_jitted, iscompiled
 
 end # module PolymerPIM

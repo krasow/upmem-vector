@@ -6,6 +6,7 @@
 // reductions return a *future*: keeping them unread lets independent
 // reductions fuse into one kernel pass.
 
+#include <jit.h>
 #include <stats.h>
 #include <vectordpu.h>
 
@@ -36,6 +37,13 @@ struct VecList {
 };
 
 using Local = dpu_local_vector<int32_t>;
+
+// Every Julia vector is Int32, so a program's JIT signature is just its opcodes
+// paired with the canonical name the cache keys on.
+Signature make_signature(jlcxx::ArrayRef<uint8_t> ops) {
+  return {std::vector<uint8_t>(ops.data(), ops.data() + ops.size()),
+          jit_canonical_type_name(typeid(int32_t).name())};
+}
 
 // Same story for the scatter targets of a local-reduce program.  Held by
 // shared_ptr because dpu_local_vector has no copy assignment and Julia needs to
@@ -379,6 +387,20 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("dpu_fence", [](Vec& v) { v.add_fence(); });
   mod.method("dpu_sync", []() { dpu_fence(); });
   mod.method("cleanup", []() { DpuRuntime::get().shutdown(); });
+
+  // ---- JIT introspection (@code_jitted) ----
+  //
+  // The RPN Julia built, rendered as the C the DPU toolchain would compile.
+  // Nothing is compiled or written: this is the codegen, not the cache.
+
+  mod.method("jit_source", [](jlcxx::ArrayRef<uint8_t> ops) -> std::string {
+    return jit_kernel_source(make_signature(ops));
+  });
+  mod.method("jit_hash", [](jlcxx::ArrayRef<uint8_t> ops) -> std::string {
+    return jit_signature_hash(make_signature(ops));
+  });
+  mod.method("jit_main", []() -> std::string { return jit_main_source(); });
+  mod.method("jit_dir", []() -> std::string { return jit_build_dir(); });
 
   // ---- runtime shape ----
   //

@@ -29,6 +29,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -201,7 +202,7 @@ std::string jit_compile(
   trace::jit_compile_begin(kernels);
 
   const std::string include_flags = get_include_flags();
-  const std::string build_dir = "build/jit";
+  const std::string build_dir = jit_build_dir();
   fs::create_directories(build_dir);
 
   std::vector<std::string> object_files;
@@ -324,12 +325,28 @@ bool jit_find_kernel_in_binary(const Signature& sig,
   return false;
 }
 
+std::string jit_build_dir() { return "build/jit"; }
+
+// Rendering the source without compiling it: what @code_jitted shows in Julia.
+std::string jit_kernel_source(const Signature& sig) {
+  std::ostringstream out;
+  write_kernel_function(out, "k_" + jit_signature_hash(sig), sig.first,
+                        sig.second);
+  return out.str();
+}
+
+std::string jit_main_source() {
+  std::ostringstream out;
+  write_dpu_main_header(out);
+  return out.str();
+}
+
 void jit_cleanup() {
   std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
 #if DEBUG_KEEP_JIT_DIR
   return;
 #endif
-  const std::string build_dir = "build/jit";
+  const std::string build_dir = jit_build_dir();
   if (fs::exists(build_dir)) {
     try {
       fs::remove_all(build_dir);

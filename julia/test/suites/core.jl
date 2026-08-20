@@ -27,6 +27,11 @@ end
     @test N % ndpus() == 0
     @test ndpus() == parse(Int, get(ENV, "NR_DPUS", "8"))
     @test ntasklets() == parse(Int, configuration()["NR_TASKLETS"])
+
+    out = sprint(PolymerPIM.versioninfo)
+    @test occursin("PolymerPIM v", out)
+    @test occursin(configuration()["BACKEND"], out)
+    @test occursin(string(ndpus()), out)
 end
 
 @testset "scalar indexing" begin

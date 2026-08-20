@@ -16,6 +16,7 @@
 #include <vectordpu.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -452,7 +453,7 @@ class ChainCompiler {
 // Widen the accumulator type when a reduction over int32 would otherwise
 // overflow.  Only the on-stack type changes; MRAM still holds `type_name`.
 // The single main() translation unit shared by every kernel in a JIT batch.
-void detail::write_dpu_main_header(std::ofstream& out) {
+void detail::write_dpu_main_header(std::ostream& out) {
   out << R"(#include <alloc.h>
 #include <barrier.h>
 #include <defs.h>
@@ -501,9 +502,10 @@ static std::string reduction_identity(uint8_t reduce_op,
 }
 
 // Includes, function header, per-chain result pointers, and the WRAM workspace.
-static void write_kernel_prologue(std::ofstream& out,
+static void write_kernel_prologue(std::ostream& out,
                                   const std::string& func_name,
-                                  const std::string& type_name) {
+                                  const std::string& type_name,
+                                  const KernelPlan& plan) {
   // necessary to include these headers for the generated kernel code
   // each fused kernel is a separate compilation unit
   out << R"(#include <barrier.h>
@@ -522,7 +524,11 @@ extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
   // WRAM workspace layout, one slot of BLOCK_SIZE * MINIMUM_WRITE_SIZE bytes
   // each: slot 0 is the input block, the next MAX_VFUSE_INPUTS are the operand
   // blocks, and the MAX_RESULT_SLOTS after those are the per-chain result
-  // blocks.
+  // blocks.  The layout is fixed, but the pointers this kernel sets up are not:
+  // every index the body emits is a constant this plan knows, so declaring and
+  // loading the slots it never touches would be dead stores in every kernel.
+  // (The interpreter in dpu/pipeline.inl indexes these dynamically and does
+  // need the full arrays.)
   static constexpr char kPrologueTemplate[] = R"C(int $fn(void) {
     unsigned int id = me();
     uint32_t n = args.num_elements;
@@ -532,21 +538,20 @@ extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
     res_ptrs[0] = (__mram_ptr $T *)(args.pipeline.res_offset);
 )C";
 
-  static constexpr char kWorkspaceTemplate[] = R"C(
-    $T *input_blk = ($T *)dpu_workspace[id];
-    $T *op_blks[MAX_VFUSE_INPUTS];
-    for (int k = 0; k < MAX_VFUSE_INPUTS; k++)
-        op_blks[k] = ($T *)&dpu_workspace[id][(k + 1) * BLOCK_SIZE * MINIMUM_WRITE_SIZE];
-    $T *res_blks[$slots];
-    for (int k = 0; k < $slots; k++)
-        res_blks[k] = ($T *)&dpu_workspace[id][(1 + MAX_VFUSE_INPUTS + k) * BLOCK_SIZE * MINIMUM_WRITE_SIZE];
+  // One result slot per chain, and operand slots up to the highest one the RPN
+  // references (Julia and the fusion pass both allocate them densely, so this
+  // is normally exactly the count in use).
+  const int nresults = (int)plan.chains.size();
+  int nop_slots = 0;
+  for (int k = 0; k < MAX_VFUSE_INPUTS; ++k) {
+    if (plan.uses_op[k]) nop_slots = k + 1;
+  }
+  assert(nresults > 0 && nresults <= MAX_RESULT_SLOTS);
 
-)C";
-
-  const std::string slots = std::to_string(MAX_RESULT_SLOTS);
+  const std::string slots = std::to_string(nresults);
   out << fill(kPrologueTemplate,
               {{"fn", func_name}, {"T", type_name}, {"slots", slots}});
-  for (int i = 0; i < MAX_HFUSE_CHAINS; ++i) {
+  for (int i = 0; i + 1 < nresults; ++i) {
     out << fill(
         "    res_ptrs[$n] = (__mram_ptr $T "
         "*)(args.pipeline.extra_res_offsets[$i]);\n",
@@ -554,13 +559,37 @@ extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
          {"T", type_name},
          {"i", std::to_string(i)}});
   }
-  out << fill(kWorkspaceTemplate, {{"T", type_name}, {"slots", slots}});
+
+  out << fill("\n    $T *input_blk = ($T *)dpu_workspace[id];\n",
+              {{"T", type_name}});
+  if (nop_slots > 0) {
+    out << fill("    $T *op_blks[$n];\n",
+                {{"T", type_name}, {"n", std::to_string(nop_slots)}});
+    for (int k = 0; k < nop_slots; ++k) {
+      if (!plan.uses_op[k]) continue;
+      out << fill(
+          "    op_blks[$k] = ($T *)&dpu_workspace[id][$slot * BLOCK_SIZE * "
+          "MINIMUM_WRITE_SIZE];\n",
+          {{"T", type_name},
+           {"k", std::to_string(k)},
+           {"slot", std::to_string(k + 1)}});
+    }
+  }
+  out << fill("    $T *res_blks[$n];\n", {{"T", type_name}, {"n", slots}});
+  for (int c = 0; c < nresults; ++c) {
+    out << fill(
+        "    res_blks[$c] = ($T *)&dpu_workspace[id][(MAX_VFUSE_INPUTS + $slot)"
+        " * BLOCK_SIZE * MINIMUM_WRITE_SIZE];\n",
+        {{"T", type_name},
+         {"c", std::to_string(c)},
+         {"slot", std::to_string(c + 1)}});
+  }
+  out << "\n";
 }
 
 // Everything the per-element loop needs in scope: local-vector pointers,
 // reduction accumulators, the scalar table, and local accumulator seeding.
-static void write_kernel_declarations(std::ofstream& out,
-                                      const KernelPlan& plan,
+static void write_kernel_declarations(std::ostream& out, const KernelPlan& plan,
                                       const std::string& type_name,
                                       const std::string& stack_type) {
   const std::vector<Chain>& chains = plan.chains;
@@ -580,13 +609,19 @@ static void write_kernel_declarations(std::ofstream& out,
         << reduction_identity(chains[c_idx].reduction_op, stack_type) << ";\n";
   }
 
-  out << "    " << stack_type << " scalar_vars[MAX_PIPELINE_SCALARS] = {0};\n";
+  int nscalars = 0;
   for (int k = 0; k < MAX_PIPELINE_SCALARS; ++k) {
-    if (!plan.uses_scalar[k]) continue;
-    out << "    scalar_vars[" << k << "] = (" << stack_type
-        << ")args.pipeline.scalars[" << k << "];\n";
+    if (plan.uses_scalar[k]) nscalars = k + 1;
   }
-  out << "\n";
+  if (nscalars > 0) {
+    out << "    " << stack_type << " scalar_vars[" << nscalars << "] = {0};\n";
+    for (int k = 0; k < nscalars; ++k) {
+      if (!plan.uses_scalar[k]) continue;
+      out << "    scalar_vars[" << k << "] = (" << stack_type
+          << ")args.pipeline.scalars[" << k << "];\n";
+    }
+    out << "\n";
+  }
   // Seed each local accumulator with the identity for its reduction.
   static constexpr char kLocalInitTemplate[] =
       R"C(    if (local_size_$c > MAX_LOCAL_VECTOR_SIZE)
@@ -619,7 +654,7 @@ static void write_kernel_declarations(std::ofstream& out,
 
 // The tiled main loop: read a block per input, compile every chain over its
 // elements, then write each chain's block back.
-static void write_kernel_block_loop(std::ofstream& out, const KernelPlan& plan,
+static void write_kernel_block_loop(std::ostream& out, const KernelPlan& plan,
                                     const std::vector<uint8_t>& rpn_ops,
                                     const std::string& type_name,
                                     const std::string& stack_type) {
@@ -684,7 +719,7 @@ static void write_kernel_block_loop(std::ofstream& out, const KernelPlan& plan,
 
 // Cross-tasklet merges: scalar accumulators via the scratchpad, local vectors
 // in WRAM, both folded by tasklet 0 and written to MRAM once.
-static void write_kernel_epilogue(std::ofstream& out, const KernelPlan& plan,
+static void write_kernel_epilogue(std::ostream& out, const KernelPlan& plan,
                                   const std::string& type_name,
                                   const std::string& stack_type) {
   const std::vector<Chain>& chains = plan.chains;
@@ -783,14 +818,14 @@ static void write_kernel_epilogue(std::ofstream& out, const KernelPlan& plan,
   out << "    return 0;\n}\n\n";
 }
 
-void detail::write_kernel_function(std::ofstream& out,
+void detail::write_kernel_function(std::ostream& out,
                                    const std::string& func_name,
                                    const std::vector<uint8_t>& rpn_ops,
                                    const std::string& type_name) {
   const KernelPlan plan = analyze_rpn(rpn_ops);
   const std::string stack_type = select_stack_type(plan, type_name);
 
-  write_kernel_prologue(out, func_name, type_name);
+  write_kernel_prologue(out, func_name, type_name, plan);
   write_kernel_declarations(out, plan, type_name, stack_type);
   write_kernel_block_loop(out, plan, rpn_ops, type_name, stack_type);
   write_kernel_epilogue(out, plan, type_name, stack_type);
