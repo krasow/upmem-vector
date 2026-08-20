@@ -21,31 +21,56 @@ jobs:
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
+      skip: ${{ steps.pick.outputs.skip }}
     steps:
-      # `[only jit]` in the pushed commit message, or in the PR title or body,
-      # drops the two C++-only configs.  Read through the environment, never
-      # interpolated into the script: these strings are attacker-supplied.
+      # The commit message has to come from git: on pull_request events
+      # github.event.head_commit is empty, and a long-lived PR's title is not
+      # the message of the commit that just landed.  Only `git log` is run
+      # against this checkout, never anything from it.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Flags in the head commit message, or in the PR title or body:
+      #   [only jit]  drop the two C++-only configs
+      #   [skip ci]   run nothing (GitHub also honours this in commit messages
+      #               on its own, before a workflow starts)
+      # Read through the environment, never interpolated into the script: these
+      # strings are attacker-supplied.
       - id: pick
         shell: bash
         env:
-          PUSH_MSG: ${{ github.event.head_commit.message }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          msg=$(printf '%s\n%s\n%s' "$(git log -1 --format=%B)" "$PR_TITLE" "$PR_BODY")
+          echo "head commit: $(git log -1 --format=%s)"
+
           jit='{"name":"JIT mode (default)","flags":"PIPELINE=1 JIT=1","julia":true}'
           rest='{"name":"Pipeline mode","flags":"PIPELINE=1 JIT=0","julia":false},'
           rest+='{"name":"Eager mode","flags":"PIPELINE=0 JIT=0","julia":false}'
-          if printf '%s\n%s\n%s' "$PUSH_MSG" "$PR_TITLE" "$PR_BODY" |
-               grep -qiF '[only jit]'; then
-            echo "[only jit]: running JIT mode alone"
-            echo "matrix={\"include\":[$jit]}" >> "$GITHUB_OUTPUT"
+
+          skip=false
+          grep -qiE '\[(skip ci|ci skip|no ci)\]' <<<"$msg" && skip=true
+
+          if grep -qiF '[only jit]' <<<"$msg"; then
+            include="$jit"
           else
-            echo "matrix={\"include\":[$jit,$rest]}" >> "$GITHUB_OUTPUT"
+            include="$jit,$rest"
           fi
+
+          $skip && echo "[skip ci]: running nothing"
+          {
+            echo "skip=$skip"
+            echo "matrix={\"include\":[$include]}"
+          } >> "$GITHUB_OUTPUT"
 
   test:
     name: ${{ matrix.name }}
     needs: configs
+    if: needs.configs.outputs.skip != 'true'
     runs-on: [self-hosted, Linux, X64, PIM]
     timeout-minutes: 15 # a deadlocked DPU test would hold the runner
     strategy:
