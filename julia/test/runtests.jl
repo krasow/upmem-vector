@@ -176,7 +176,9 @@ const N = 4096  # safe vector length for all DPU counts/tasklets
         x = DpuVector(fill(Int32(1), N))
         @test add!(x, 1) === x
 
-        @test_throws ArgumentError apply!(x, 1, Ops.SCALAR_EQ)
+        # No in-place form exists for a comparison; the wrapper rejects the
+        # opcode rather than silently picking a different one.
+        @test_throws Exception apply!(x, 1, UpmemVector.Opcodes.OP_EQ_SCALAR)
     end
 
     @testset "ragged lengths" begin
@@ -207,6 +209,264 @@ const N = 4096  # safe vector length for all DPU counts/tasklets
         s = String(take!(buf))
         @test occursin("$N-element DpuVector{Int32}:", s)
         @test occursin("1", s)
+    end
+
+    # ---- RPN expression API ----
+
+    @testset "expression builder" begin
+        av = Int32.(collect(1:N))
+        bv = Int32.(collect(N:-1:1))
+        a = DpuVector(av); b = DpuVector(bv)
+
+        # arithmetic
+        @test Array(transform(a, b) do x; x[1] + x[2] end) == av .+ bv
+        @test Array(transform(a, b) do x; x[1] - x[2] end) == av .- bv
+        @test Array(transform(a, b) do x; x[1] * x[2] end) == av .* bv
+        @test Array(transform(a, b) do x; div(x[1], x[2]) end) == div.(av, bv)
+
+        # unary and stack ops
+        @test Array(transform(a) do x; -x[1] end) == .-av
+        @test Array(transform(a) do x; abs(-x[1]) end) == abs.(av)
+        @test Array(transform(a) do x; sqr(x[1] - 3) end) == (av .- 3) .^ 2
+        @test Array(transform(a) do x; dup(x[1]) + x[1] end) == av .* 2
+
+        # immediates
+        @test Array(transform(a) do x; x[1] * 3 + 1 end) == av .* 3 .+ 1
+        @test Array(transform(a) do x; x[1] >> 2 end) == av .>> 2
+        @test Array(transform(a) do x; x[1] * constant(2) end) == av .* 2
+        @test Array(transform(a) do x; 5 - x[1] end) == 5 .- av
+
+        # select
+        @test Array(transform(a, b) do x
+            select(x[1] > x[2], x[1], x[2])
+        end) == max.(av, bv)
+    end
+
+    @testset "expression comparisons" begin
+        av = Int32[3, 1, 4, 1, 5, 9, 2, 6]
+        bv = Int32[2, 7, 1, 8, 2, 8, 1, 8]
+        a = DpuVector(av); b = DpuVector(bv)
+
+        @test Array(transform(a, b) do x; x[1] < x[2] end)  == Int32.(av .< bv)
+        @test Array(transform(a, b) do x; x[1] > x[2] end)  == Int32.(av .> bv)
+        @test Array(transform(a, b) do x; x[1] <= x[2] end) == Int32.(av .<= bv)
+        @test Array(transform(a, b) do x; x[1] >= x[2] end) == Int32.(av .>= bv)
+        @test Array(transform(a, b) do x; x[1] == x[2] end) == Int32.(av .== bv)
+
+        # the DpuVector-level operators, which route through RPN
+        @test Array(a > b)  == Int32.(av .> bv)
+        @test Array(a >= b) == Int32.(av .>= bv)
+        @test Array(a <= b) == Int32.(av .<= bv)
+        @test Array(a == b) == Int32.(av .== bv)
+        @test Array(a > 3)  == Int32.(av .> 3)
+        @test Array(a <= 4) == Int32.(av .<= 4)
+        @test Array(a .> b) == Int32.(av .> bv)
+    end
+
+    @testset "runtime scalars" begin
+        av = Int32.(collect(1:N))
+        a = DpuVector(av)
+        # Same program, different scalar slot contents.
+        e1 = transform(a; scalars = Int32[10]) do x; add_var(x[1], 1) end
+        e2 = transform(a; scalars = Int32[100]) do x; add_var(x[1], 1) end
+        @test Array(e1) == av .+ 10
+        @test Array(e2) == av .+ 100
+
+        @test Array(transform(a; scalars = Int32[3]) do x
+            mul_var(x[1], 1)
+        end) == av .* 3
+    end
+
+    @testset "expression reductions" begin
+        av = Int32.(collect(1:N))
+        bv = Int32.(fill(2, N))
+        a = DpuVector(av); b = DpuVector(bv)
+
+        @test get(reduce_expr(a, b) do x; sum(x[1] * x[2]) end) ==
+              sum(Int64.(av) .* Int64.(bv))
+        @test get(reduce_expr(a) do x; maximum(x[1]) end) == maximum(av)
+        @test get(reduce_expr(a) do x; minimum(-x[1]) end) == -maximum(av)
+        # The DPU accumulates a sum in Int32 unless the library is built with
+        # ENABLE_PROMOTION_REDUCTIONS, so keep this one inside 32-bit range.
+        small = Int32.(collect(1:64))
+        @test get(reduce_expr(DpuVector(small)) do x; sum(sqr(x[1] - 1)) end) ==
+              sum(Int64.(small .- 1) .^ 2)
+
+        # a non-reduction program is rejected rather than silently misread
+        @test_throws ArgumentError reduce_expr(a) do x; x[1] + 1 end
+    end
+
+    @testset "reductions still fuse through RPN" begin
+        n = 512
+        vs = [DpuVector(Int32.(collect(1:n) .+ k)) for k in 1:6]
+        UpmemVector.sync()
+
+        before = UpmemVector.stat_compute_launches()
+        fs = [reduce_expr(vs[i], vs[i + 1]) do x; sum(x[1] * x[2]) end
+              for i in 1:5]
+        vals = [get(f) for f in fs]
+        passes = UpmemVector.stat_compute_launches() - before
+
+        want = [sum(Int64.(collect(1:n) .+ i) .* Int64.(collect(1:n) .+ i .+ 1))
+                for i in 1:5]
+        @test vals == want
+        # Five independent reductions left unread share one kernel pass.
+        @test passes == 1
+    end
+
+    @testset "argmin / argmax over vectors" begin
+        av = Int32[3, 1, 4, 1, 5, 9, 2, 6]
+        bv = Int32[2, 7, 1, 8, 2, 8, 1, 8]
+        cv = fill(Int32(5), 8)
+        a = DpuVector(av); b = DpuVector(bv); c = DpuVector(cv)
+
+        # 0-based winning lane, as the kernel produces it
+        @test Array(argmin_of([a, b, c])) ==
+              Int32[argmin([av[i], bv[i], cv[i]]) - 1 for i in 1:8]
+        @test Array(argmax_of([a, b, c])) ==
+              Int32[argmax([av[i], bv[i], cv[i]]) - 1 for i in 1:8]
+
+        @test_throws ArgumentError argmin_of(DpuVector[])
+
+        # the same thing spelled inside an expression
+        @test Array(transform(a, b) do x
+            argmin_lanes([x[1], x[2]])
+        end) == Int32[av[i] <= bv[i] ? 0 : 1 for i in 1:8]
+    end
+
+    @testset "min_squared_distance" begin
+        c1 = Int32[1, 5, 9, 2]; c2 = Int32[2, 6, 1, 7]
+        q = Int32[4, 4]
+        cols = [DpuVector(c1), DpuVector(c2)]
+        want = minimum([(c1[i] - q[1])^2 + (c2[i] - q[2])^2 for i in 1:4])
+        @test get(min_squared_distance(cols, q)) == want
+
+        @test_throws ArgumentError min_squared_distance(cols, Int32[1])
+        @test_throws ArgumentError min_squared_distance(DpuVector[], Int32[])
+    end
+
+    @testset "lane_index is shard-local" begin
+        n = 40
+        idx = Array(transform(DpuVector(zeros(Int32, n))) do x
+            lane_index()
+        end)
+        # Restarts at 0 on every DPU, so it is repeated ranges, not 0:n-1.
+        @test minimum(idx) == 0
+        @test all(i -> 0 <= i < n, idx)
+        @test length(unique(idx)) < n
+    end
+
+    @testset "program limits are validated" begin
+        a = DpuVector(Int32.(collect(1:N)))
+        @test_throws ArgumentError operand(0)
+        @test_throws ArgumentError operand(MAX_VFUSE_INPUTS + 1)
+        @test_throws ArgumentError scalar_var(0)
+        @test_throws ArgumentError scalar_var(MAX_PIPELINE_SCALARS + 1)
+
+        # A generated kernel has no opcode-buffer ceiling, so a long chain is
+        # simply correct rather than rejected.
+        long = input()
+        for _ in 1:300
+            long = long + 1
+        end
+        @test Array(dpu_pipeline(a, long)) == Int32.(collect(1:N)) .+ 300
+    end
+
+    @testset "raw pipeline submission" begin
+        av = Int32.(collect(1:N))
+        a = DpuVector(av)
+        # pipeline/pipeline_reduce are the primitives transform/reduce_expr use.
+        @test Array(dpu_pipeline(a, -input())) == .-av
+        @test get(dpu_pipeline_reduce(a, sum(input()))) == sum(Int64.(av))
+    end
+
+    # ---- lazy broadcasting ----
+
+    @testset "broadcast lowers to one program" begin
+        n = 512
+        av = Int32.(collect(1:n)); bv = Int32.(collect(n:-1:1))
+        cv = fill(Int32(3), n)
+        a = DpuVector(av); b = DpuVector(bv); c = DpuVector(cv)
+
+        @test Array(a .+ b .* c) == av .+ bv .* cv
+        @test Array(abs.(a .- b) .+ 1) == abs.(av .- bv) .+ 1
+        @test Array((a .+ 1) .* (b .- 2)) == (av .+ 1) .* (bv .- 2)
+        @test Array(a .* a) == av .* av
+        @test Array(.-a) == .-av
+        @test Array(a .>> 2) == av .>> 2
+        @test Array(2 .* a .+ 1) == 2 .* av .+ 1
+
+        # comparisons inside a broadcast
+        @test Array(a .> b) == Int32.(av .> bv)
+        @test Array(a .<= b) == Int32.(av .<= bv)
+        @test Array(a .== b) == Int32.(av .== bv)
+
+        # ifelse is the broadcast spelling of select
+        @test Array(ifelse.(a .> b, a, b)) == max.(av, bv)
+    end
+
+    @testset "a whole expression is one kernel pass" begin
+        n = 512
+        vs = [DpuVector(Int32.(collect(1:n) .+ k)) for k in 1:8]
+        want = sum(Int32.(collect(1:n) .+ k) for k in 1:8)
+
+        UpmemVector.sync()
+        before = UpmemVector.stat_compute_launches()
+        fused = UpmemVector.stat_vertical_fusions()
+        got = Array(vs[1] .+ vs[2] .+ vs[3] .+ vs[4] .+
+                    vs[5] .+ vs[6] .+ vs[7] .+ vs[8])
+        passes = UpmemVector.stat_compute_launches() - before
+
+        @test got == want
+        # One program, so one pass -- and no reliance on the fusion pass to get
+        # there.  The eager operator spelling of the same thing costs 7.
+        @test passes == 1
+        @test UpmemVector.stat_vertical_fusions() - fused == 0
+    end
+
+    @testset "in-place broadcast writes through" begin
+        n = 512
+        av = Int32.(collect(1:n)); bv = Int32.(collect(n:-1:1))
+        a = DpuVector(av); b = DpuVector(bv)
+
+        d = DpuVector(n)
+        UpmemVector.sync()
+        before = UpmemVector.stat_compute_launches()
+        d .= a .+ b .* 2
+        @test Array(d) == av .+ bv .* 2
+        @test UpmemVector.stat_compute_launches() - before == 1
+
+        # DpuVector is a handle type, so `.=` must update the buffer rather than
+        # rebind -- an alias has to observe the write.
+        alias = d
+        d .= a .* 3
+        @test Array(alias) == av .* 3
+
+        # the destination may appear in its own expression
+        c = DpuVector(copy(av))
+        c .= c .+ 100
+        @test Array(c) == av .+ 100
+
+        e = DpuVector(copy(av))
+        e .= e .* e
+        @test Array(e) == av .* av
+
+        @test_throws DimensionMismatch (DpuVector(8) .= a .+ b)
+    end
+
+    @testset "broadcast rejects what it cannot lower" begin
+        a = DpuVector(Int32.(collect(1:64)))
+        @test_throws ArgumentError Array(sqrt.(a))
+        @test_throws ArgumentError Array(sin.(a))
+    end
+
+    @testset "similar and empty-runtime sync" begin
+        a = DpuVector(Int32.(collect(1:N)))
+        @test length(similar(a)) == N
+        @test length(DpuVector(16)) == 16
+        @test_throws ArgumentError DpuVector(-1)
+        # sync() must be safe even with nothing submitted
+        @test UpmemVector.sync() === nothing
     end
 
 end

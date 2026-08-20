@@ -514,6 +514,10 @@ dpu_arg_expr<T> argmax(const std::vector<dpu_pipeline_expr<T>>& lanes) {
 
 // (b) over K whole VECTORS, by itself -- launches its own fused kernel and
 //     returns the per-element winning-lane-index vector.
+//
+// These call transform(), which only exists under JIT, so they need a tighter
+// guard than the expression forms above.
+#if JIT
 template <typename T>
 dpu_vector<T> argmin(std::vector<dpu_vector<T>>& lanes) {
   std::vector<dpu_vector<T>> operands(lanes.begin() + 1, lanes.end());
@@ -538,10 +542,7 @@ dpu_vector<T> argmax(std::vector<dpu_vector<T>>& lanes) {
           operands)
       .vec;
 }
-
-template <typename T>
-lazy_reduction_result<T> min_squared_distance(std::vector<dpu_vector<T>>& cols,
-                                              const std::vector<T>& query);
+#endif  // JIT
 #endif
 
 #if PIPELINE

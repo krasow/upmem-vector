@@ -130,7 +130,14 @@ void dpu_vector<T>::add_fence() {
   event_queue.process_events(e->id);
 }
 
-inline void dpu_fence() { DpuRuntime::get().get_event_queue().sync(); }
+inline void dpu_fence() {
+  // Nothing has been submitted before the first vector is constructed, and the
+  // event queue's mutex does not exist yet -- locking it segfaults.  Fencing an
+  // uninitialised runtime is vacuously satisfied.
+  auto& runtime = DpuRuntime::get();
+  if (!runtime.is_initialized()) return;
+  runtime.get_event_queue().sync();
+}
 
 template <typename T>
 dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
@@ -682,8 +689,17 @@ dpu_vector<T> operator/(const dpu_vector<T>& lhs, T rhs) {
 #if PIPELINE
 template <typename T>
 dpu_vector<T>& dpu_vector<T>::operator=(const pipeline_result<T>& other) {
-  this->data_ = other.vec.data_desc_ref();
-  this->size_ = other.vec.size();
+  // Rebinding is still a handle change, so it has to keep handle_count exact:
+  // an over-count keeps a dead producer alive, an under-count lets dispatch
+  // elide a producer whose output this vector still refers to.  Retain before
+  // release, in case both sides already name the same descriptor.
+  detail::VectorDescRef incoming = other.vec.data_desc_ref();
+  if (data_ != incoming) {
+    detail::retain_handle(incoming);
+    detail::release_handle(data_);
+    data_ = incoming;
+  }
+  size_ = other.vec.size();
   return *this;
 }
 

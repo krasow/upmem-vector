@@ -169,12 +169,11 @@ TEST(lifecycle, chained_ops_under_memory_pressure) {
 // finalizers after atexit, so a surviving handle is always destroyed *after*
 // shutdown; before the guard that segfaulted in log_allocation on every exit.
 //
-// Not runnable in-process: the runner drains the queue after each test, and a
-// test that shuts the runtime down leaves nothing to drain.  Covered instead by
-// the Julia test suite, which exercises exactly this ordering.
-TEST_KNOWN_FATAL(lifecycle, destruct_after_shutdown,
-                 "shuts the runtime down, which the runner cannot continue "
-                 "past; the guard itself is covered by the Julia suite") {
+// This used to be unrunnable in-process: the runner drains the queue after each
+// test, and dpu_fence() locked the event queue's mutex whether or not the
+// runtime was up.  Guarding the fence on is_initialized() made draining a
+// shut-down runtime a no-op, so the test runs like any other under --isolate.
+TEST(lifecycle, destruct_after_shutdown) {
   const size_t n = tf::elements();
   std::vector<T> host = tf::constant_vector<T>(n, 7);
 

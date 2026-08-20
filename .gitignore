@@ -25,3 +25,4 @@ opcodes.h
 
 # Julia
 julia/Manifest.toml
+julia/src/opcodes.jl

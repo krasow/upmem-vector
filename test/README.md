@@ -170,9 +170,11 @@ All open as of writing; each has a test that documents it.
    `~VectorDesc` now returns early when the runtime is down, since the logger
    and allocator it would use are gone and the DPU set is already freed. This
    crashed the Julia bindings on every exit, because CxxWrap finalizers run
-   after `atexit`. Covered by the Julia suite;
-   `lifecycle.destruct_after_shutdown` records why the C++ runner cannot host
-   it (it drains the queue after every test).
+   after `atexit`. A second guard was needed before this became testable
+   in-process: `dpu_fence()` locked the event queue's mutex whether or not the
+   runtime was up, so the runner's post-test drain segfaulted on a shut-down
+   runtime. Both guards are pinned by `lifecycle.destruct_after_shutdown`, which
+   now runs like any other test under `--isolate`.
 
 7. ~~**Absorbed inlining ignores `MAX_VFUSE_OPS`.**~~ **Fixed.** That limit is
    the size of the interpreter's `args.pipeline.ops` buffer, so it only binds
@@ -207,6 +209,25 @@ All open as of writing; each has a test that documents it.
     was unaffected. Shards are `align8` padded by the allocator, so rounding the
     transfer up stays inside the allocation. — `sharding.unaligned_sizes_are_correct`,
     `sharding.sizes_around_one_block_are_correct`, `reductions.sum_at_all_sizes`
+
+11. ~~**`dpu_fence()` segfaults before the runtime is initialized.**~~
+    **Fixed.** It went straight to `get_event_queue().sync()`, locking a mutex
+    that does not exist until the first vector is constructed. Reachable from
+    any binding that offers a global sync — `sync()` as the first call in a
+    Julia session crashed. Fencing an uninitialized runtime is now a no-op,
+    which also made bug 6's test runnable in-process.
+
+12. ~~**`operator=(const pipeline_result&)` bypasses handle accounting.**~~
+    **Fixed.** Every other assignment does `release_handle` on the old
+    descriptor and `retain_handle` on the new one; this one just overwrote
+    `data_`. An under-count is the dangerous direction: it lets dispatch elide a
+    producer whose output a live `dpu_vector` still names, which is bug 1
+    again. Retain-before-release, so self-assignment is safe.
+
+13. ~~**`DpuVector(n)` never worked.**~~ **Fixed** (Julia only.) It called
+    `cpp_alloc_DpuVectorInt32`, which CxxWrap does not generate — the bound
+    `constructor<uint32_t>()` is exposed as the type itself. The README
+    documented the constructor and no test exercised it.
 
 Bugs 9 and 10 were found by running the suite under `PIPELINE=1 JIT=0`, which
 had never been exercised end-to-end — the tests that catch them already existed

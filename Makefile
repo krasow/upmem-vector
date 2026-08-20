@@ -106,6 +106,8 @@ endif
 .PHONY: config_check cache_old reconfigure all clean clean-internal test build-test list-tests install uninstall print_config make_header
 
 GENERATED_TARGETS := dpu/kernels.h host/opinfo.h host/kernelids.h common/opcodes.h
+# Same generator, but not a C header -- must stay out of the install list.
+GENERATED_JULIA := julia/src/opcodes.jl
 
 
 __dirs := $(shell mkdir -p ${BUILDDIR} && mkdir -p ${BUILDDIR}/bin && mkdir -p ${BUILDDIR}/lib)
@@ -115,11 +117,11 @@ HOST_FLAGS := ${COMMON_FLAGS} ${CXXFLAGS} `dpu-pkg-config --cflags --libs dpu`
 # DPU-specific flags
 DPU_FLAGS := ${COMMON_FLAGS} -Os -DNR_TASKLETS=${NR_TASKLETS}
 
-all: $(GENERATED_TARGETS) config_check print_config ${HOST_TARGET} ${DPU_TARGET}
+all: $(GENERATED_TARGETS) $(GENERATED_JULIA) config_check print_config ${HOST_TARGET} ${DPU_TARGET}
 	@echo "Build complete: $(BUILD_TYPE) \n"
 
 
-$(GENERATED_TARGETS): tools/generate.py
+$(GENERATED_TARGETS) $(GENERATED_JULIA): tools/generate.py
 	@echo "Generating kernel headers..."
 	python3 tools/generate.py
 
@@ -188,7 +190,7 @@ clean-internal:
 	$(RM) -r $(BUILDDIR) $(TEST_TARGET)
 
 clean: clean-internal
-	$(RM) -r $(CONFIG_STAMP) $(GENERATED_TARGETS) common/config.h
+	$(RM) -r $(CONFIG_STAMP) $(GENERATED_TARGETS) $(GENERATED_JULIA) common/config.h
 
 # ANSI color codes
 RED    := \033[0;31m

@@ -36,9 +36,11 @@ function DpuVector(data::AbstractVector{<:Integer})
     return DpuVector(convert(Vector{Int32}, data))
 end
 
-# Allocate an uninitialised DPU vector of length n
+# Allocate an uninitialised DPU vector of length n.  CxxWrap exposes the bound
+# `constructor<uint32_t>()` as the type itself, not as a cpp_alloc_* helper.
 function DpuVector(n::Integer)
-    handle = retry_on_oom(() -> UpmemVector.cpp_alloc_DpuVectorInt32(Int32(n)))
+    n >= 0 || throw(ArgumentError("length must be non-negative, got $n"))
+    handle = retry_on_oom(() -> UpmemVector.DpuVectorInt32(UInt32(n)))
     return DpuVector(handle)
 end
 
