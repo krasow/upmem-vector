@@ -1,8 +1,13 @@
 #include "perfetto/trace.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <map>
+#include <sstream>
 #include <vector>
 
 #include "perfetto/trace_internal.h"
@@ -41,6 +46,16 @@ std::string opcode_to_string(uint8_t op) {
       return "DIV";
     case OP_ASR:
       return "ASR";
+    case OP_EQ:
+      return "EQ";
+    case OP_LT:
+      return "LT";
+    case OP_GT:
+      return "GT";
+    case OP_GE:
+      return "GE";
+    case OP_LE:
+      return "LE";
     case OP_ADD_SCALAR:
       return "ADD_SCALAR";
     case OP_SUB_SCALAR:
@@ -51,6 +66,16 @@ std::string opcode_to_string(uint8_t op) {
       return "DIV_SCALAR";
     case OP_ASR_SCALAR:
       return "ASR_SCALAR";
+    case OP_EQ_SCALAR:
+      return "EQ_SCALAR";
+    case OP_LT_SCALAR:
+      return "LT_SCALAR";
+    case OP_GT_SCALAR:
+      return "GT_SCALAR";
+    case OP_GE_SCALAR:
+      return "GE_SCALAR";
+    case OP_LE_SCALAR:
+      return "LE_SCALAR";
     case OP_ADD_SCALAR_VAR:
       return "ADD_SCALAR_VAR";
     case OP_SUB_SCALAR_VAR:
@@ -61,6 +86,16 @@ std::string opcode_to_string(uint8_t op) {
       return "DIV_SCALAR_VAR";
     case OP_ASR_SCALAR_VAR:
       return "ASR_SCALAR_VAR";
+    case OP_EQ_SCALAR_VAR:
+      return "EQ_SCALAR_VAR";
+    case OP_LT_SCALAR_VAR:
+      return "LT_SCALAR_VAR";
+    case OP_GT_SCALAR_VAR:
+      return "GT_SCALAR_VAR";
+    case OP_GE_SCALAR_VAR:
+      return "GE_SCALAR_VAR";
+    case OP_LE_SCALAR_VAR:
+      return "LE_SCALAR_VAR";
     case OP_MIN:
       return "MIN";
     case OP_MAX:
@@ -69,6 +104,24 @@ std::string opcode_to_string(uint8_t op) {
       return "SUM";
     case OP_PRODUCT:
       return "PRODUCT";
+    case OP_SELECT:
+      return "SELECT";
+    case OP_DUP:
+      return "DUP";
+    case OP_PUSH_INDEX:
+      return "PUSH_INDEX";
+    case OP_LOAD_INDIRECT:
+      return "LOAD_INDIRECT";
+    case OP_ADD_INDIRECT:
+      return "ADD_INDIRECT";
+    case OP_APPLY_INDIRECT:
+      return "APPLY_INDIRECT";
+    case OP_PUSH_SCALAR:
+      return "PUSH_SCALAR";
+    case OP_PUSH_SCALAR_VAR:
+      return "PUSH_SCALAR_VAR";
+    case OP_NEXT_CHAIN:
+      return "NEXT_CHAIN";
     case OP_PUSH_INPUT:
     case OP_PUSH_OPERAND_0:
     case OP_PUSH_OPERAND_1:
@@ -78,6 +131,9 @@ std::string opcode_to_string(uint8_t op) {
     case OP_PUSH_OPERAND_5:
     case OP_PUSH_OPERAND_6:
     case OP_PUSH_OPERAND_7:
+    case OP_PUSH_OPERAND_8:
+    case OP_PUSH_OPERAND_9:
+    case OP_PUSH_OPERAND_10:
       return "";
     default:
       return "UNK(" + std::to_string(op) + ")";
@@ -100,6 +156,288 @@ PERFETTO_DEFINE_CATEGORIES(
 PERFETTO_TRACK_EVENT_STATIC_STORAGE();
 
 static std::unique_ptr<perfetto::TracingSession> tracing_session_;
+static bool tracing_enabled_ = false;
+
+static bool truthy_env(const char* value) {
+  if (value == nullptr || value[0] == '\0') return false;
+  return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
+         std::strcmp(value, "FALSE") != 0 && std::strcmp(value, "off") != 0 &&
+         std::strcmp(value, "OFF") != 0;
+}
+
+bool trace::enabled() { return tracing_enabled_; }
+
+static bool requested() {
+  return truthy_env(std::getenv("VECTORDPU_TRACE")) ||
+         truthy_env(std::getenv("TRACE_OUTPUT"));
+}
+
+static std::string output_path() {
+  const char* vectordpu_trace = std::getenv("VECTORDPU_TRACE");
+  if (truthy_env(vectordpu_trace) && std::strcmp(vectordpu_trace, "1") != 0 &&
+      std::strcmp(vectordpu_trace, "true") != 0 &&
+      std::strcmp(vectordpu_trace, "TRUE") != 0 &&
+      std::strcmp(vectordpu_trace, "on") != 0 &&
+      std::strcmp(vectordpu_trace, "ON") != 0) {
+    return vectordpu_trace;
+  }
+  const char* trace_output = std::getenv("TRACE_OUTPUT");
+  return truthy_env(trace_output) ? trace_output : "trace.perfetto-trace";
+}
+
+static std::string trace_string(std::string value, size_t max_bytes = 8192) {
+  if (value.size() <= max_bytes) return value;
+  value.resize(max_bytes);
+  value += "\n... truncated ...";
+  return value;
+}
+
+static size_t count_rpn_chains(const std::vector<uint8_t>& ops) {
+  if (ops.empty()) return 0;
+  size_t chains = 1;
+  for (size_t i = 0; i < ops.size(); ++i) {
+    uint8_t op = ops[i];
+    if (op == OP_NEXT_CHAIN) chains++;
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
+  }
+  return chains;
+}
+
+static bool is_stack_push_op(uint8_t op) {
+  return op >= OP_PUSH_INPUT && op <= OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1;
+}
+
+static std::vector<std::string> rpn_tokens(const std::vector<uint8_t>& ops,
+                                           bool include_stack_pushes) {
+  std::vector<std::string> tokens;
+  for (size_t i = 0; i < ops.size(); ++i) {
+    uint8_t op = ops[i];
+    if (op == OP_NEXT_CHAIN) {
+      if (include_stack_pushes) tokens.push_back("NEXT_CHAIN");
+    } else if (!include_stack_pushes &&
+               (is_stack_push_op(op) || op == OP_PUSH_SCALAR ||
+                op == OP_PUSH_SCALAR_VAR)) {
+      // Operand pushes are VM plumbing, not useful when reading a trace.
+    } else {
+      std::string name = opcode_to_string(op);
+      if (!name.empty()) tokens.push_back(name);
+    }
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
+  }
+  return tokens;
+}
+
+static size_t count_decoded_rpn_ops(const std::vector<uint8_t>& ops) {
+  size_t count = 0;
+  for (size_t i = 0; i < ops.size(); ++i) {
+    count++;
+    if (OP_INLINE_BYTES(ops[i]) > 0) i += OP_INLINE_BYTES(ops[i]);
+  }
+  return count;
+}
+
+static std::string summarize_top_counts(const std::vector<std::string>& tokens,
+                                        size_t limit) {
+  std::map<std::string, size_t> counts;
+  for (const auto& token : tokens) counts[token]++;
+
+  std::vector<std::pair<std::string, size_t>> sorted(counts.begin(),
+                                                     counts.end());
+  std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+    if (a.second != b.second) return a.second > b.second;
+    return a.first < b.first;
+  });
+
+  std::ostringstream out;
+  for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
+    if (i) out << ", ";
+    out << sorted[i].first << "=" << sorted[i].second;
+  }
+  return out.str();
+}
+
+static std::string summarize_repeated_windows(
+    const std::vector<std::string>& tokens, size_t limit) {
+  std::map<std::string, size_t> windows;
+  for (size_t width : {size_t{6}, size_t{5}, size_t{4}, size_t{3}}) {
+    if (tokens.size() < width) continue;
+    for (size_t i = 0; i + width <= tokens.size(); ++i) {
+      std::string key;
+      for (size_t j = 0; j < width; ++j) {
+        if (j) key += ", ";
+        key += tokens[i + j];
+      }
+      windows[key]++;
+    }
+  }
+
+  std::vector<std::pair<std::string, size_t>> sorted;
+  for (const auto& entry : windows)
+    if (entry.second > 1) sorted.push_back(entry);
+  std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+    if (a.second != b.second) return a.second > b.second;
+    if (a.first.size() != b.first.size())
+      return a.first.size() > b.first.size();
+    return a.first < b.first;
+  });
+
+  std::ostringstream out;
+  for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
+    out << "  [" << sorted[i].first << "] x" << sorted[i].second << "\n";
+  }
+  return out.str();
+}
+
+static size_t estimate_jit_unique_exprs(const std::vector<uint8_t>& ops) {
+  std::vector<std::string> stack;
+  std::map<std::string, std::string> ids;
+  size_t next_id = 0;
+
+  auto leaf = [](const std::string& id) { return id; };
+  auto make_expr = [&](const std::string& sig) {
+    auto it = ids.find(sig);
+    if (it != ids.end()) return it->second;
+    std::string id = "e" + std::to_string(next_id++);
+    ids.emplace(sig, id);
+    return id;
+  };
+
+  for (size_t i = 0; i < ops.size(); ++i) {
+    uint8_t op = ops[i];
+    if (op == OP_NEXT_CHAIN) {
+      stack.clear();
+    } else if (op == OP_PUSH_INPUT) {
+      stack.push_back(leaf("input"));
+    } else if (op >= OP_PUSH_OPERAND_0 &&
+               op <= OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1) {
+      stack.push_back(leaf("op" + std::to_string(op - OP_PUSH_OPERAND_0)));
+    } else if (op == OP_DUP) {
+      if (!stack.empty()) stack.push_back(stack.back());
+    } else if (IS_OP_SCALAR(op) || IS_OP_SCALAR_VAR(op)) {
+      std::string rhs_id;
+      uint8_t base = op;
+      if (IS_OP_SCALAR(op)) {
+        uint8_t b0 = ops[i + 1], b1 = ops[i + 2], b2 = ops[i + 3],
+                b3 = ops[i + 4];
+        int32_t val = (int32_t)(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
+        rhs_id = "scalar:" + std::to_string(val);
+        i += SCALAR_INLINE_BYTES;
+      } else {
+        uint8_t idx = ops[i + 1];
+        rhs_id = "scalar_var:" + std::to_string(idx);
+        base = op - (OP_ADD_SCALAR_VAR - OP_ADD_SCALAR);
+        i += SCALAR_VAR_INDEX_BYTES;
+      }
+      if (stack.empty()) continue;
+      std::string lhs = stack.back();
+      stack.pop_back();
+      stack.push_back(make_expr("scalar_op:" + std::to_string(base) + ":" +
+                                lhs + ":" + rhs_id));
+    } else if (IS_OP_UNARY(op)) {
+      if (stack.empty()) continue;
+      std::string v = stack.back();
+      stack.pop_back();
+      stack.push_back(make_expr("unary:" + std::to_string(op) + ":" + v));
+    } else if (IS_OP_BINARY(op)) {
+      if (stack.size() < 2) continue;
+      std::string rhs = stack.back();
+      stack.pop_back();
+      std::string lhs = stack.back();
+      stack.pop_back();
+      stack.push_back(
+          make_expr("binary:" + std::to_string(op) + ":" + lhs + ":" + rhs));
+    } else if (IS_OP_TERNARY(op)) {
+      if (stack.size() < 3) continue;
+      std::string false_val = stack.back();
+      stack.pop_back();
+      std::string true_val = stack.back();
+      stack.pop_back();
+      std::string cond = stack.back();
+      stack.pop_back();
+      stack.push_back(
+          make_expr("select:" + cond + ":" + true_val + ":" + false_val));
+    } else if (IS_OP_REDUCTION(op)) {
+      if (!stack.empty()) stack.pop_back();
+    } else if (op == OP_PUSH_INDEX) {
+      stack.push_back(leaf("idx"));
+    } else if (op == OP_LOAD_INDIRECT) {
+      if (stack.empty()) {
+        i += 1;
+        continue;
+      }
+      uint8_t operand = ops[++i];
+      std::string idx = stack.back();
+      stack.pop_back();
+      stack.push_back(
+          make_expr("load_indirect:" + std::to_string(operand) + ":" + idx));
+    } else if (op == OP_ADD_INDIRECT || op == OP_APPLY_INDIRECT) {
+      size_t extra = (op == OP_APPLY_INDIRECT) ? 2 : 1;
+      if (i + extra < ops.size()) i += extra;
+      if (!stack.empty()) stack.pop_back();
+      if (!stack.empty()) stack.pop_back();
+    } else if (op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR) {
+      if (op == OP_PUSH_SCALAR_VAR) {
+        uint8_t idx = ops[i + 1];
+        stack.push_back(leaf("scalar_var:" + std::to_string(idx)));
+        i += SCALAR_VAR_INDEX_BYTES;
+      } else {
+        uint8_t b0 = ops[i + 1], b1 = ops[i + 2], b2 = ops[i + 3],
+                b3 = ops[i + 4];
+        int32_t val = (int32_t)(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
+        stack.push_back(leaf("scalar:" + std::to_string(val)));
+        i += SCALAR_INLINE_BYTES;
+      }
+    }
+  }
+  return ids.size();
+}
+
+static std::string summarize_rpn_ops(const std::vector<uint8_t>& ops) {
+  std::vector<std::string> tokens = rpn_tokens(ops, false);
+  size_t decoded_ops = count_decoded_rpn_ops(ops);
+  size_t jit_unique_exprs = estimate_jit_unique_exprs(ops);
+  size_t chains = count_rpn_chains(ops);
+  size_t reductions = 0;
+  for (size_t i = 0; i < ops.size(); ++i) {
+    uint8_t op = ops[i];
+    if (IS_OP_REDUCTION(op)) reductions++;
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
+  }
+
+  std::ostringstream out;
+  out << "decoded_ops=" << decoded_ops << ", rpn_bytes=" << ops.size()
+      << ", jit_unique_exprs=" << jit_unique_exprs << ", chains=" << chains
+      << ", reductions=" << reductions << "\n";
+
+  std::string histogram = summarize_top_counts(tokens, 12);
+  if (!histogram.empty()) out << "top_ops: " << histogram << "\n";
+
+  if (chains > 1) {
+    size_t chain_idx = 0;
+    size_t chain_ops = 0;
+    size_t chain_reductions = 0;
+    out << "chains:\n";
+    for (size_t i = 0; i < ops.size(); ++i) {
+      uint8_t op = ops[i];
+      if (op == OP_NEXT_CHAIN) {
+        out << "  #" << chain_idx++ << ": ops=" << chain_ops
+            << ", reductions=" << chain_reductions << "\n";
+        chain_ops = 0;
+        chain_reductions = 0;
+      } else {
+        chain_ops++;
+        if (IS_OP_REDUCTION(op)) chain_reductions++;
+      }
+      if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
+    }
+    out << "  #" << chain_idx << ": ops=" << chain_ops
+        << ", reductions=" << chain_reductions << "\n";
+  }
+
+  std::string repeated = summarize_repeated_windows(tokens, 6);
+  if (!repeated.empty()) out << "repeated_patterns:\n" << repeated;
+  return trace_string(out.str(), 8192);
+}
 
 static std::string vector_to_string(detail::VectorDescRef vec) {
   if (!vec) return "NULL";
@@ -112,6 +450,9 @@ static std::string vector_to_string(detail::VectorDescRef vec) {
 
 static std::string get_pipeline_breakdown(const Event& e) {
   if (e.rpn_ops.empty()) return "";
+  if (count_decoded_rpn_ops(e.rpn_ops) > 256)
+    return summarize_rpn_ops(e.rpn_ops);
+
   std::string breakdown;
   std::vector<std::string> stack;
   int op_idx = 1;
@@ -122,8 +463,15 @@ static std::string get_pipeline_breakdown(const Event& e) {
     uint8_t op = ops[i];
     if (op == OP_PUSH_INPUT) {
       stack.push_back("In[0]");
-    } else if (op >= OP_PUSH_OPERAND_0 && op <= OP_PUSH_OPERAND_7) {
+    } else if (op >= OP_PUSH_OPERAND_0 &&
+               op <= OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1) {
       stack.push_back("In[" + std::to_string(op - OP_PUSH_OPERAND_0 + 1) + "]");
+    } else if (op == OP_DUP) {
+      if (stack.empty()) {
+        breakdown += "!!DUP_ERR!!\n";
+        break;
+      }
+      stack.push_back(stack.back());
     } else if (IS_OP_UNARY(op)) {
       if (stack.size() < 1) {
         breakdown += "!!STK_ERR!!\n";
@@ -147,6 +495,21 @@ static std::string get_pipeline_breakdown(const Event& e) {
       std::string res = "st[" + std::to_string(stack.size()) + "]";
       breakdown += std::to_string(op_idx++) + ". " + res + " = " +
                    opcode_to_string(op) + "(" + s1 + ", " + s2 + ")\n";
+      stack.push_back(res);
+    } else if (IS_OP_TERNARY(op)) {
+      if (stack.size() < 3) {
+        breakdown += "!!STK_ERR!!\n";
+        break;
+      }
+      std::string false_val = stack.back();
+      stack.pop_back();
+      std::string true_val = stack.back();
+      stack.pop_back();
+      std::string cond = stack.back();
+      stack.pop_back();
+      std::string res = "st[" + std::to_string(stack.size()) + "]";
+      breakdown += std::to_string(op_idx++) + ". " + res + " = SELECT(" + cond +
+                   ", " + true_val + ", " + false_val + ")\n";
       stack.push_back(res);
     } else if (IS_OP_SCALAR(op)) {
       if (stack.size() < 1) {
@@ -196,10 +559,59 @@ static std::string get_pipeline_breakdown(const Event& e) {
       breakdown += std::to_string(op_idx++) + ". " + res + " = " +
                    opcode_to_string(op) + "(" + s1 + ")\n";
       stack.push_back(res);
+    } else if (op == OP_PUSH_INDEX) {
+      stack.push_back("IDX");
+    } else if (op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR) {
+      if (op == OP_PUSH_SCALAR_VAR) {
+        if (i + 1 >= size) {
+          breakdown += "!!SCALAR_VAR_ERR!!\n";
+          break;
+        }
+        uint8_t idx = ops[++i];
+        stack.push_back("SCALAR[" + std::to_string(idx) + "]");
+      } else {
+        if (i + sizeof(uint32_t) >= size) {
+          breakdown += "!!SCALAR_ERR!!\n";
+          break;
+        }
+        uint32_t scalar;
+        memcpy(&scalar, &ops[i + 1], sizeof(uint32_t));
+        i += sizeof(uint32_t);
+        stack.push_back(std::to_string(scalar));
+      }
+    } else if (op == OP_LOAD_INDIRECT) {
+      if (stack.size() < 1 || i + 1 >= size) {
+        breakdown += "!!INDIRECT_ERR!!\n";
+        break;
+      }
+      uint8_t operand_idx = ops[++i];
+      std::string idx = stack.back();
+      stack.pop_back();
+      std::string res = "st[" + std::to_string(stack.size()) + "]";
+      breakdown += std::to_string(op_idx++) + ". " + res + " = " +
+                   opcode_to_string(op) + "(In[" +
+                   std::to_string(operand_idx + 1) + "], " + idx + ")\n";
+      stack.push_back(res);
+    } else if (op == OP_ADD_INDIRECT || op == OP_APPLY_INDIRECT) {
+      size_t extra = (op == OP_APPLY_INDIRECT) ? 2 : 1;
+      if (stack.size() < 2 || i + extra >= size) {
+        breakdown += "!!INDIRECT_ERR!!\n";
+        break;
+      }
+      uint8_t local_idx = ops[++i];
+      uint8_t reduce_op = (op == OP_APPLY_INDIRECT) ? ops[++i] : OP_SUM;
+      std::string val = stack.back();
+      stack.pop_back();
+      std::string idx = stack.back();
+      stack.pop_back();
+      breakdown += std::to_string(op_idx++) + ". LOCAL[" +
+                   std::to_string(local_idx) + "][" + idx +
+                   "] = " + opcode_to_string(reduce_op) + "(LOCAL[" +
+                   std::to_string(local_idx) + "][" + idx + "], " + val + ")\n";
     }
   }
   if (!stack.empty()) breakdown += "Final Output: " + stack.back();
-  return breakdown;
+  return trace_string(std::move(breakdown), 16384);
 }
 
 static void add_event_metadata(perfetto::EventContext& ctx,
@@ -211,6 +623,11 @@ static void add_event_metadata(perfetto::EventContext& ctx,
           vector_to_string(e->inputs[i]));
     }
     if (e->output) ctx.AddDebugAnnotation("out", vector_to_string(e->output));
+    if (!e->rpn_ops.empty()) {
+      ctx.AddDebugAnnotation("rpn_ops_count", (uint64_t)e->rpn_ops.size());
+      ctx.AddDebugAnnotation("rpn_chain_count",
+                             (uint64_t)count_rpn_chains(e->rpn_ops));
+    }
     std::string breakdown = get_pipeline_breakdown(*e);
     if (!breakdown.empty())
       ctx.AddDebugAnnotation("pipeline_breakdown", breakdown);
@@ -238,6 +655,10 @@ static void add_event_metadata(perfetto::EventContext& ctx,
 namespace trace {
 
 void initialize() {
+  tracing_enabled_ = requested();
+  if (!tracing_enabled_) return;
+  if (tracing_session_) return;
+
   perfetto::TracingInitArgs args;
   args.backends |= perfetto::kInProcessBackend;
   perfetto::Tracing::Initialize(args);
@@ -266,60 +687,105 @@ void initialize() {
 }
 
 void shutdown() {
+  if (!tracing_enabled_) return;
   if (tracing_session_) {
     Logger& logger = DpuRuntime::get().get_logger();
-    logger.lock() << "[trace] Stopping tracing session..." << std::endl;
+    logger.lock(logcat::TRACE_IO)
+        << "Flushing TrackEvent buffers..." << std::endl;
+    perfetto::TrackEvent::Flush();
+    logger.lock(logcat::TRACE_IO) << "Flushing tracing session..." << std::endl;
+    bool flushed = tracing_session_->FlushBlocking(5000);
+    logger.lock(logcat::TRACE_IO)
+        << "FlushBlocking result=" << (flushed ? "ok" : "timeout") << std::endl;
+    logger.lock(logcat::TRACE_IO) << "Stopping tracing session..." << std::endl;
     tracing_session_->StopBlocking();
-    logger.lock() << "[trace] Reading trace data..." << std::endl;
+    logger.lock(logcat::TRACE_IO) << "Reading trace data..." << std::endl;
     std::vector<char> trace_data = tracing_session_->ReadTraceBlocking();
 
-    const char* env_path = std::getenv("TRACE_OUTPUT");
-    std::string filename = (env_path ? env_path : "trace.perfetto-trace");
+    std::string filename = output_path();
+
+    std::error_code ec;
+    std::filesystem::path trace_path(filename);
+    if (trace_path.has_parent_path()) {
+      std::filesystem::create_directories(trace_path.parent_path(), ec);
+      if (ec) {
+        logger.lock(logcat::TRACE_IO) << "Failed to create trace directory "
+                                      << trace_path.parent_path().string()
+                                      << ": " << ec.message() << std::endl;
+      }
+    }
 
     std::ofstream out(filename, std::ios::binary);
+    if (!out) {
+      logger.lock(logcat::TRACE_IO)
+          << "Failed to open trace output " << filename << std::endl;
+      return;
+    }
     out.write(trace_data.data(), trace_data.size());
     out.close();
-    logger.lock() << "Trace written to " << filename << " ("
-                  << trace_data.size() << " bytes)" << std::endl;
+    if (!out) {
+      logger.lock(logcat::TRACE_IO)
+          << "Failed while writing trace output " << filename << std::endl;
+      return;
+    }
+    logger.lock(logcat::TRACE_IO)
+        << "Trace written to " << filename << " (" << trace_data.size()
+        << " bytes)" << std::endl;
     tracing_session_.reset();
     perfetto::Tracing::Shutdown();
-    logger.lock() << "[trace] Perfetto shutdown complete." << std::endl;
+    logger.lock(logcat::TRACE_IO) << "Perfetto shutdown complete." << std::endl;
   }
+  tracing_enabled_ = false;
 }
 
 void internal_reduction_begin(uint64_t flow_id) {
+  if (!enabled()) return;
   TRACE_EVENT_BEGIN("events", "reduction_cpu",
                     [flow_id](perfetto::EventContext& ctx) {
                       if (flow_id) perfetto::Flow::ProcessScoped(flow_id)(ctx);
                     });
 }
-void internal_reduction_end() { TRACE_EVENT_END("events"); }
+void internal_reduction_end() {
+  if (!enabled()) return;
+  TRACE_EVENT_END("events");
+}
 void internal_to_cpu_begin(uint64_t flow_id) {
+  if (!enabled()) return;
   TRACE_EVENT_BEGIN("transfer", "dpu_vector::to_cpu",
                     [flow_id](perfetto::EventContext& ctx) {
                       if (flow_id) perfetto::Flow::ProcessScoped(flow_id)(ctx);
                     });
 }
-void internal_to_cpu_end() { TRACE_EVENT_END("transfer"); }
+void internal_to_cpu_end() {
+  if (!enabled()) return;
+  TRACE_EVENT_END("transfer");
+}
 
 void internal_from_cpu_begin() {
+  if (!enabled()) return;
   TRACE_EVENT_BEGIN("transfer", "dpu_vector::from_cpu");
 }
-void internal_from_cpu_end() { TRACE_EVENT_END("transfer"); }
+void internal_from_cpu_end() {
+  if (!enabled()) return;
+  TRACE_EVENT_END("transfer");
+}
 
 void counter(const char* cat, const char* name, int64_t value) {
+  if (!enabled()) return;
   if (std::string(cat) == "runtime")
     TRACE_COUNTER("runtime", perfetto::DynamicString(name), value);
   else if (std::string(cat) == "queue")
     TRACE_COUNTER("queue", perfetto::DynamicString(name), value);
 }
 void event_begin(const char* cat, const char* name) {
+  if (!enabled()) return;
   if (std::string(cat) == "runtime")
     TRACE_EVENT_BEGIN("runtime", perfetto::DynamicString(name));
   else if (std::string(cat) == "queue")
     TRACE_EVENT_BEGIN("queue", perfetto::DynamicString(name));
 }
 void event_end(const char* cat) {
+  if (!enabled()) return;
   if (std::string(cat) == "runtime")
     TRACE_EVENT_END("runtime");
   else if (std::string(cat) == "queue")
@@ -329,6 +795,7 @@ void event_end(const char* cat) {
 void event_enqueued(std::shared_ptr<Event> e,
                     const std::deque<std::shared_ptr<Event>>& ops,
                     const std::list<std::shared_ptr<Event>>& running) {
+  if (!enabled()) return;
   TRACE_EVENT_INSTANT(
       "queue", "EventEnqueued", perfetto::Track(EVENT_TRACK_BASE + e->id),
       [e](perfetto::EventContext& ctx) {
@@ -364,11 +831,13 @@ void event_enqueued(std::shared_ptr<Event> e,
       [e](perfetto::EventContext& ctx) {
         perfetto::Flow::ProcessScoped(e->id)(ctx);
       },
-      "waiting_on_details", waiting_on, "queue_depth", (int)ops.size());
+      "waiting_on_details", trace_string(std::move(waiting_on), 4096),
+      "queue_depth", (int)ops.size(), "running_count", (int)running.size());
 }
 
 void event_fused(std::shared_ptr<Event> e, std::shared_ptr<Event> into,
                  const std::string& fused_ops) {
+  if (!enabled()) return;
   TRACE_EVENT_INSTANT(
       "queue",
       perfetto::DynamicString("Fused [" + fused_ops + "] into #" +
@@ -379,10 +848,12 @@ void event_fused(std::shared_ptr<Event> e, std::shared_ptr<Event> into,
 }
 
 void inqueue_end(std::shared_ptr<Event> e) {
+  if (!enabled()) return;
   TRACE_EVENT_END("queue", perfetto::Track(EVENT_TRACK_BASE + e->id));
 }
 
 void execution_begin(std::shared_ptr<Event> e) {
+  if (!enabled()) return;
   auto base_lambda = [e](perfetto::EventContext& ctx) {
     perfetto::Flow::ProcessScoped(e->id)(ctx);
     for (size_t dep_id : e->dependencies)
@@ -390,18 +861,11 @@ void execution_begin(std::shared_ptr<Event> e) {
   };
 
   if (!e->rpn_ops.empty()) {
-    std::string ops_str;
-    for (size_t i = 0; i < e->rpn_ops.size(); ++i) {
-      uint8_t op = e->rpn_ops[i];
-      std::string s = opcode_to_string(op);
-      if (s.empty()) continue;
-      if (!ops_str.empty()) ops_str += ", ";
-      ops_str += s;
-      if (IS_OP_SCALAR(op)) i += sizeof(uint32_t);
-    }
-    TRACE_EVENT_BEGIN("events", perfetto::DynamicString(e->slice_name),
-                      perfetto::Track(DPU_TRACK_ID), "id", e->id, "fused_ops",
-                      perfetto::DynamicString(ops_str),
+    std::string slice_name = trace_string(e->slice_name, 4096);
+    std::string ops_summary = summarize_rpn_ops(e->rpn_ops);
+    TRACE_EVENT_BEGIN("events", perfetto::DynamicString(slice_name),
+                      perfetto::Track(DPU_TRACK_ID), "id", e->id, "ops_summary",
+                      perfetto::DynamicString(ops_summary),
                       [e, base_lambda](perfetto::EventContext& ctx) {
                         base_lambda(ctx);
                         add_event_metadata(ctx, e);
@@ -417,13 +881,16 @@ void execution_begin(std::shared_ptr<Event> e) {
 }
 
 void execution_end() {
+  if (!enabled()) return;
   TRACE_EVENT_END("events", perfetto::Track(DPU_TRACK_ID));
 }
 void active_ops_counter(size_t count) {
+  if (!enabled()) return;
   TRACE_COUNTER("queue", "Active DPU Ops", (int)count);
 }
 
 void ensure_callback_thread_named() {
+  if (!enabled()) return;
   static thread_local bool thread_named = false;
   if (!thread_named) {
     auto track = perfetto::ThreadTrack::Current();
@@ -435,21 +902,13 @@ void ensure_callback_thread_named() {
 }
 
 static std::string rpn_ops_to_string(const std::vector<uint8_t>& rpn_ops) {
-  std::string ops_str;
-  for (size_t i = 0; i < rpn_ops.size(); ++i) {
-    uint8_t op = rpn_ops[i];
-    std::string s = opcode_to_string(op);
-    if (s.empty()) continue;
-    if (!ops_str.empty()) ops_str += ", ";
-    ops_str += s;
-    if (IS_OP_SCALAR(op)) i += sizeof(uint32_t);
-  }
-  return ops_str;
+  return summarize_rpn_ops(rpn_ops);
 }
 
 void jit_compile_begin(const std::vector<uint8_t>& rpn_ops,
                        const char* type_name) {
-  std::string ops_str = rpn_ops_to_string(rpn_ops);
+  if (!enabled()) return;
+  std::string ops_str = trace_string(rpn_ops_to_string(rpn_ops), 8192);
   TRACE_EVENT_BEGIN("runtime", "jit_compile", perfetto::Track(8080), "type",
                     perfetto::DynamicString(type_name), "ops",
                     perfetto::DynamicString(ops_str));
@@ -457,21 +916,27 @@ void jit_compile_begin(const std::vector<uint8_t>& rpn_ops,
 
 void jit_compile_begin(
     const std::vector<std::pair<std::vector<uint8_t>, std::string>>& kernels) {
+  if (!enabled()) return;
   std::string summary =
       "Batched " + std::to_string(kernels.size()) + " kernels\n";
   for (size_t i = 0; i < kernels.size(); ++i) {
     summary += "K" + std::to_string(i) + " [" + kernels[i].second +
                "]: " + rpn_ops_to_string(kernels[i].first) + "\n";
   }
+  summary = trace_string(std::move(summary), 16384);
   TRACE_EVENT_BEGIN("runtime", "jit_compile_batch", perfetto::Track(8080),
                     "kernels", (int)kernels.size(), "details",
                     perfetto::DynamicString(summary));
 }
 
-void jit_compile_end() { TRACE_EVENT_END("runtime", perfetto::Track(8080)); }
+void jit_compile_end() {
+  if (!enabled()) return;
+  TRACE_EVENT_END("runtime", perfetto::Track(8080));
+}
 
 void jit_binary_switch(const std::string& previous,
                        const std::string& current) {
+  if (!enabled()) return;
   TRACE_EVENT_INSTANT("runtime", "binary_switch", perfetto::Track(8080), "from",
                       perfetto::DynamicString(previous), "to",
                       perfetto::DynamicString(current));

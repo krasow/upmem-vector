@@ -1,5 +1,9 @@
 #include "vectordpu.h"
 
+#include <detail/fusion.h>
+
+#include <stdexcept>
+
 #include "logger.h"
 #include "perfetto/trace.h"
 #include "vectordesc.h"
@@ -12,13 +16,23 @@
 
 namespace detail {
 VectorDesc::~VectorDesc() {
-  if (ptr_allocated) {
-    auto& runtime = DpuRuntime::get();
+  auto& runtime = DpuRuntime::get();
+  // The runtime owns the logger and the allocator, and shutdown() destroys
+  // both.  A descriptor outliving it has nothing left to report to and no MRAM
+  // to give back -- the DPU set is already freed -- so there is nothing to do.
+  // This is the normal case for a garbage-collected binding, where finalizers
+  // run after atexit.
+  if (!runtime.is_initialized()) return;
+
+  if (vector_id != 0) {
 #if ENABLE_DPU_LOGGING >= 1
     Logger& logger = runtime.get_logger();
-    log_deallocation(logger, type_name, num_elements,
+    log_deallocation(logger, type_name, num_elements, vector_id,
+                     allocated_footprint_bytes, !needs_layout_materialization,
                      (debug_name ? debug_name : ""), debug_file, debug_line);
 #endif
+  }
+  if (ptr_allocated) {
     runtime.get_allocator().deallocate_upmem_vector(this);
   }
 }
@@ -46,8 +60,6 @@ void vec_xfer_to_dpu(char* cpu, VectorDescRef desc) {
   }
 
   uint32_t mram_location = desc->desc[0].ptr;
-  [[maybe_unused]] size_t logical_size =
-      desc->desc[0].size_bytes - desc->reserved_bytes;
   size_t xfer_size = desc->desc[0].allocated_bytes - desc->reserved_bytes;
   trace::scoped_event trace_scoped("transfer", "vec_xfer_to_dpu");
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
@@ -55,28 +67,47 @@ void vec_xfer_to_dpu(char* cpu, VectorDescRef desc) {
                             xfer_size, DPU_XFER_ASYNC));
 }
 
-void vec_xfer_from_dpu(char* cpu, VectorDescRef desc) {
+// Reads every shard into `cpu` at a uniform `stride`.  The caller must have
+// sized `cpu` for stride * num_dpus, since one transfer size applies to the
+// whole DPU set; see ShardLayout.
+void vec_xfer_from_dpu_strided(char* cpu, VectorDescRef desc, size_t stride) {
   auto& runtime = DpuRuntime::get();
   runtime.get_allocator().realize_allocation(desc);
   dpu_set_t& dpu_set = runtime.dpu_set();
   dpu_set_t dpu;
 
   uint32_t idx_dpu = 0;
-  size_t element = 0;
-
   DPU_FOREACH(dpu_set, dpu, idx_dpu) {
-    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu[element])));
-    element += desc->desc[idx_dpu].size_bytes - desc->reserved_bytes;
+    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu[(size_t)idx_dpu * stride])));
   }
 
-  uint32_t mram_location = desc->desc[0].ptr;
-  [[maybe_unused]] size_t logical_size =
-      desc->desc[0].size_bytes - desc->reserved_bytes;
-  size_t xfer_size = desc->desc[0].allocated_bytes - desc->reserved_bytes;
   trace::scoped_event trace_scoped("transfer", "vec_xfer_from_dpu");
   CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                            DPU_MRAM_HEAP_POINTER_NAME, desc->desc[0].ptr,
+                            stride, DPU_XFER_ASYNC));
+}
+
+void vec_xfer_from_dpu(char* cpu, VectorDescRef desc) {
+  DpuRuntime::get().get_allocator().realize_allocation(desc);
+  vec_xfer_from_dpu_strided(cpu, desc, shard_layout(*desc).stride);
+}
+
+void vec_xfer_from_dpu_span(char* cpu, VectorDescRef base, size_t span_bytes) {
+  auto& runtime = DpuRuntime::get();
+  dpu_set_t& dpu_set = runtime.dpu_set();
+  dpu_set_t dpu;
+
+  uint32_t idx_dpu = 0;
+
+  DPU_FOREACH(dpu_set, dpu, idx_dpu) {
+    CHECK_UPMEM(dpu_prepare_xfer(dpu, &(cpu[(size_t)idx_dpu * span_bytes])));
+  }
+
+  uint32_t mram_location = base->desc[0].ptr;
+  trace::scoped_event trace_scoped("transfer", "vec_xfer_from_dpu_batch");
+  CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
                             DPU_MRAM_HEAP_POINTER_NAME, mram_location,
-                            xfer_size, DPU_XFER_ASYNC));
+                            span_bytes, DPU_XFER_ASYNC));
 }
 
 void internal_launch_binary_scalar(VectorDescRef res, VectorDescRef lhs,
@@ -86,7 +117,7 @@ void internal_launch_binary_scalar(VectorDescRef res, VectorDescRef lhs,
   runtime.get_allocator().realize_allocation(lhs);
 
   uint32_t nr_of_dpus = runtime.num_dpus();
-  DPU_LAUNCH_ARGS args[nr_of_dpus];
+  DPU_LAUNCH_ARGS args[nr_of_dpus] = {};
 
   for (uint32_t i = 0; i < nr_of_dpus; i++) {
     args[i].kernel = static_cast<uint32_t>(kernel_id);
@@ -162,6 +193,49 @@ void internal_launch_binary(VectorDescRef res, VectorDescRef lhs,
   CHECK_UPMEM(dpu_launch(dpu_set, DPU_ASYNCHRONOUS));
 }
 
+void internal_launch_ternary(VectorDescRef res, VectorDescRef mask,
+                             VectorDescRef a, VectorDescRef b,
+                             KernelID kernel_id) {
+  auto& runtime = DpuRuntime::get();
+  runtime.get_allocator().realize_allocation(res);
+  runtime.get_allocator().realize_allocation(mask);
+  runtime.get_allocator().realize_allocation(a);
+  runtime.get_allocator().realize_allocation(b);
+
+  uint32_t nr_of_dpus = runtime.num_dpus();
+  DPU_LAUNCH_ARGS args[nr_of_dpus];
+
+  for (uint32_t i = 0; i < nr_of_dpus; i++) {
+    args[i].kernel = static_cast<uint32_t>(kernel_id);
+    args[i].ktype = static_cast<uint8_t>(
+        KERNEL_PIPELINE);  // Ternary is always pipeline for now
+    args[i].num_elements = mask->desc[i].size_bytes / mask->element_size;
+    args[i].size_type = mask->element_size;
+  }
+  // Standalone ternary kernels are NOT yet generated by generate.py.
+  throw std::runtime_error(
+      "Standalone ternary kernels not implemented. Use JIT.");
+}
+
+void launch_ternary(VectorDescRef res, VectorDescRef mask, VectorDescRef a,
+                    VectorDescRef b, KernelID kernel_id, uint8_t opcode,
+                    KernelID pipeline_kid) {
+  auto& runtime = DpuRuntime::get();
+  auto& event_queue = runtime.get_event_queue();
+
+  if (JIT) {
+    auto e = std::make_shared<Event>(Event::OperationType::COMPUTE);
+    e->inputs = {mask, a, b};
+    e->output = res;
+    e->kid = kernel_id;
+    e->opcode = opcode;
+    e->pipeline_kid = pipeline_kid;
+    event_queue.submit(e);
+  } else {
+    throw std::runtime_error("Ternary operations require JIT mode.");
+  }
+}
+
 void internal_launch_unary(VectorDescRef res, VectorDescRef rhs,
                            KernelID kernel_id) {
   auto& runtime = DpuRuntime::get();
@@ -173,7 +247,7 @@ void internal_launch_unary(VectorDescRef res, VectorDescRef rhs,
 
   for (uint32_t i = 0; i < nr_of_dpus; i++) {
     args[i].kernel = static_cast<uint32_t>(kernel_id);
-    args[i].ktype = static_cast<uint8_t>(KERNEL_UNARY);
+    args[i].ktype = static_cast<uint8_t>(KERNEL_PIPELINE);
     args[i].num_elements = rhs->desc[i].size_bytes / rhs->element_size;
     args[i].size_type = rhs->element_size;
     args[i].unary.rhs_offset = (rhs->desc[i].ptr);
@@ -247,38 +321,66 @@ void internal_launch_reduction(VectorDescRef res, VectorDescRef rhs,
 void internal_launch_universal_pipeline(
     VectorDescRef res, VectorDescRef init, const std::vector<uint8_t>& ops,
     const std::vector<VectorDescRef>& operands, KernelID kernel_id,
-    const std::vector<uint32_t>& scalars) {
+    const std::vector<uint32_t>& scalars,
+    const std::vector<uint32_t>& extra_scalars,
+    const std::vector<VectorDescRef>& extra_outputs,
+    std::string_view kernel_hash) {
   auto& runtime = DpuRuntime::get();
-  runtime.get_allocator().realize_allocation(res);
+  if (res) runtime.get_allocator().realize_allocation(res);
   if (init) runtime.get_allocator().realize_allocation(init);
   for (auto& op : operands) {
-    runtime.get_allocator().realize_allocation(op);
+    if (op) runtime.get_allocator().realize_allocation(op);
+  }
+  for (auto& out : extra_outputs) {
+    if (out) runtime.get_allocator().realize_allocation(out);
   }
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
 
   for (uint32_t i = 0; i < nr_of_dpus; i++) {
     args[i].kernel = static_cast<uint32_t>(kernel_id);
-    args[i].ktype =
-        static_cast<uint8_t>(KERNEL_UNARY);  // Universal considered unary-ish?
-                                             // Or create KERNEL_PIPELINE?
-    // Using KERNEL_UNARY for now as it's just a category
+    args[i].ktype = static_cast<uint8_t>(KERNEL_UNARY);
 
-    args[i].num_elements = init->desc[i].size_bytes /
-                           init->element_size;  // Assume init defines size
-    args[i].size_type = init->element_size;
+    args[i].num_elements =
+        init ? (init->desc[i].size_bytes / init->element_size) : 0;
+    args[i].size_type =
+        init ? init->element_size : (res ? res->element_size : 4);
 
-    args[i].pipeline.init_offset = init->desc[i].ptr;
-    args[i].pipeline.res_offset = res->desc[i].ptr;
+    args[i].pipeline.init_offset = init ? init->desc[i].ptr : 0;
+    args[i].pipeline.res_offset = res ? res->desc[i].ptr : 0;
+
+    for (size_t j = 0; j < MAX_HFUSE_CHAINS; ++j) {
+      if (j < extra_outputs.size()) {
+        args[i].pipeline.extra_res_offsets[j] = extra_outputs[j]->desc[i].ptr;
+        args[i].pipeline.local_sizes[j] = extra_outputs[j]->num_elements;
+        args[i].pipeline.local_reduce_ops[j] =
+            extra_outputs[j]->local_reduce_opcode;
+      } else {
+        args[i].pipeline.extra_res_offsets[j] = 0;
+        args[i].pipeline.local_sizes[j] = 0;
+        args[i].pipeline.local_reduce_ops[j] = OP_SUM;
+      }
+    }
+
+#if !JIT
+    // The interpreter reads args.pipeline.ops, which is MAX_VFUSE_OPS long.
+    // Truncating here would silently drop the tail of the program, so fail
+    // loudly instead -- every path that builds an RPN is supposed to bound it.
+    if (ops.size() > MAX_VFUSE_OPS)
+      throw std::runtime_error("RPN program of " + std::to_string(ops.size()) +
+                               " opcodes exceeds MAX_VFUSE_OPS (" +
+                               std::to_string(MAX_VFUSE_OPS) +
+                               "); rebuild with JIT=1 or raise MAX_VFUSE_OPS");
+#endif
     args[i].pipeline.num_ops =
-        std::min((size_t)ops.size(), (size_t)MAX_PIPELINE_OPS);
+        std::min((size_t)ops.size(), (size_t)MAX_VFUSE_OPS);
 
     for (size_t j = 0; j < args[i].pipeline.num_ops; ++j) {
       args[i].pipeline.ops[j] = ops[j];
     }
 
-    // Map operands by index (0..MAX_PIPELINE_OPERANDS-1)
-    for (size_t j = 0; j < MAX_PIPELINE_OPERANDS; ++j) {
+    // Map operands by index (0..MAX_VFUSE_INPUTS-1)
+    for (size_t j = 0; j < MAX_VFUSE_INPUTS; ++j) {
       if (j < operands.size()) {
         args[i].pipeline.binary_operands[j] = operands[j]->desc[i].ptr;
       } else {
@@ -287,18 +389,29 @@ void internal_launch_universal_pipeline(
     }
 
     // Map scalar arguments
-    for (size_t j = 0; j < 8; ++j) {
+    for (size_t j = 0; j < MAX_PIPELINE_SCALARS; ++j) {
       if (j < scalars.size()) {
         args[i].pipeline.scalars[j] = scalars[j];
       } else {
         args[i].pipeline.scalars[j] = 0;
       }
     }
+
+    // Map extra JIT scalars
+    for (size_t j = 0; j < 8; ++j) {
+      if (j < extra_scalars.size()) {
+        args[i].pipeline.extra_scalars[j] = extra_scalars[j];
+      } else {
+        args[i].pipeline.extra_scalars[j] = 0;
+      }
+    }
   }
 
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = DpuRuntime::get().get_logger();
-  log_dpu_launch_args(logger, args, nr_of_dpus);
+  detail::FusionRpnSummary rpn_summary = detail::summarize_fusion_rpn(ops);
+  log_dpu_launch_args(logger, args, nr_of_dpus, rpn_summary.decoded_ops,
+                      rpn_summary.chains, kernel_hash);
 #endif
 
   dpu_set_t& dpu_set = runtime.dpu_set();
@@ -343,16 +456,19 @@ void launch_unary(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (unary) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (unary) kernel=" << kernel_id_to_string(kernel_id)
+      << std::endl;
 #endif
 }
 
 #if PIPELINE
-void launch_universal_pipeline(VectorDescRef res, VectorDescRef init,
-                               const std::vector<uint8_t>& ops,
-                               const std::vector<VectorDescRef>& operands,
-                               KernelID kernel_id) {
+void launch_universal_pipeline(
+    VectorDescRef res, VectorDescRef init, const std::vector<uint8_t>& ops,
+    const std::vector<VectorDescRef>& operands, KernelID kernel_id,
+    const std::vector<uint32_t>& scalars,
+    const std::vector<uint32_t>& extra_scalars,
+    const std::vector<VectorDescRef>& extra_outputs) {
   auto& runtime = DpuRuntime::get();
   auto& event_queue = runtime.get_event_queue();
 
@@ -366,13 +482,23 @@ void launch_universal_pipeline(VectorDescRef res, VectorDescRef init,
   e->output = res;
   e->rpn_ops = ops;
   e->kid = kernel_id;
+  // The interpreter path dispatches pipeline_kid, and the universal pipeline is
+  // the only kernel that can run an arbitrary RPN program -- so it is both.
+  // Leaving it 0 silently ran kernel 0 (binary add) for every explicit
+  // pipeline() call under JIT=0.
+  e->pipeline_kid = kernel_id;
+  e->scalars = scalars;
+  e->extra_scalars = extra_scalars;
+  e->extra_outputs = extra_outputs;
 
   // Detect reduction and flag result descriptor synchronously
-  for (uint8_t op : ops) {
-    if (op >= OP_MIN && op <= OP_PRODUCT) {
+  for (size_t i = 0; i < ops.size(); ++i) {
+    uint8_t op = ops[i];
+    if (res && op >= OP_MIN && op <= OP_PRODUCT) {
       res->is_reduction_result = true;
       res->reduction_rid = static_cast<KernelID>(op);
     }
+    if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
   }
 
   event_queue.submit(e);
@@ -406,8 +532,9 @@ void launch_binary(VectorDescRef res, VectorDescRef lhs, VectorDescRef rhs,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (binary) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (binary) kernel=" << kernel_id_to_string(kernel_id)
+      << std::endl;
 #endif
 }
 
@@ -429,18 +556,19 @@ void launch_binary_scalar(VectorDescRef res, VectorDescRef lhs, uint32_t scalar,
   std::shared_ptr<Event> e =
       std::make_shared<Event>(Event::OperationType::COMPUTE, bound_cb);
 #endif
+  e->is_scalar = true;
+  e->scalar_value = scalar;
   e->inputs = {lhs};
   e->output = res;
   e->kid = kernel_id;
   e->opcode = opcode;
-  e->is_scalar = true;
-  e->scalar_value = scalar;
   event_queue.submit(e);
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (binary_scalar) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (binary_scalar) kernel="
+      << kernel_id_to_string(kernel_id) << std::endl;
 #endif
 }
 
@@ -472,8 +600,9 @@ void launch_reduction(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
-  logger.lock() << "[queue-append] type=COMPUTE (reduction) kernel="
-                << kernel_id_to_string(kernel_id) << std::endl;
+  logger.lock(logcat::QUEUE_APPEND, 2)
+      << "type=COMPUTE (reduction) kernel=" << kernel_id_to_string(kernel_id)
+      << std::endl;
 #endif
 }
 

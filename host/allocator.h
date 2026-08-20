@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <utility>
@@ -18,6 +19,7 @@ using std::vector;
 class DpuOOMException : public std::runtime_error {
  public:
   DpuOOMException() : std::runtime_error("DPU OOM") {}
+  explicit DpuOOMException(const std::string& msg) : std::runtime_error(msg) {}
 };
 
 struct FreeBlock {
@@ -33,6 +35,9 @@ class allocator {
                                               std::size_t reserved_mem_per_dpu,
                                               std::size_t size_type,
                                               bool lazy = false);
+  detail::VectorDescRef allocate_local_vector(std::size_t n,
+                                              std::size_t size_type);
+  void realize_allocation(detail::VectorDescRef data);
   void deallocate_upmem_vector(detail::VectorDesc* data);
 
   // Broadcast allocation/deallocation (O(1))
@@ -41,8 +46,7 @@ class allocator {
       bool lazy = false);
   void deallocate_upmem_vector_broadcast(detail::VectorDesc* data);
 
-  // Realize a lazy allocation
-  void realize_allocation(detail::VectorDescRef data);
+  size_t get_total_allocated_bytes() const { return total_allocated_bytes_; }
 
  private:
   uint32_t start_addr_;  // starting base address
@@ -63,6 +67,7 @@ class allocator {
 
   // Internal helpers for raw allocation/deallocation.
   // dpu_id = DPU_BROADCAST means broadcast.
+  void materialize_descriptor_layout(detail::VectorDesc* data);
   uint32_t raw_allocate(int dpu_id, std::size_t n);
   void raw_deallocate(int dpu_id, uint32_t addr, size_t size);
 

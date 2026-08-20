@@ -1,0 +1,136 @@
+# Runs on the PIM box: the tests need real DPU ranks and the UPMEM toolchain.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The runner is this machine; a job on it can read anything its user can.
+permissions:
+  contents: read
+
+jobs:
+  configs:
+    name: Pick configs
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, PIM]
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      skip: ${{ steps.pick.outputs.skip }}
+    steps:
+      # The commit message has to come from git: on pull_request events
+      # github.event.head_commit is empty, and a long-lived PR's title is not
+      # the message of the commit that just landed.  Only `git log` is run
+      # against this checkout, never anything from it.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Flags in the head commit message, or in the PR title or body:
+      #   [only jit]  drop the two C++-only configs
+      #   [skip ci]   run nothing (GitHub also honours this in commit messages
+      #               on its own, before a workflow starts)
+      # Read through the environment, never interpolated into the script: these
+      # strings are attacker-supplied.
+      - id: pick
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          msg=$(printf '%s\n%s\n%s' "$(git log -1 --format=%B)" "$PR_TITLE" "$PR_BODY")
+          echo "head commit: $(git log -1 --format=%s)"
+
+          jit='{"name":"JIT mode (default)","flags":"PIPELINE=1 JIT=1","julia":true}'
+          rest='{"name":"Pipeline mode","flags":"PIPELINE=1 JIT=0","julia":false},'
+          rest+='{"name":"Eager mode","flags":"PIPELINE=0 JIT=0","julia":false}'
+
+          skip=false
+          grep -qiE '\[(skip ci|ci skip|no ci)\]' <<<"$msg" && skip=true
+
+          if grep -qiF '[only jit]' <<<"$msg"; then
+            include="$jit"
+          else
+            include="$jit,$rest"
+          fi
+
+          $skip && echo "[skip ci]: running nothing"
+          {
+            echo "skip=$skip"
+            echo "matrix={\"include\":[$include]}"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: ${{ matrix.name }}
+    needs: configs
+    if: needs.configs.outputs.skip != 'true'
+    runs-on: [self-hosted, Linux, X64, PIM]
+    timeout-minutes: 15 # a deadlocked DPU test would hold the runner
+    strategy:
+      fail-fast: false
+      # Julia binds ops that only exist under JIT=1, so it is the only config
+      # it runs in; the other two are C++ only.
+      matrix: ${{ fromJSON(needs.configs.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Must match across every make call: config_check cleans on any flag diff.
+      BUILD_FLAGS: ${{ matrix.flags }} BACKEND=hw
+      UPMEM_NO_OS_WARNING: 1
+      # A small slice of the box's 2560 DPUs, so runs do not contend for ranks.
+      # Julia reads NR_DPUS; the C++ suite takes --dpus and defaults to 64, and
+      # its sharding tests scale with the count.
+      NR_DPUS: 8
+      TEST_ARGS: --isolate --dpus=8
+      JULIA_BIN_DIR: /scratch/david/julia-1.11.3/bin
+    steps:
+      - uses: actions/checkout@v4
+
+      # Each step is a fresh shell, so export once instead of sourcing per step.
+      - name: Set up the UPMEM environment
+        run: |
+          source /usr/upmem_env.sh
+          {
+            echo "UPMEM_HOME=$UPMEM_HOME"
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+            echo "PYTHONPATH=$PYTHONPATH"
+          } >> "$GITHUB_ENV"
+          echo "$UPMEM_HOME/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # cmake
+          echo "$JULIA_BIN_DIR" >> "$GITHUB_PATH"
+
+          # Per-job install prefix, so configs running side by side cannot
+          # clobber each other.  Both are ?= in the Makefiles, so env wins.
+          echo "DESTDIR=$RUNNER_TEMP/vectordpu" >> "$GITHUB_ENV"
+          echo "VECTORDPU_DIR=$RUNNER_TEMP/vectordpu" >> "$GITHUB_ENV"
+
+      - name: Report the toolchain
+        run: |
+          for t in dpu-upmem-dpurte-clang dpu-pkg-config g++ cmake julia python3; do
+            printf '%-26s %s\n' "$t" "$(command -v "$t" || echo MISSING)"
+          done
+          echo "DPU ranks: $(ls -d /dev/dpu_rank* 2>/dev/null | wc -l)"
+
+      # Records the configuration in the prefix, and builds the Julia wrapper
+      # when the flags allow it -- otherwise it says why it skipped.
+      - name: Build and install
+        run: make install $BUILD_FLAGS
+
+      - name: C++ tests
+        run: make test $BUILD_FLAGS TEST_ARGS="$TEST_ARGS"
+
+      - name: Julia tests
+        if: matrix.julia
+        run: make -C julia test
+
+      - name: Installed configuration
+        if: always()
+        run: cat "$DESTDIR/share/vectordpu/build.config" 2>/dev/null || echo "nothing installed"

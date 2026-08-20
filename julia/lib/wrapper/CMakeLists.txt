@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-project(upmemvector_wrapper CXX)
+project(polymerpim_wrapper CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,7 +10,8 @@ get_target_property(JLCXX_LOCATION JlCxx::cxxwrap_julia LOCATION)
 message(STATUS "Found JlCxx at: ${JLCXX_LOCATION}")
 
 # ---- vectordpu installation path ----
-set(VECTORDPU_DIR "$ENV{HOME}/vectordpu" CACHE PATH "Path to installed vectordpu library")
+set(VECTORDPU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../vectordpu"
+    CACHE PATH "Path to installed vectordpu library")
 
 if(NOT EXISTS "${VECTORDPU_DIR}/include/vectordpu/vectordpu.h")
     message(FATAL_ERROR
@@ -24,23 +25,21 @@ endif()
 # Note: libvectordpu already links against DPU libraries, so we don't need to link explicitly here.
 
 # ---- Build the wrapper shared library ----
-add_library(upmemvector_wrapper SHARED wrapper.cpp)
+add_library(polymerpim_wrapper SHARED wrapper.cpp)
 
-target_include_directories(upmemvector_wrapper PRIVATE
+target_include_directories(polymerpim_wrapper PRIVATE
     ${VECTORDPU_DIR}/include/vectordpu
 )
 
-target_link_directories(upmemvector_wrapper PRIVATE
+target_link_directories(polymerpim_wrapper PRIVATE
     ${VECTORDPU_DIR}/lib
     ${UPMEM_HOME}/lib
 )
 
-target_link_libraries(upmemvector_wrapper
+target_link_libraries(polymerpim_wrapper
     JlCxx::cxxwrap_julia
     vectordpu
 )
 
-# Install the built library next to the source for easy discovery
-install(TARGETS upmemvector_wrapper
-    LIBRARY DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/build
-)
+# No install() rule: deps/build.jl copies the artifact into PolymerPIM/ here,
+# which keeps the RPATH cmake would otherwise strip on install.

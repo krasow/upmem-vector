@@ -1,5 +1,5 @@
-name = "UpmemVector"
-uuid = "e8a3c0f1-7b2d-4a5e-9c1f-3d6e8b4a2f10"
+name = "PolymerPIM"
+uuid = "65579929-016c-401d-b509-88f072cf4db2"
 version = "0.1.0"
 
 [deps]
@@ -8,3 +8,9 @@ CxxWrap = "1f15a43c-97ca-5a2a-ae31-89f07a497df4"
 [compat]
 CxxWrap = "0.17"
 julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

@@ -6,7 +6,7 @@ class DPUOp:
         self.type = type
         self.kid = kid
 
-class DPUBinaryOp(DPUOp):    
+class DPUBinaryOp(DPUOp):
     def generate_macro(self, out):
         out.write(f"DEFINE_BINARY_KERNEL({self.type}, {self.name}, {self.symbol})\n")
     def kernel_name(self):
@@ -15,7 +15,7 @@ class DPUBinaryOp(DPUOp):
     def make(name, symbol):
         return lambda type, kid: DPUBinaryOp(name, symbol, type, kid)
 
-class DPUBinaryScalarOp(DPUOp):    
+class DPUBinaryScalarOp(DPUOp):
     def generate_macro(self, out):
         out.write(f"DEFINE_BINARY_SCALAR_KERNEL({self.type}, {self.name}, {self.symbol})\n")
     def kernel_name(self):
@@ -40,9 +40,9 @@ class DPUUnaryOp(DPUOp):
 
     def make(name, symbol):
         return lambda type, kid: DPUUnaryOp(name, symbol, type, kid)
-    
 
-class DPUReduceOp(DPUOp):    
+
+class DPUReduceOp(DPUOp):
     def generate_macro(self, out):
         out.write(f"DEFINE_REDUCTION_KERNEL({self.type}, {self.name}, {self.symbol})\n")
     def kernel_name(self):
@@ -50,8 +50,6 @@ class DPUReduceOp(DPUOp):
     @staticmethod
     def make(name, symbol):
         return lambda type, kid: DPUReduceOp(name, symbol, type, kid)
-    
-
 
 def declare_unary_op(name, symbol):
     return lambda type, kid: DPUUnaryOp(name, symbol, type, kid)
@@ -64,6 +62,11 @@ ops = [
     DPUBinaryOp.make('mul', '*'),
     DPUBinaryOp.make('div', '/'),
     DPUBinaryOp.make('asr', '>>'),
+    DPUBinaryOp.make('eq', '=='),
+    DPUBinaryOp.make('lt', '<'),
+    DPUBinaryOp.make('gt', '>'),
+    DPUBinaryOp.make('ge', '>='),
+    DPUBinaryOp.make('le', '<='),
 
 
     DPUUnaryOp.make('negate', 'NEGATE'),
@@ -73,6 +76,7 @@ ops = [
     DPUReduceOp.make('max', 'MAX'),
     DPUReduceOp.make('sum', 'SUM'),
     DPUReduceOp.make('product', 'PRODUCT'),
+
 ]
 
 types = [
@@ -91,7 +95,7 @@ grouped_ops = []
 kernel_id = 0
 for type in types:
     group = []
-    
+
     # Binary Ops
     for op in ops:
         if isinstance(op('int32_t', 0), DPUBinaryOp):
@@ -101,7 +105,7 @@ for type in types:
              all_ops.append((kernel_id, op_instance))
              group.append(op_instance)
              kernel_id += 1
-    
+
     # Binary Scalar Ops
     for op in ops:
         if isinstance(op('int32_t', 0), DPUBinaryOp):
@@ -113,7 +117,7 @@ for type in types:
              all_ops.append((kernel_id, op_instance))
              group.append(op_instance)
              kernel_id += 1
-    
+
     # Individual Unary Ops (Restored)
     for op in ops:
         if isinstance(op('int32_t', 0), DPUUnaryOp):
@@ -137,7 +141,7 @@ for type in types:
              all_ops.append((kernel_id, op_instance))
              group.append(op_instance)
              kernel_id += 1
-             
+
     grouped_ops.append((type, group))
 
 
@@ -152,17 +156,34 @@ pipeline_ops = [
     ('mul', 'MUL'),
     ('div', 'DIV'),
     ('asr', 'ASR'),
+    ('eq', 'EQ'),
+    ('lt', 'LT'),
+    ('gt', 'GT'),
+    ('ge', 'GE'),
+    ('le', 'LE'),
     # Binary Scalar
     ('add_scalar', 'ADD_SCALAR'),
     ('sub_scalar', 'SUB_SCALAR'),
     ('mul_scalar', 'MUL_SCALAR'),
     ('div_scalar', 'DIV_SCALAR'),
     ('asr_scalar', 'ASR_SCALAR'),
-    # Reduction 
+    ('eq_scalar', 'EQ_SCALAR'),
+    ('lt_scalar', 'LT_SCALAR'),
+    ('gt_scalar', 'GT_SCALAR'),
+    ('ge_scalar', 'GE_SCALAR'),
+    ('le_scalar', 'LE_SCALAR'),
+    # Reduction
     ('min', 'MIN'),
     ('max', 'MAX'),
     ('sum', 'SUM'),
     ('product', 'PRODUCT'),
+    # Ternary
+    ('select', 'SELECT'),
+    # Variadic horizontal arg-reduction over K stacked lanes (pops k, pushes
+    # the winning lane index; carries k as one inline byte). Lowest-index
+    # tie-break. Not a reduction over N -- it is elementwise like SELECT.
+    ('argmin_k', 'ARGMIN_K'),
+    ('argmax_k', 'ARGMAX_K'),
     # Stack Machine
     ('push_input', 'PUSH_INPUT'),
     ('push_operand_0', 'PUSH_OPERAND_0'),
@@ -173,11 +194,30 @@ pipeline_ops = [
     ('push_operand_5', 'PUSH_OPERAND_5'),
     ('push_operand_6', 'PUSH_OPERAND_6'),
     ('push_operand_7', 'PUSH_OPERAND_7'),
+    ('push_operand_8', 'PUSH_OPERAND_8'),
+    ('push_operand_9', 'PUSH_OPERAND_9'),
+    # MAX_VFUSE_INPUTS defaults to 11, so reserve an opcode for every
+    # operand slot. Without operand 10, OP_PUSH_OPERAND_0 + 10 aliases
+    # OP_ADD_SCALAR_VAR and the JIT decodes scalar additions as input loads.
+    ('push_operand_10', 'PUSH_OPERAND_10'),
     ('add_scalar_var', 'ADD_SCALAR_VAR'),
     ('sub_scalar_var', 'SUB_SCALAR_VAR'),
     ('mul_scalar_var', 'MUL_SCALAR_VAR'),
     ('div_scalar_var', 'DIV_SCALAR_VAR'),
     ('asr_scalar_var', 'ASR_SCALAR_VAR'),
+    ('eq_scalar_var', 'EQ_SCALAR_VAR'),
+    ('lt_scalar_var', 'LT_SCALAR_VAR'),
+    ('gt_scalar_var', 'GT_SCALAR_VAR'),
+    ('ge_scalar_var', 'GE_SCALAR_VAR'),
+    ('le_scalar_var', 'LE_SCALAR_VAR'),
+    ('next_chain', 'NEXT_CHAIN'),
+    ('dup', 'DUP'),
+    ('push_index', 'PUSH_INDEX'),
+    ('load_indirect', 'LOAD_INDIRECT'),
+    ('add_indirect', 'ADD_INDIRECT'),
+    ('apply_indirect', 'APPLY_INDIRECT'),
+    ('push_scalar', 'PUSH_SCALAR'),
+    ('push_scalar_var', 'PUSH_SCALAR_VAR'),
 ]
 
 with open("common/opcodes.h", "w") as out:
@@ -188,16 +228,50 @@ with open("common/opcodes.h", "w") as out:
     for idx, (name, symbol) in enumerate(pipeline_ops):
         out.write(f'    OP_{symbol} = {idx},\n')
     out.write('};\n\n')
-    
+
     # Generate classification macros
-    out.write('#define IS_OP_STACK(op) ((op) >= OP_PUSH_INPUT && (op) <= OP_PUSH_OPERAND_7)\n')
+    out.write('#define IS_OP_STACK(op) ((op) >= OP_PUSH_INPUT && (op) <= OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1)\n')
     out.write('#define IS_OP_UNARY(op) ((op) >= OP_NEGATE && (op) <= OP_ABS)\n')
-    out.write('#define IS_OP_BINARY(op) ((op) >= OP_ADD && (op) <= OP_ASR)\n')
-    out.write('#define IS_OP_SCALAR(op) ((op) >= OP_ADD_SCALAR && (op) <= OP_ASR_SCALAR)\n')
-    out.write('#define IS_OP_SCALAR_VAR(op) ((op) >= OP_ADD_SCALAR_VAR && (op) <= OP_ASR_SCALAR_VAR)\n')
-    out.write('#define IS_OP_REDUCTION(op) ((op) >= OP_MIN && (op) <= OP_PRODUCT)\n\n')
+    out.write('#define IS_OP_BINARY(op) ((op) >= OP_ADD && (op) <= OP_LE)\n')
+    out.write('#define IS_OP_SCALAR(op) ((op) >= OP_ADD_SCALAR && (op) <= OP_LE_SCALAR)\n')
+    out.write('#define IS_OP_SCALAR_VAR(op) ((op) >= OP_ADD_SCALAR_VAR && (op) <= OP_LE_SCALAR_VAR)\n')
+    out.write('#define IS_OP_REDUCTION(op) ((op) >= OP_MIN && (op) <= OP_PRODUCT)\n')
+    out.write('#define IS_OP_TERNARY(op) ((op) == OP_SELECT)\n')
+    out.write('#define IS_OP_ARG_K(op) ((op) == OP_ARGMIN_K || (op) == OP_ARGMAX_K)\n')
+    out.write('#define IS_OP_INDIRECT_UPDATE(op) ((op) == OP_ADD_INDIRECT || (op) == OP_APPLY_INDIRECT)\n')
+    out.write('#define OP_INLINE_BYTES(op) \\\n')
+    out.write('    (IS_OP_SCALAR(op) ? 4 : \\\n')
+    out.write('     (IS_OP_SCALAR_VAR(op) ? 1 : \\\n')
+    out.write('      (((op) == OP_PUSH_SCALAR) ? 4 : \\\n')
+    out.write('       ((op) == OP_PUSH_SCALAR_VAR ? 1 : \\\n')
+    out.write('       (((op) == OP_LOAD_INDIRECT || (op) == OP_ADD_INDIRECT) ? 1 : \\\n')
+    out.write('        ((op) == OP_APPLY_INDIRECT ? 2 : \\\n')
+    out.write('         (IS_OP_ARG_K(op) ? 1 : 0)))))))\n\n')
 
     out.write('#endif // OPCODES_H\n')
+
+
+# The Julia bindings build RPN programs by hand, so they need the same opcode
+# numbering.  Emitting it here means it cannot drift from common/opcodes.h.
+with open("julia/src/opcodes.jl", "w") as out:
+    out.write('# GENERATED BY tools/generate.py. DO NOT EDIT\n')
+    out.write('#\n# Opcode numbering for hand-built RPN programs, kept in step\n')
+    out.write('# with common/opcodes.h by the generator.\n\n')
+    out.write('module Opcodes\n\n')
+    for idx, (name, symbol) in enumerate(pipeline_ops):
+        out.write(f'const OP_{symbol} = UInt8({idx})\n')
+    out.write('\n# Number of inline argument bytes that follow an opcode.\n')
+    out.write('function inline_bytes(op::UInt8)\n')
+    out.write('    if OP_ADD_SCALAR <= op <= OP_LE_SCALAR\n        return 4\n')
+    out.write('    elseif OP_ADD_SCALAR_VAR <= op <= OP_LE_SCALAR_VAR\n        return 1\n')
+    out.write('    elseif op == OP_PUSH_SCALAR\n        return 4\n')
+    out.write('    elseif op == OP_PUSH_SCALAR_VAR\n        return 1\n')
+    out.write('    elseif op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT\n        return 1\n')
+    out.write('    elseif op == OP_APPLY_INDIRECT\n        return 2\n')
+    out.write('    elseif op == OP_ARGMIN_K || op == OP_ARGMAX_K\n        return 1\n')
+    out.write('    end\n    return 0\nend\n\n')
+    out.write('is_reduction(op::UInt8) = OP_MIN <= op <= OP_PRODUCT\n\n')
+    out.write('end # module Opcodes\n')
 
 
 with open("dpu/kernels.h", "w") as out:
@@ -205,20 +279,20 @@ with open("dpu/kernels.h", "w") as out:
     out.write('#include "./binary.inl"\n')
     out.write('#include "./reduce.inl"\n')
     out.write('#include "./unary.inl"\n')
-    out.write('#ifdef PIPELINE\n')
+    out.write('#if PIPELINE\n')
     out.write('#include "./pipeline.inl"\n')
     out.write('#endif\n')
-    out.write('#ifndef PIPELINE\n')
+    out.write('#if !PIPELINE\n')
     out.write('#define DEFINE_UNIVERSAL_PIPELINE_KERNEL(a)\n')
     out.write('#endif\n\n')
 
     for id, op in all_ops:
         out.write(f'#define KERNEL_ID_{op.kernel_name().upper()} {id}\n')
-    
+
     # Generate macros (definitions) first
     for id, op in all_ops:
         if op.name == "universal_pipeline":
-             out.write('#ifdef PIPELINE\n')
+             out.write('#if PIPELINE\n')
              op.generate_macro(out)
              out.write('#endif\n')
         else:
@@ -228,7 +302,7 @@ with open("dpu/kernels.h", "w") as out:
     out.write('int (*kernels[KERNEL_COUNT])(void) = {\n')
     for id, op in all_ops:
         if op.name == "universal_pipeline":
-             out.write('#ifdef PIPELINE\n')
+             out.write('#if PIPELINE\n')
              out.write(f'    {op.kernel_name()}, // {id}\n')
              out.write('#else\n')
              out.write(f'    NULL, // {id}\n')
@@ -242,6 +316,10 @@ with open("dpu/kernels.h", "w") as out:
 with open("host/opinfo.h", "w") as out:
     out.write('#pragma once\n')
     out.write('// GENERATED BY tools/generate_kernels.py. DO NOT EDIT\n\n')
+    out.write('#include <cstdint>\n')
+    out.write('#include <string>\n\n')
+    out.write('// Opcode spelling, defined in host/perfetto/trace.cc.\n')
+    out.write('std::string opcode_to_string(uint8_t op);\n\n')
     out.write('template<typename T> struct OpInfo;\n\n')
     for type, group in grouped_ops:
         out.write(f'template<> struct OpInfo<{type}> {{\n')
@@ -253,12 +331,12 @@ with open("host/opinfo.h", "w") as out:
              else:
                 out.write(f'    static constexpr int {op.name} = {op.kid};\n')
 
-        
+
         # Add pipeline opcodes to OpInfo
         for idx, (name, symbol) in enumerate(pipeline_ops):
             if name != 'identity': # optional check
                 out.write(f'    static constexpr int {name}_op = {idx};\n')
-        
+
         out.write('};\n\n')
 
 with open("host/kernelids.h", "w") as out:
@@ -307,7 +385,7 @@ with open("host/kernelids.h", "w") as out:
         else:
             category = 'KERNEL_UNKNOWN'
             op_enum = 'KERNEL_OP_ADD' # dummy
-            
+
         name = f'"{op.kernel_name().upper()}"'
         out.write(f'    {{ {id}, KERNEL_TYPE_{op.type.upper()}, {category}, {op_enum}, {name} }},\n')
     out.write('};\n')

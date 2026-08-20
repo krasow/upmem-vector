@@ -33,6 +33,10 @@ class DpuRuntime {
   void init(uint32_t num_dpus);
   bool is_initialized() const { return initialized_; }
 
+  // The count init() will be given on first use: $NR_DPUS, or 8.  Readable
+  // before the runtime exists, unlike num_dpus().
+  static uint32_t configured_num_dpus();
+
   void debug_read_dpu_log();
 
   allocator& get_allocator();

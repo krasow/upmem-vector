@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <limits.h>
 #include <mram.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include "stdio.h"
@@ -41,10 +43,23 @@ void print_args(DPU_LAUNCH_ARGS args) {
                                                                                \
     const char op_name[] = XSTR(OP);                                           \
     bool is_sum = (op_name[0] == 's' || op_name[0] == 'S');                    \
-    bool is_sum32 = (sizeof(TYPE) == 4 && is_sum);                             \
+    bool is_product = (op_name[0] == 'p' || op_name[0] == 'P');                \
+    bool is_min = ((op_name[0] == 'm' || op_name[0] == 'M') &&                 \
+                   (op_name[1] == 'i' || op_name[1] == 'I'));                  \
+    bool is_promotable = (is_sum || is_product);                               \
+    bool is_sum32 =                                                            \
+        (sizeof(TYPE) == 4 && is_promotable && ENABLE_PROMOTION_REDUCTIONS);   \
                                                                                \
-    int64_t local_red_64 = 0;                                                  \
-    TYPE local_red = (TYPE)0;                                                  \
+    int64_t local_red_64 = is_sum ? 0 : 1;                                     \
+    TYPE local_red;                                                            \
+    if (is_sum)                                                                \
+      local_red = (TYPE)0;                                                     \
+    else if (is_product)                                                       \
+      local_red = (TYPE)1;                                                     \
+    else if (is_min)                                                           \
+      local_red = (TYPE)INT32_MAX;                                             \
+    else                                                                       \
+      local_red = (TYPE)INT32_MIN;                                             \
     for (uint32_t block_loc = tasklet_id << BLOCK_SIZE_LOG2;                   \
          block_loc < num_elems;                                                \
          block_loc += (NR_TASKLETS << BLOCK_SIZE_LOG2)) {                      \
@@ -52,7 +67,8 @@ void print_args(DPU_LAUNCH_ARGS args) {
                                  ? (num_elems - block_loc)                     \
                                  : BLOCK_SIZE;                                 \
                                                                                \
-      uint32_t block_bytes = block_elems * sizeof(TYPE);                       \
+      uint32_t block_bytes =                                                   \
+          ((block_elems * sizeof(TYPE)) + 7) & ~(uint32_t)7;                   \
                                                                                \
       /* Copy block from MRAM to WRAM */                                       \
       mram_read((__mram_ptr void const *)(rhs_ptr + block_loc), rhs_block,     \
@@ -61,13 +77,19 @@ void print_args(DPU_LAUNCH_ARGS args) {
       /* Compute in WRAM */                                                    \
       if (is_sum32) {                                                          \
         for (uint32_t i = 0; i < block_elems; i++) {                           \
-          local_red_64 += rhs_block[i];                                        \
+          if (is_sum)                                                          \
+            local_red_64 += rhs_block[i];                                      \
+          else                                                                 \
+            local_red_64 *= rhs_block[i];                                      \
         }                                                                      \
       } else {                                                                 \
         for (uint32_t i = 0; i < block_elems; i++) {                           \
           local_red = FUNC(local_red, rhs_block[i]);                           \
         }                                                                      \
       }                                                                        \
+    }                                                                          \
+    if (is_sum32 && tasklet_id == 0) {                                         \
+      printf("DPU local_red_64: %llx\n", (unsigned long long)local_red_64);    \
     }                                                                          \
     /* write local result into preceding reserved area (one 8-byte slot per    \
      * tasklet) */                                                             \
@@ -79,7 +101,7 @@ void print_args(DPU_LAUNCH_ARGS args) {
     } else {                                                                   \
       memcpy(buff_ptr, &local_red, sizeof(TYPE));                              \
     }                                                                          \
-    extern uint64_t reduction_scratchpad[NR_TASKLETS];                         \
+    extern uint64_t reduction_scratchpad[];                                    \
     /* partial results go into the dedicated WRAM scratchpad */                \
     reduction_scratchpad[tasklet_id] = *buff_ptr;                              \
                                                                                \
@@ -88,12 +110,16 @@ void print_args(DPU_LAUNCH_ARGS args) {
     /* Tasklet 0 performs final reduction from partial slots */                \
     if (tasklet_id == 0) {                                                     \
       if (is_sum32) {                                                          \
-        int64_t total_64 = 0;                                                  \
+        int64_t total_64 = is_sum ? 0 : 1;                                     \
         uint32_t i;                                                            \
         for (i = 0; i < NR_TASKLETS; i++) {                                    \
-          total_64 += (int64_t)reduction_scratchpad[i];                        \
+          if (is_sum)                                                          \
+            total_64 += (int64_t)reduction_scratchpad[i];                      \
+          else                                                                 \
+            total_64 *= (int64_t)reduction_scratchpad[i];                      \
         }                                                                      \
         *buff_ptr = (uint64_t)total_64;                                        \
+        printf("DPU final total_64: %llx\n", (unsigned long long)total_64);    \
       } else {                                                                 \
         uint32_t total_slots = NR_TASKLETS * stride;                           \
         TYPE res_block_tot[NR_TASKLETS * stride] __attribute__((aligned(8)));  \

@@ -15,6 +15,7 @@ std::string operationtype_to_string(Event::OperationType op);
 
 namespace trace {
 #if TRACE == 1
+bool enabled();
 void initialize();
 void shutdown();
 void event_enqueued(std::shared_ptr<Event> e,
@@ -28,6 +29,7 @@ void execution_end();
 void active_ops_counter(size_t count);
 void ensure_callback_thread_named();
 #else
+inline bool enabled() { return false; }
 inline void initialize() {}
 inline void shutdown() {}
 inline void event_enqueued(std::shared_ptr<Event> e,

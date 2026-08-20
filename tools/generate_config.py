@@ -32,7 +32,7 @@ def parse_build_config(config_path):
 def generate_config_h(config, output_path):
     """Generate config.h from configuration dictionary."""
     header_guard = "CONFIG_H"
-    
+
     lines = [
         f"#ifndef {header_guard}",
         f"#define {header_guard}",
@@ -40,11 +40,11 @@ def generate_config_h(config, output_path):
         "/* Auto-generated from build.config */",
         "",
     ]
-    
+
     for key, value in config.items():
         # Convert to macro format (uppercase, spaces to underscores)
         macro_name = key.upper().replace(' ', '_').replace('-', '_')
-        
+
         # Determine if value is numeric or string
         if value.isdigit():
             # Numeric value
@@ -56,15 +56,32 @@ def generate_config_h(config, output_path):
         else:
             # String value
             lines.append(f"#define {macro_name} \"{value}\"")
-    
+
+    # The stamp verbatim, so anything linked against the library can ask what it
+    # was compiled from instead of inferring it.
+    lines.extend([
+        "",
+        "/* The build.config this was generated from, verbatim. */",
+        "#define BUILD_CONFIG_STRING \\",
+    ])
+    for key, value in config.items():
+        lines.append(f'  "{key}={value}\\n" \\')
+    lines.append('  ""')
+
     lines.extend([
         "",
         f"#endif /* {header_guard} */",
     ])
-    
+
+    content = '\n'.join(lines)
     try:
+        if os.path.exists(output_path):
+            with open(output_path, 'r') as f:
+                if f.read() == content:
+                    print(f"Generated {output_path} (unchanged)")
+                    return
         with open(output_path, 'w') as f:
-            f.write('\n'.join(lines))
+            f.write(content)
         print(f"Generated {output_path}")
     except Exception as e:
         print(f"Error writing {output_path}: {e}", file=sys.stderr)
@@ -77,7 +94,7 @@ def main():
     repo_root = script_dir.parent
     build_config = repo_root / "build.config"
     output_config_h = repo_root / "common" / "config.h"
-    
+
     # Parse and generate
     config = parse_build_config(str(build_config))
     generate_config_h(config, str(output_config_h))
