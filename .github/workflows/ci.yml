@@ -12,21 +12,47 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: ${{ matrix.name }}
+  configs:
+    name: Pick configs
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, PIM]
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      # `[only jit]` in the pushed commit message, or in the PR title or body,
+      # drops the two C++-only configs.  Read through the environment, never
+      # interpolated into the script: these strings are attacker-supplied.
+      - id: pick
+        shell: bash
+        env:
+          PUSH_MSG: ${{ github.event.head_commit.message }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          jit='{"name":"JIT mode (default)","flags":"PIPELINE=1 JIT=1","julia":true}'
+          rest='{"name":"Pipeline mode","flags":"PIPELINE=1 JIT=0","julia":false},'
+          rest+='{"name":"Eager mode","flags":"PIPELINE=0 JIT=0","julia":false}'
+          if printf '%s\n%s\n%s' "$PUSH_MSG" "$PR_TITLE" "$PR_BODY" |
+               grep -qiF '[only jit]'; then
+            echo "[only jit]: running JIT mode alone"
+            echo "matrix={\"include\":[$jit]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":[$jit,$rest]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: ${{ matrix.name }}
+    needs: configs
+    runs-on: [self-hosted, Linux, X64, PIM]
     timeout-minutes: 15 # a deadlocked DPU test would hold the runner
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Julia binds ops that only exist here, so it is the only config it runs in.
-          - {name: JIT mode (default), flags: PIPELINE=1 JIT=1, julia: true}
-          - {name: Pipeline mode,      flags: PIPELINE=1 JIT=0, julia: false}
-          - {name: Eager mode,         flags: PIPELINE=0 JIT=0, julia: false}
+      # Julia binds ops that only exist under JIT=1, so it is the only config
+      # it runs in; the other two are C++ only.
+      matrix: ${{ fromJSON(needs.configs.outputs.matrix) }}
     defaults:
       run:
         shell: bash
