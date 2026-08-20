@@ -1,6 +1,7 @@
 #include "vectordpu.h"
 
-#include "fusion.h"
+#include <detail/fusion.h>
+
 #include "logger.h"
 #include "perfetto/trace.h"
 #include "vectordesc.h"
@@ -386,7 +387,7 @@ void internal_launch_universal_pipeline(
 
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = DpuRuntime::get().get_logger();
-  FusionRpnSummary rpn_summary = summarize_fusion_rpn(ops);
+  detail::FusionRpnSummary rpn_summary = detail::summarize_fusion_rpn(ops);
   log_dpu_launch_args(logger, args, nr_of_dpus, rpn_summary.decoded_ops,
                       rpn_summary.chains, kernel_hash);
 #endif

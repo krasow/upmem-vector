@@ -1,4 +1,6 @@
 #pragma once
+#include <opinfo.h>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -6,7 +8,6 @@
 #include "config.h"
 
 // Descriptive helpers available even if TRACE=0
-std::string opcode_to_string(uint8_t op);
 #include "queue.h"
 std::string operationtype_to_string(Event::OperationType op);
 

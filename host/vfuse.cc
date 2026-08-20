@@ -1,4 +1,7 @@
-#include "fusion.h"
+#include <detail/fusion.h>
+#include <perfetto/trace.h>
+#include <perfetto/trace_internal.h>
+
 #include "jit.h"
 #include "runtime.h"
 #include "stats.h"
@@ -65,22 +68,23 @@ bool is_commutative(uint8_t op) {
 
 void log_vertical_fusion(const std::shared_ptr<Event>& last,
                          const std::shared_ptr<Event>& e,
-                         const FusionBefore& before,
-                         const FusionOperands& ops) {
+                         const detail::FusionBefore& before,
+                         const detail::FusionOperands& ops) {
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = DpuRuntime::get().get_logger();
   if (!logger.enabled(2)) return;
 
   auto log = logger.lock(logcat::FUSION);
-  log_fusion_header(log, "vertical fusion", "dependent_on_stack_output", last,
-                    e, before);
+  detail::log_fusion_header(log, "vertical fusion", "dependent_on_stack_output",
+                            last, e, before);
   log.second() << "producer expr: "
-               << fusion_rpn_expr_preview(ops.target_rpn, 1, 90);
+               << detail::fusion_rpn_expr_preview(ops.target_rpn, 1, 90);
   log.second() << "consumer expr: "
-               << fusion_rpn_expr_preview(ops.chain_rpn, 1, 90, "producer_out",
-                                          1)
+               << detail::fusion_rpn_expr_preview(ops.chain_rpn, 1, 90,
+                                                  "producer_out", 1)
                << "  [producer_out = producer expr]";
-  log_fused_kernel_tail(log, last, summarize_fusion_rpn(last->rpn_ops));
+  detail::log_fused_kernel_tail(log, last,
+                                detail::summarize_fusion_rpn(last->rpn_ops));
 #else
   (void)last;
   (void)e;
@@ -94,17 +98,17 @@ void log_vertical_fusion(const std::shared_ptr<Event>& last,
 // is dropped (and a second reference becomes an explicit DUP).  Returns a
 // failed MappedChain when the operand budget is exhausted or when the rewrite
 // would reorder a non-commutative operator's arguments.
-MappedChain map_consumer_onto_producer(
+detail::MappedChain map_consumer_onto_producer(
     const std::vector<uint8_t>& consumer_rpn,
     const std::vector<detail::VectorDescRef>& consumer_inputs,
     const std::vector<detail::VectorDescRef>& producer_inputs,
     const detail::VectorDescRef& on_stack, size_t producer_scalar_count) {
-  MappedChain mapped;
+  detail::MappedChain mapped;
   mapped.inputs = producer_inputs;
 
   auto push_op_for = [&](const detail::VectorDescRef& vec) -> uint8_t {
     if (vec == on_stack) return PUSH_OP_ALREADY_ON_STACK;
-    return operand_push_op(mapped.inputs, vec);
+    return detail::operand_push_op(mapped.inputs, vec);
   };
 
   bool primary_on_stack = false;
@@ -141,7 +145,7 @@ MappedChain map_consumer_onto_producer(
             (uint8_t)(producer_scalar_count + consumer_rpn[++k]));
 
     } else if (OP_INLINE_BYTES(op) > 0) {
-      append_token_with_inline_bytes(consumer_rpn, k, mapped.rpn);
+      detail::append_token_with_inline_bytes(consumer_rpn, k, mapped.rpn);
 
     } else {
       // The only stacked operand is the right-hand one, so a non-commutative
@@ -160,7 +164,7 @@ MappedChain map_consumer_onto_producer(
 uint8_t get_or_add_push_op(std::vector<detail::VectorDescRef>& inputs,
                            const detail::VectorDescRef& vec) {
   if (!vec) return PUSH_OP_BUDGET_EXCEEDED;
-  return operand_push_op(inputs, vec);
+  return detail::operand_push_op(inputs, vec);
 }
 
 void append_inline_scalar(std::vector<uint8_t>& rpn, uint8_t op,
@@ -195,7 +199,7 @@ bool append_absorbed_rpn_inline(const detail::VectorDescRef& vec,
       if (i + 1 >= vec->absorbed_rpn.size()) return false;
       uint8_t scalar_idx = vec->absorbed_rpn[++i];
       if (scalar_idx >= vec->absorbed_scalars.size()) return false;
-      append_inline_scalar(out, map_from_var_op(op),
+      append_inline_scalar(out, detail::map_from_var_op(op),
                            vec->absorbed_scalars[scalar_idx]);
     } else if (op == OP_LOAD_INDIRECT || IS_OP_INDIRECT_UPDATE(op)) {
       return false;
@@ -271,7 +275,7 @@ void ensure_explicit_rpn(const std::shared_ptr<Event>& e) {
   for (size_t k = 0; k < e->inputs.size(); ++k)
     e->rpn_ops.push_back(k == 0 ? OP_PUSH_INPUT : OP_PUSH_OPERAND_0 + (k - 1));
   if (e->is_scalar) {
-    e->rpn_ops.push_back(map_to_var_op(e->opcode));
+    e->rpn_ops.push_back(detail::map_to_var_op(e->opcode));
     e->rpn_ops.push_back(0);
     e->scalars.push_back(e->scalar_value);
   } else {
@@ -376,7 +380,7 @@ void log_inline_input(const std::shared_ptr<Event>& e,
   Logger& logger = DpuRuntime::get().get_logger();
   if (!logger.enabled(2)) return;
 
-  FusionRpnSummary after = summarize_fusion_rpn(result.rpn);
+  detail::FusionRpnSummary after = detail::summarize_fusion_rpn(result.rpn);
   auto log = logger.lock(logcat::FUSION);
   log.first() << "inline input";
   log.second() << "producer #" << producer->last_producer_id << " -> consumer #"
@@ -386,10 +390,10 @@ void log_inline_input(const std::shared_ptr<Event>& e,
                << result.inputs.size() << "  scalars=" << scalars_before << "=>"
                << result.scalars.size();
   log.second() << "consumer expr before: "
-               << fusion_rpn_expr_preview(rpn_before, 1, 90);
+               << detail::fusion_rpn_expr_preview(rpn_before, 1, 90);
   log.second() << "consumer expr after: "
-               << fusion_rpn_expr_preview(result.rpn);
-  log.second() << "kernel after: " << fusion_rpn_short(after)
+               << detail::fusion_rpn_expr_preview(result.rpn);
+  log.second() << "kernel after: " << detail::fusion_rpn_short(after)
 #if JIT
                << "  kernel_hash="
                << jit_signature_hash(Signature{
@@ -397,7 +401,8 @@ void log_inline_input(const std::shared_ptr<Event>& e,
                       jit_canonical_type_name(e->output ? e->output->type_name
                                                         : nullptr)})
 #endif
-               << "  opcode mix: " << fusion_op_counts(after) << std::endl;
+               << "  opcode mix: " << detail::fusion_op_counts(after)
+               << std::endl;
 #else
   (void)producer;
   (void)inputs_before;
@@ -450,7 +455,7 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
   // Clear absorbed state — future ops that read this vector get it from MRAM.
   auto absorbed_vec = std::move(in_vec);
   e->inputs = std::move(inlined.inputs);
-  e->rpn_ops = normalize_associative_rpn(inlined.rpn);
+  e->rpn_ops = detail::normalize_associative_rpn(inlined.rpn);
   e->scalars = std::move(inlined.scalars);
   e->is_scalar = false;
   if (absorbed_vec->last_producer_id != 0)
@@ -572,16 +577,16 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
       if (in == out) return false;
   }
 
-  const FusionOperands ops = build_fusion_operands(last, e);
-  const FusionBefore before{last->inputs.size(), last->extra_outputs.size(),
-                            ops.target_scalars.size(),
-                            ops.chain_scalars.size()};
+  const detail::FusionOperands ops = detail::build_fusion_operands(last, e);
+  const detail::FusionBefore before{
+      last->inputs.size(), last->extra_outputs.size(),
+      ops.target_scalars.size(), ops.chain_scalars.size()};
 
-  MappedChain mapped =
+  detail::MappedChain mapped =
       map_consumer_onto_producer(ops.chain_rpn, e->inputs, last->inputs,
                                  on_stack, ops.target_scalars.size());
-  if (!splice_mapped_chain(last, ops.target_rpn, ops.target_scalars,
-                           ops.chain_scalars, mapped))
+  if (!detail::splice_mapped_chain(last, ops.target_rpn, ops.target_scalars,
+                                   ops.chain_scalars, mapped))
     return false;
 
   if (last->extra_outputs.empty())
@@ -600,9 +605,9 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
     fused_output->absorbed_inputs = last->inputs;
   }
 
-  adopt_fused_event(last, e);
+  detail::adopt_fused_event(last, e);
 
-  last->slice_name = fused_pipeline_label(last->rpn_ops);
+  last->slice_name = detail::fused_pipeline_label(last->rpn_ops);
   log_vertical_fusion(last, e, before, ops);
 
   VECTORDPU_NOTE(vertical_fusions);

@@ -72,13 +72,16 @@ TEST_TARGET := ${TEST_DIR}/vectordpu_test
 
 COMMON_DIR := common
 HOST_INCLUDES := host
-HOST_SOURCES := $(wildcard ${HOST_DIR}/*.cc) $(wildcard ${HOST_DIR}/perfetto/*.cc)
+HOST_SOURCES := $(wildcard ${HOST_DIR}/*.cc) $(wildcard ${HOST_DIR}/detail/*.cc) \
+                $(wildcard ${HOST_DIR}/perfetto/*.cc)
 DPU_SOURCES := $(wildcard ${DPU_DIR}/*.c)
 # One binary holds every suite; select subsets at run time with --filter.
 TEST_SOURCES := $(wildcard ${TEST_DIR}/*.cc)
 TEST_HEADERS := $(wildcard ${TEST_DIR}/*.h) $(wildcard ${TEST_DIR}/*.inl)
 
-HOST_HEADERS := $(wildcard ${HOST_DIR}/*.inl) $(wildcard ${HOST_DIR}/*.h) $(wildcard ${HOST_DIR}/perfetto/*.h)
+HOST_HEADERS := $(wildcard ${HOST_DIR}/*.inl) $(wildcard ${HOST_DIR}/*.h) \
+                $(wildcard ${HOST_DIR}/detail/*.h) \
+                $(wildcard ${HOST_DIR}/perfetto/*.h)
 DPU_HEADERS := $(wildcard ${DPU_DIR}/*.inl) $(wildcard ${DPU_DIR}/*.h)
 COMMON_HEADERS := ${COMMON_DIR}/common.h ${COMMON_DIR}/config.h
 
@@ -232,8 +235,11 @@ install: all
 	install -d $(bindir) $(libdir) $(includedir)
 	install -m 644 $(DPU_TARGET) $(bindir)
 	install -m 644 $(HOST_TARGET) $(libdir)
-	# Install base host headers
-	install -m 644 $(wildcard ${HOST_DIR}/*.inl) $(wildcard ${HOST_DIR}/*.h) $(includedir)
+	# Install base host headers.  host/detail/ and fusion.h are internal:
+	# they are implementation, not API, so they are deliberately left out.
+	install -m 644 $(wildcard ${HOST_DIR}/*.inl) \
+		$(filter-out ${HOST_DIR}/fusion.h, $(wildcard ${HOST_DIR}/*.h)) \
+		$(includedir)
 	# Install DPU-side .inl files
 	install -m 644 $(wildcard ${DPU_DIR}/*.inl) $(includedir)
 	# Install perfetto headers
