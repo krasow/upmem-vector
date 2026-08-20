@@ -479,11 +479,13 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
   // whether it is *actually* redundant cannot be known here -- a consumer that
   // needs its MRAM output may not have been submitted yet, and a temporary
   // holding the vector may not have died yet.  So only mark it, and let
-  // EventQueue::output_still_needed decide when the event reaches the head of
-  // the queue, by which point every consumer in this batch is visible.
+  // EventQueue::output_still_needed decide once temporary handles have gone
+  // out of scope and every submitted consumer is visible.
   for (auto& op : operations_)
-    if (op->output == absorbed_vec && op->extra_outputs.empty())
+    if (op->output == absorbed_vec && op->extra_outputs.empty()) {
       op->output_was_inlined = true;
+      op->inlined_into = e->id;
+    }
 }
 
 // Vertical fusion: e depends on last's output (on-stack value).

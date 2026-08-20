@@ -494,25 +494,31 @@ void EventQueue::await_jit_binary(const std::shared_ptr<Event>& e) {
 }
 // Whether an event whose output was inlined into a consumer must still run.
 //
-// Called when the event reaches the head of the queue, which is the first point
-// where the answer is knowable: every consumer submitted before this fence is
-// already queued, and any temporary that held the vector has been destroyed.
-// If nothing can read the MRAM output any more, the event is redundant -- the
-// consumer recomputes it inline.
-bool EventQueue::output_still_needed(const std::shared_ptr<Event>& e) {
+// Called while submitting or draining the queue, once a temporary handle may
+// have gone out of scope.  A pending submission is checked explicitly because
+// it is not in operations_ yet.  If nothing can read the MRAM output any more,
+// the event is redundant -- its recorded consumer recomputes it inline.
+bool EventQueue::output_still_needed(
+    const std::shared_ptr<Event>& e,
+    const std::shared_ptr<Event>& pending_consumer) {
   if (!e->output_was_inlined) return true;
   if (!e->output) return true;
 
   // A live handle means the caller can still build another op on this vector.
   if (e->output->handle_count > 0) return true;
 
+  auto reads_output = [&e](const std::shared_ptr<Event>& consumer) {
+    if (!consumer) return false;
+    return std::find(consumer->inputs.begin(), consumer->inputs.end(),
+                     e->output) != consumer->inputs.end();
+  };
+
   std::lock_guard<std::recursive_mutex> lock(mtx_);
+  if (reads_output(pending_consumer)) return true;
   for (const auto& queued : operations_)
-    for (const auto& in : queued->inputs)
-      if (in == e->output) return true;
+    if (reads_output(queued)) return true;
   for (const auto& running : running_events_)
-    for (const auto& in : running->inputs)
-      if (in == e->output) return true;
+    if (reads_output(running)) return true;
   return false;
 }
 

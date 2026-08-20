@@ -73,12 +73,12 @@ inline void adopt_fused_event(const std::shared_ptr<Event>& last,
   last->max_id = std::max(last->max_id, e->id);
   last->kid = last->pipeline_kid;
 
-  // Fusion only ever merges the queue tail, so [last->id, last->max_id] is
-  // exactly the set of events `last` now stands for.  A dependency inside that
-  // range is on something absorbed, which will never complete on its own --
-  // waiting for it deadlocks.  This happens with in-place ops, where an input
-  // and the output are the same vector, so its last_producer_id names an event
-  // we just swallowed.
+  // Fusion only merges adjacent queued events, so [last->id, last->max_id]
+  // covers the events `last` now stands for (including redundant producers
+  // retired between them).  A dependency inside that range is on something
+  // absorbed, which will never complete on its own -- waiting for it
+  // deadlocks.  This happens with in-place ops, where an input and the output
+  // are the same vector, so its last_producer_id names an event we swallowed.
   auto absorbed = [&last](size_t id) {
     return id >= last->id && id <= last->max_id;
   };

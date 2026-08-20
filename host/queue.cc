@@ -39,6 +39,13 @@ void EventQueue::sync() {
   size_t last_id;
   {
     std::lock_guard<std::recursive_mutex> lock(mtx_);
+#if PIPELINE
+    // No later submission is guaranteed to follow the final full expression.
+    // Reap its dead temporaries here so they cannot split the last fusion
+    // group while the queue drains.
+    retire_inlined_producers(nullptr);
+    compact_fusable_operations();
+#endif
     if (operations_.empty() && running_events_.empty()) return;
     last_id = counter_ - 1;
   }
@@ -177,7 +184,11 @@ bool EventQueue::try_fuse(std::shared_ptr<Event> last,
       }
   }
 
-  if (dependent) return try_vfuse(last, e);
+  if (dependent) {
+    bool fused = try_vfuse(last, e);
+    if (fused) retarget_inlined_producers(e->id, last->id);
+    return fused;
+  }
 
   // If e already inlined last's output via absorbed_rpn, horizontally fusing
   // last as a separate chain would duplicate that work and shift result slots.
@@ -208,7 +219,9 @@ bool EventQueue::try_fuse(std::shared_ptr<Event> last,
   if (e->is_scalar && e->rpn_ops.empty()) return false;
   if (e->output && !e->output->absorbed_rpn.empty()) return false;
 
-  return try_hfuse(last, e);
+  bool fused = try_hfuse(last, e);
+  if (fused) retarget_inlined_producers(e->id, last->id);
+  return fused;
 #else
   return false;
 #endif
@@ -291,6 +304,12 @@ void EventQueue::enqueue(const std::shared_ptr<Event>& e) {
 
 void EventQueue::submit(std::shared_ptr<Event> e) {
   std::lock_guard<std::recursive_mutex> lock(mtx_);
+
+#if PIPELINE
+  retire_inlined_producers(e);
+  compact_fusable_operations();
+#endif
+
   await_queue_space();
 
   e->id = counter_++;
@@ -305,4 +324,69 @@ void EventQueue::submit(std::shared_ptr<Event> e) {
   trace::active_ops_counter(operations_.size());
 
   if (!fuse_into_queue_tail(e)) enqueue(e);
+}
+
+void EventQueue::retire_inlined_producers(
+    const std::shared_ptr<Event>& pending_consumer) {
+#if PIPELINE
+  bool changed = false;
+  for (auto it = operations_.begin(); it != operations_.end();) {
+    const auto producer = *it;
+    if (!producer->extra_outputs.empty() ||
+        output_still_needed(producer, pending_consumer)) {
+      ++it;
+      continue;
+    }
+
+    auto consumer = std::find_if(
+        operations_.begin(), operations_.end(), [&](const auto& candidate) {
+          return candidate != producer &&
+                 candidate->id == producer->inlined_into;
+        });
+    if (producer->inlined_into == 0 || consumer == operations_.end()) {
+      ++it;
+      continue;
+    }
+
+    if (producer->output && producer->output->last_producer_id == producer->id)
+      producer->output->last_producer_id = (*consumer)->id;
+    retarget_inlined_producers(producer->id, (*consumer)->id);
+    trace::event_fused(producer, *consumer, "deferred inline");
+    it = operations_.erase(it);
+    VECTORDPU_NOTE(absorbed_producers);
+    changed = true;
+  }
+  if (changed) trace::active_ops_counter(operations_.size());
+#else
+  (void)pending_consumer;
+#endif
+}
+
+void EventQueue::retarget_inlined_producers(size_t old_consumer_id,
+                                            size_t new_consumer_id) {
+#if PIPELINE
+  for (const auto& producer : operations_)
+    if (producer->inlined_into == old_consumer_id)
+      producer->inlined_into = new_consumer_id;
+#else
+  (void)old_consumer_id;
+  (void)new_consumer_id;
+#endif
+}
+
+void EventQueue::compact_fusable_operations() {
+#if PIPELINE
+  // Retirement can expose fusable neighbours anywhere in the bounded queue,
+  // not just at its tail.  Reconsider the preceding pair after every merge
+  // because the larger left-hand program may unlock a vertical fusion.
+  size_t i = 1;
+  while (i < operations_.size()) {
+    if (try_fuse(operations_[i - 1], operations_[i])) {
+      operations_.erase(operations_.begin() + i);
+      if (i > 1) --i;
+    } else {
+      ++i;
+    }
+  }
+#endif
 }

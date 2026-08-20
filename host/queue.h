@@ -44,8 +44,8 @@ class Event : public std::enable_shared_from_this<Event> {
   // This event's output was inlined into a later consumer, so it may not need
   // to run.  Whether it does is decided later, once the vector's last handle
   // has gone: see EventQueue::output_still_needed.  `inlined_into` names the
-  // consumer that absorbed it, so the id range can be handed over if the event
-  // is dropped.
+  // consumer that absorbed it and proves the computation is still represented
+  // if this producer is retired.
   bool output_was_inlined = false;
   size_t inlined_into = 0;
   int jit_sub_kernel_idx = -1;
@@ -97,7 +97,6 @@ class EventQueue {
   void process_events(size_t wait_for_id);
   void finalize_finished_events();
   void debug_print_queue();
-  void remove_dead_events();
   void debug_active_events();
   size_t count_internal_references(detail::VectorDescRef vec);
 
@@ -146,9 +145,15 @@ class EventQueue {
   void switch_dpu_binary(const std::shared_ptr<Event>& e);
   void dispatch(const std::shared_ptr<Event>& e);
   void requeue_after_oom(const std::shared_ptr<Event>& e);
-  bool output_still_needed(const std::shared_ptr<Event>& e);
+  bool output_still_needed(
+      const std::shared_ptr<Event>& e,
+      const std::shared_ptr<Event>& pending_consumer = nullptr);
 
   // submit() stages.
+  void retarget_inlined_producers(size_t old_consumer_id,
+                                  size_t new_consumer_id);
+  void retire_inlined_producers(const std::shared_ptr<Event>& pending_consumer);
+  void compact_fusable_operations();
   void await_queue_space();
   bool fuse_into_queue_tail(const std::shared_ptr<Event>& e);
   void enqueue(const std::shared_ptr<Event>& e);

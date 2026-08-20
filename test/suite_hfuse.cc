@@ -266,6 +266,53 @@ TEST(hfuse, weighted_sums_fuse_vertically_and_horizontally) {
   CHECK_FUSIONS_GE(k, count - 1);
 }
 
+// The full linreg gradient shape: a deep accumulator feeds a shifted error
+// vector, which in turn feeds DIM independent reduction chains.  Producers of
+// the per-gradient temporaries are retired on a later submission or when the
+// queue drains; they must not prevent the reductions from horizontally fusing.
+TEST(hfuse, linreg_deferred_producers_do_not_fragment_reductions) {
+  const size_t count = 10;
+  const size_t n = 2048;
+  Operands cols = make_operands(count, n, 0, 8);
+  std::vector<T> y = tf::random_vector<T>(n, 0, 8);
+  std::vector<T> weights(count, 1);
+  dpu_vector<T> dy = dpu_vector<T>::from_cpu(y);
+  tf::drain();
+
+  std::vector<int64_t> actual;
+  StatsSnapshot k = tf::measure([&] {
+    dpu_vector<T> error_shifted;
+    {
+      dpu_vector<T> error = -dy;
+      for (size_t i = 0; i < count; ++i)
+        error = error + cols.dpu[i] * weights[i];
+      error_shifted = error >> (T)3;
+    }
+
+    dpu_future_vector<T> futures;
+    for (size_t i = 0; i < count; ++i)
+      futures.push_back(sum((cols.dpu[i] >> (T)2) * error_shifted));
+    dpu_fence();
+    for (auto value : futures.get()) actual.push_back((int64_t)value);
+  });
+
+  CHECK_EQ(actual.size(), count);
+  for (size_t i = 0; i < count && i < actual.size(); ++i) {
+    int64_t want = 0;
+    for (size_t lane = 0; lane < n; ++lane) {
+      T error = -y[lane];
+      for (size_t j = 0; j < count; ++j) error += cols.host[j][lane];
+      want += (int64_t)(cols.host[i][lane] >> 2) * (error >> 3);
+    }
+    if (actual[i] != want)
+      tf::fail("gradient " + tf::str(i) + ": got " + tf::str(actual[i]) +
+               " want " + tf::str(want));
+  }
+  // The shared shifted error is materialized once. The independent reductions
+  // then fill the build's safe horizontal reduction width.
+  CHECK_KERNELS_EQ(k, 1 + tf::ceil_div(count, reduction_chains_per_pass()));
+}
+
 // The histogram shape: one derived vector feeding N masked counts.  This used
 // to deadlock, and before that to return zeros.
 //
