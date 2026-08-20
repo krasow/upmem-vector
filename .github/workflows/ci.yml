@@ -7,9 +7,16 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The runner is this machine; a job on it can read anything its user can.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.name }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, PIM]
     timeout-minutes: 15 # a deadlocked DPU test would hold the runner
     strategy:
@@ -32,10 +39,6 @@ jobs:
       # its sharding tests scale with the count.
       NR_DPUS: 8
       TEST_ARGS: --isolate --dpus=8
-      # Per-job prefix, so configs running side by side cannot clobber each
-      # other's install.  Both are ?= in the Makefiles, so the environment wins.
-      DESTDIR: ${{ runner.temp }}/vectordpu
-      VECTORDPU_DIR: ${{ runner.temp }}/vectordpu
       JULIA_BIN_DIR: /scratch/david/julia-1.11.3/bin
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +55,11 @@ jobs:
           echo "$UPMEM_HOME/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # cmake
           echo "$JULIA_BIN_DIR" >> "$GITHUB_PATH"
+
+          # Per-job install prefix, so configs running side by side cannot
+          # clobber each other.  Both are ?= in the Makefiles, so env wins.
+          echo "DESTDIR=$RUNNER_TEMP/vectordpu" >> "$GITHUB_ENV"
+          echo "VECTORDPU_DIR=$RUNNER_TEMP/vectordpu" >> "$GITHUB_ENV"
 
       - name: Report the toolchain
         run: |
@@ -74,4 +82,4 @@ jobs:
 
       - name: Installed configuration
         if: always()
-        run: cat $DESTDIR/share/vectordpu/build.config
+        run: cat "$DESTDIR/share/vectordpu/build.config" 2>/dev/null || echo "nothing installed"
