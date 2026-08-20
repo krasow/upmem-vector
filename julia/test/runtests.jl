@@ -1,5 +1,5 @@
 using Test
-using UpmemVector
+using PolymerPIM
 
 # DPU vectors need at least num_dpus elements to behave, and reductions want
 # enough to span every tasklet, so the suites share one comfortable length.
@@ -15,7 +15,7 @@ const SELECTED = isempty(ARGS) ? SUITES :
 
 isempty(SELECTED) && error("no suite matches $(ARGS); available: $(join(SUITES, ", "))")
 
-@testset verbose = true "UpmemVector" begin
+@testset verbose = true "PolymerPIM" begin
     for name in SELECTED
         @testset "$name" begin
             include(joinpath(@__DIR__, "suites", name * ".jl"))

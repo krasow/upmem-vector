@@ -26,3 +26,4 @@ opcodes.h
 # Julia
 julia/Manifest.toml
 julia/src/opcodes.jl
+julia/lib/wrapper/PolymerPIM/*

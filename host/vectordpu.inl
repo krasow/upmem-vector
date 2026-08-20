@@ -37,12 +37,7 @@ dpu_vector<T>::dpu_vector(size_t n, uint32_t reserved, bool lazy,
       debug_line(loc.line()) {
   auto& runtime = DpuRuntime::get();
   if (runtime.is_initialized() == false) {
-    int nr_dpus = 8;
-    const char* env_val = std::getenv("NR_DPUS");
-    if (env_val != nullptr) {
-      nr_dpus = std::atoi(env_val);
-    }
-    runtime.init(nr_dpus);
+    runtime.init(DpuRuntime::configured_num_dpus());
   }
   data_ = runtime.get_allocator().allocate_upmem_vector(n, reserved, sizeof(T),
                                                         lazy);

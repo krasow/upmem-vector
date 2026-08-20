@@ -19,6 +19,16 @@
     @test Array(v2) == data2
 end
 
+@testset "runtime shape" begin
+    # Vectors are sharded across the DPUs, so the count has to be positive and
+    # divide the sizes the rest of the suite uses.
+    @test ndpus() > 0
+    @test ntasklets() > 0
+    @test N % ndpus() == 0
+    @test ndpus() == parse(Int, get(ENV, "NR_DPUS", "8"))
+    @test ntasklets() == parse(Int, configuration()["NR_TASKLETS"])
+end
+
 @testset "scalar indexing" begin
     data = Int32.(collect(10:10:10N))
     v = DpuVector(data)
@@ -64,5 +74,5 @@ end
     @test length(DpuVector(16)) == 16
     @test_throws ArgumentError DpuVector(-1)
     # sync() must be safe even with nothing submitted
-    @test UpmemVector.sync() === nothing
+    @test PolymerPIM.sync() === nothing
 end

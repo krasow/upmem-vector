@@ -16,18 +16,18 @@ w = DpuVector(1024)                 # uninitialised, length 1024
 ```
 """
 mutable struct DpuVector
-    handle::UpmemVector.DpuVectorInt32   # CxxWrap-managed C++ object
+    handle::PolymerPIM.DpuVectorInt32   # CxxWrap-managed C++ object
     len::Int64
 
-    function DpuVector(handle::UpmemVector.DpuVectorInt32)
-        v = new(handle, Int64(UpmemVector.cpp_length(handle)))
+    function DpuVector(handle::PolymerPIM.DpuVectorInt32)
+        v = new(handle, Int64(PolymerPIM.cpp_length(handle)))
         return v
     end
 end
 
 # Construct from a Julia vector -- transfer to DPU memory
 function DpuVector(data::AbstractVector{Int32})
-    handle = retry_on_oom(() -> UpmemVector.from_cpu_int32(collect(Int32, data)))
+    handle = retry_on_oom(() -> PolymerPIM.from_cpu_int32(collect(Int32, data)))
     return DpuVector(handle)
 end
 
@@ -40,7 +40,7 @@ end
 # `constructor<uint32_t>()` as the type itself, not as a cpp_alloc_* helper.
 function DpuVector(n::Integer)
     n >= 0 || throw(ArgumentError("length must be non-negative, got $n"))
-    handle = retry_on_oom(() -> UpmemVector.DpuVectorInt32(UInt32(n)))
+    handle = retry_on_oom(() -> PolymerPIM.DpuVectorInt32(UInt32(n)))
     return DpuVector(handle)
 end
 
@@ -53,7 +53,7 @@ Transfer DPU vector contents back to the host as a Julia `Vector{Int32}`.
 """
 function Base.Array(v::DpuVector)
     out = Vector{Int32}(undef, v.len)
-    retry_on_oom(() -> UpmemVector.to_cpu!(v.handle, out))
+    retry_on_oom(() -> PolymerPIM.to_cpu!(v.handle, out))
     return out
 end
 
@@ -78,7 +78,7 @@ end
 Explicitly synchronize: block until all pending DPU operations on `v` complete.
 """
 function fence(v::DpuVector)
-    retry_on_oom(() -> UpmemVector.dpu_fence(v.handle))
+    retry_on_oom(() -> PolymerPIM.dpu_fence(v.handle))
 end
 
 export fence
@@ -93,7 +93,7 @@ futures unread lets the runtime merge their reductions into one kernel pass;
 calling [`get`](@ref) forces them all to complete.
 """
 mutable struct DpuFuture
-    handle::UpmemVector.DpuFutureInt32
+    handle::PolymerPIM.DpuFutureInt32
 end
 
 """
@@ -101,6 +101,6 @@ end
 
 Read a queued reduction, blocking until the DPUs have produced it.
 """
-Base.get(f::DpuFuture) = retry_on_oom(() -> UpmemVector.cpp_get(f.handle))
+Base.get(f::DpuFuture) = retry_on_oom(() -> PolymerPIM.cpp_get(f.handle))
 
 export DpuFuture

@@ -1,4 +1,4 @@
-# UpmemVector.jl
+# PolymerPIM.jl
 
 Julia bindings for vectordpu: a 1-D `Int32` vector living in UPMEM DPU memory.
 
@@ -7,19 +7,56 @@ compile against anything else.
 
 ## Build
 
+`make install` in the source tree builds the wrapper too, against the prefix it
+just installed:
+
 ```sh
 source /usr/upmem_env.sh
 cd .. && make install PIPELINE=1 JIT=1 BACKEND=hw   # BACKEND=simulator if HW is down
-cd julia && make test VECTORDPU_DIR=$(cd ../../vectordpu && pwd)
+cd julia && make test
 ```
 
-`VECTORDPU_DIR` is the install prefix (`../vectordpu` by default). `make` needs
-`julia` on `PATH`.
+It is skipped, with a message, under any other configuration or without `julia`
+on `PATH`. To build against a prefix elsewhere, pass `VECTORDPU_DIR` (defaults to
+the source tree's `../vectordpu`).
+
+`lib/wrapper/` holds the wrapper source and its cmake tree; the finished library
+is installed to `lib/wrapper/PolymerPIM/`, next to the two stamps recording what
+it is:
+
+```sh
+make config          # both stamps
+```
+
+| file | contents |
+| --- | --- |
+| `build.config` | the flags `libvectordpu` was compiled with, copied from the prefix |
+| `install.config` | where that prefix came from (git rev, date, host) and how the wrapper was configured against it |
+
+`build.config` is not just a record. The wrapper reaches its `libvectordpu`
+through `RUNPATH`, so a later `make install` with different flags would swap the
+library out from under it; the package compares this stamp against what the
+loaded library reports for itself and refuses a mismatch instead of silently
+running the wrong configuration. From Julia:
+
+```julia
+installinfo()      # provenance, as recorded at wrapper build time
+configuration()    # what the loaded libvectordpu says it is -- ground truth
+ndpus(), ntasklets()
+```
+
+DPUs are claimed on the first allocation, so `NR_DPUS` has to be set before it
+(default 8); `ndpus()` reports the count either way. Tasklets per DPU are fixed
+at library build time by `NR_TASKLETS`.
+
+```sh
+NR_DPUS=32 julia --project=. yourscript.jl
+```
 
 ## Usage
 
 ```julia
-using UpmemVector
+using PolymerPIM
 
 a = DpuVector(Int32[1, 2, 3, 4])
 b = DpuVector(fill(Int32(10), 4))

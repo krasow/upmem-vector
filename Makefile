@@ -64,6 +64,9 @@ TEST_DIR := test
 
 DESTDIR ?= ../vectordpu
 
+# Julia interpreter used to build the PolymerPIM.jl wrapper during `make install`.
+JULIA ?= julia
+
 CONFIG_STAMP := build.config
 
 HOST_TARGET := ${BUILDDIR}/lib/libvectordpu.so
@@ -103,7 +106,7 @@ ifeq ($(TRACE),1)
   LDFLAGS += -L$(PERFETTO_HOME)/lib -lperfetto -ldl -lpthread
 endif
 
-.PHONY: config_check cache_old reconfigure all clean clean-internal test build-test list-tests install uninstall print_config make_header
+.PHONY: config_check cache_old reconfigure all clean clean-internal test build-test list-tests install install-julia uninstall print_config make_header
 
 GENERATED_TARGETS := dpu/kernels.h host/opinfo.h host/kernelids.h common/opcodes.h
 # Same generator, but not a C header -- must stay out of the install list.
@@ -221,7 +224,7 @@ TEST_ARGS ?= --isolate
 
 test: all $(TEST_TARGET)
 	@printf "\n$(CYAN)Running tests...$(NC)\n\n"
-	./$(TEST_TARGET) $(TEST_ARGS)
+	UPMEM_NO_OS_WARNING=1 ./$(TEST_TARGET) $(TEST_ARGS)
 
 # Build the test binary without running it.
 build-test: all $(TEST_TARGET)
@@ -231,6 +234,9 @@ list-tests: all $(TEST_TARGET)
 bindir := $(DESTDIR)/bin
 libdir := $(DESTDIR)/lib
 includedir := $(DESTDIR)/include/vectordpu
+# Consumers link against this prefix, not the source tree, so the prefix has to
+# be able to say what it holds without anyone guessing from mtimes.
+sharedir := $(DESTDIR)/share/vectordpu
 
 install: all
 	@echo "Installing to $(DESTDIR)..."
@@ -250,9 +256,37 @@ install: all
 	# Install common and generated headers
 	install -m 644 $(COMMON_HEADERS) $(includedir)
 	install -m 644 $(GENERATED_TARGETS) $(includedir)
+	# build.config verbatim, so it matches BUILD_CONFIG_STRING in the shipped library.
+	install -d $(sharedir)
+	install -m 644 $(CONFIG_STAMP) $(sharedir)/build.config
+	@{ \
+	  echo "INSTALL_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	  echo "INSTALL_PREFIX=$$(cd $(DESTDIR) && pwd)"; \
+	  echo "SOURCE_DIR=$$(pwd)"; \
+	  echo "GIT_REV=$$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
+	  echo "GIT_BRANCH=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"; \
+	  echo "GIT_DIRTY=$$(git status --porcelain 2>/dev/null | head -1 | wc -l)"; \
+	  echo "BUILD_TYPE=$(BUILD_TYPE)"; \
+	  echo "CXX=$$($(CXX) --version 2>/dev/null | head -1)"; \
+	  echo "HOST=$$(uname -n)"; \
+	} > $(sharedir)/install.config
+	@echo "Installed configuration recorded in $(sharedir)/"
+	@$(MAKE) install-julia
+
+# The Julia package binds ops that only exist under PIPELINE=1 JIT=1, so other
+# configurations install the C++ library alone.
+install-julia:
+	@if [ "$(JIT)" != "1" ] || [ "$(PIPELINE)" != "1" ]; then \
+	    echo "Skipping PolymerPIM.jl: needs PIPELINE=1 JIT=1 (have PIPELINE=$(PIPELINE) JIT=$(JIT))"; \
+	elif ! command -v $(JULIA) >/dev/null 2>&1; then \
+	    echo "Skipping PolymerPIM.jl: $(JULIA) not on PATH"; \
+	else \
+	    $(MAKE) -C julia build VECTORDPU_DIR=$(abspath $(DESTDIR)); \
+	fi
 
 uninstall:
 	@echo "Removing from $(prefix)..."
 	rm -f $(bindir)/$(notdir $(DPU_TARGET))
 	rm -f $(libdir)/$(notdir $(HOST_TARGET))
 	rm -rf $(includedir)
+	rm -rf $(sharedir)

@@ -32,11 +32,11 @@ end
     # The point of the lazy API: queue several reductions, read none, and
     # they share a kernel.  Eight vectors is inside MAX_HFUSE_CHAINS.
     vectors = [DpuVector(fill(Int32(i), 1024)) for i in 1:8]
-    UpmemVector.dpu_sync()
+    PolymerPIM.dpu_sync()
 
-    before = UpmemVector.stat_compute_launches()
+    before = PolymerPIM.stat_compute_launches()
     totals = sums(vectors)
-    after = UpmemVector.stat_compute_launches()
+    after = PolymerPIM.stat_compute_launches()
 
     @test totals == [1024 * i for i in 1:8]
     # Without fusion this would be 8 passes.

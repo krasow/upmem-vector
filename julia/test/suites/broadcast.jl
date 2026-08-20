@@ -46,18 +46,18 @@ end
     vs = [DpuVector(Int32.(collect(1:n) .+ k)) for k in 1:8]
     want = sum(Int32.(collect(1:n) .+ k) for k in 1:8)
 
-    UpmemVector.sync()
-    before = UpmemVector.stat_compute_launches()
-    fused = UpmemVector.stat_vertical_fusions()
+    PolymerPIM.sync()
+    before = PolymerPIM.stat_compute_launches()
+    fused = PolymerPIM.stat_vertical_fusions()
     got = Array(vs[1] .+ vs[2] .+ vs[3] .+ vs[4] .+
                 vs[5] .+ vs[6] .+ vs[7] .+ vs[8])
-    passes = UpmemVector.stat_compute_launches() - before
+    passes = PolymerPIM.stat_compute_launches() - before
 
     @test got == want
     # One program, so one pass -- and no reliance on the fusion pass to get
     # there.  The eager operator spelling of the same thing costs 7.
     @test passes == 1
-    @test UpmemVector.stat_vertical_fusions() - fused == 0
+    @test PolymerPIM.stat_vertical_fusions() - fused == 0
 end
 
 @testset "in-place broadcast writes through" begin
@@ -66,11 +66,11 @@ end
     a = DpuVector(av); b = DpuVector(bv)
 
     d = DpuVector(n)
-    UpmemVector.sync()
-    before = UpmemVector.stat_compute_launches()
+    PolymerPIM.sync()
+    before = PolymerPIM.stat_compute_launches()
     d .= a .+ b .* 2
     @test Array(d) == av .+ bv .* 2
-    @test UpmemVector.stat_compute_launches() - before == 1
+    @test PolymerPIM.stat_compute_launches() - before == 1
 
     # DpuVector is a handle type, so `.=` must update the buffer rather than
     # rebind -- an alias has to observe the write.

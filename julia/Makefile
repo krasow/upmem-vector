@@ -1,4 +1,4 @@
-# UpmemVector.jl -- convenience Makefile
+# PolymerPIM.jl -- convenience Makefile
 #
 # Prerequisites:
 #   1. Source the UPMEM environment:
@@ -12,22 +12,34 @@
 #        julia -e 'using Pkg; Pkg.add("CxxWrap")'
 #
 # Then from this directory:
-#   make          # build the C++ wrapper
+#   make          # build and install the C++ wrapper into lib/wrapper/PolymerPIM/
 #   make test     # run Julia tests
+#   make config   # show the recorded configuration of the install
 #   make clean    # remove build artefacts
 
 JULIA       ?= julia
-VECTORDPU_DIR ?= $(HOME)/vectordpu
+# Install prefix of the C++ library; matches the source Makefile's DESTDIR.
+VECTORDPU_DIR ?= $(abspath ../../vectordpu)
 
-.PHONY: all build test clean
+# Where deps/build.jl installs the wrapper, next to its config stamps.
+INSTALL_DIR := lib/wrapper/PolymerPIM
+
+.PHONY: all build test clean config
 
 all: build
 
 build:
+	$(JULIA) --project=. -e 'using Pkg; Pkg.instantiate()'
 	VECTORDPU_DIR=$(VECTORDPU_DIR) $(JULIA) --project=. deps/build.jl
 
+# JIT shells out to the DPU compiler per kernel, which greets each invocation
+# with a debian10 deprecation notice; silence it so test output stays readable.
 test: build
-	VECTORDPU_DIR=$(VECTORDPU_DIR) $(JULIA) --project=. test/runtests.jl
+	UPMEM_NO_OS_WARNING=1 VECTORDPU_DIR=$(VECTORDPU_DIR) $(JULIA) --project=. test/runtests.jl
+
+# Print the recorded configuration of the installed wrapper.
+config:
+	@cat $(INSTALL_DIR)/build.config $(INSTALL_DIR)/install.config
 
 clean:
-	rm -rf lib/wrapper/build
+	rm -rf lib/wrapper/build $(INSTALL_DIR)

@@ -13,7 +13,7 @@
 // in.  PIPELINE=0 / JIT=0 exist so the C++ side can measure the alternatives;
 // binding them would mean carrying fallbacks for op sets that do not exist.
 #if !PIPELINE || !JIT
-#error "UpmemVector.jl requires libvectordpu built with PIPELINE=1 JIT=1"
+#error "PolymerPIM.jl requires libvectordpu built with PIPELINE=1 JIT=1"
 #endif
 
 #include <cstring>
@@ -21,6 +21,7 @@
 #include <jlcxx/jlcxx.hpp>
 #include <jlcxx/stl.hpp>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
@@ -231,6 +232,14 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("built_with_jit", []() -> bool { return JIT != 0; });
   mod.method("built_with_pipeline", []() -> bool { return PIPELINE != 0; });
 
+  // The whole build.config the *loaded* libvectordpu was compiled from.  The
+  // package snapshots this at wrapper-build time; comparing the two at load
+  // catches an install prefix rebuilt with different flags underneath a wrapper
+  // that is still linked against it.
+  mod.method("build_config",
+             []() -> std::string { return BUILD_CONFIG_STRING; });
+  mod.method("backend", []() -> std::string { return BACKEND; });
+
   // ---- vector lists, for the K-ary APIs ----
 
   mod.add_type<VecList>("DpuVecList")
@@ -370,6 +379,21 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("dpu_fence", [](Vec& v) { v.add_fence(); });
   mod.method("dpu_sync", []() { dpu_fence(); });
   mod.method("cleanup", []() { DpuRuntime::get().shutdown(); });
+
+  // ---- runtime shape ----
+  //
+  // DPUs are claimed on the first vector allocation, so before that report the
+  // count the runtime will take rather than the uninitialized member.
+  mod.method("num_dpus", []() -> int64_t {
+    auto& rt = DpuRuntime::get();
+    return rt.is_initialized() ? (int64_t)rt.num_dpus()
+                               : (int64_t)DpuRuntime::configured_num_dpus();
+  });
+  mod.method("num_tasklets", []() -> int64_t {
+    return (int64_t)DpuRuntime::get().num_tasklets();
+  });
+  mod.method("runtime_initialized",
+             []() -> bool { return DpuRuntime::get().is_initialized(); });
 
   // ---- runtime counters (so Julia can assert on fusion, as the C++ suite
   //      does) ----

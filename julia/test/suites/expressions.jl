@@ -87,13 +87,13 @@ end
 @testset "reductions still fuse through RPN" begin
     n = 512
     vs = [DpuVector(Int32.(collect(1:n) .+ k)) for k in 1:6]
-    UpmemVector.sync()
+    PolymerPIM.sync()
 
-    before = UpmemVector.stat_compute_launches()
+    before = PolymerPIM.stat_compute_launches()
     fs = [reduce_expr(vs[i], vs[i + 1]) do x; sum(x[1] * x[2]) end
           for i in 1:5]
     vals = [get(f) for f in fs]
-    passes = UpmemVector.stat_compute_launches() - before
+    passes = PolymerPIM.stat_compute_launches() - before
 
     want = [sum(Int64.(collect(1:n) .+ i) .* Int64.(collect(1:n) .+ i .+ 1))
             for i in 1:5]

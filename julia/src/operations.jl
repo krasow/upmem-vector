@@ -9,22 +9,22 @@ using .Opcodes
 # ---- generic dispatch functions ----
 
 function binary_op(a::DpuVector, b::DpuVector, op::UInt8)
-    handle = retry_on_oom(() -> UpmemVector.launch_binary(a.handle, b.handle, op))
+    handle = retry_on_oom(() -> PolymerPIM.launch_binary(a.handle, b.handle, op))
     return DpuVector(handle)
 end
 
 function scalar_op(a::DpuVector, s::Integer, op::UInt8)
-    handle = retry_on_oom(() -> UpmemVector.launch_binary_scalar(a.handle, Int32(s), op))
+    handle = retry_on_oom(() -> PolymerPIM.launch_binary_scalar(a.handle, Int32(s), op))
     return DpuVector(handle)
 end
 
 function unary_op(a::DpuVector, op::UInt8)
-    handle = retry_on_oom(() -> UpmemVector.launch_unary(a.handle, op))
+    handle = retry_on_oom(() -> PolymerPIM.launch_unary(a.handle, op))
     return DpuVector(handle)
 end
 
 function reduce_op(a::DpuVector, op::UInt8)
-    return retry_on_oom(() -> UpmemVector.launch_reduction(a.handle, op))
+    return retry_on_oom(() -> PolymerPIM.launch_reduction(a.handle, op))
 end
 
 """
@@ -35,12 +35,12 @@ merged into a single DPU kernel pass, so prefer this (or [`sums`](@ref)) when
 reducing several vectors.
 """
 function reduce_lazy(a::DpuVector, op::UInt8)
-    handle = retry_on_oom(() -> UpmemVector.launch_reduction_lazy(a.handle, op))
+    handle = retry_on_oom(() -> PolymerPIM.launch_reduction_lazy(a.handle, op))
     return DpuFuture(handle)
 end
 
 function select_op(cond::DpuVector, a::DpuVector, b::DpuVector)
-    handle = retry_on_oom(() -> UpmemVector.launch_select(cond.handle, a.handle, b.handle))
+    handle = retry_on_oom(() -> PolymerPIM.launch_select(cond.handle, a.handle, b.handle))
     return DpuVector(handle)
 end
 
@@ -88,12 +88,12 @@ Apply an operation to `a` in place. `b` may be a `DpuVector` or an integer.
 Returns `a`.
 """
 function apply!(a::DpuVector, b::DpuVector, op::UInt8)
-    retry_on_oom(() -> UpmemVector.var"apply_binary!"(a.handle, b.handle, op))
+    retry_on_oom(() -> PolymerPIM.var"apply_binary!"(a.handle, b.handle, op))
     return a
 end
 
 function apply!(a::DpuVector, s::Integer, op::UInt8)
-    retry_on_oom(() -> UpmemVector.var"apply_scalar!"(a.handle, Int32(s), op))
+    retry_on_oom(() -> PolymerPIM.var"apply_scalar!"(a.handle, Int32(s), op))
     return a
 end
 
@@ -226,7 +226,7 @@ function Base.copyto!(dest::DpuVector, bc::Base.Broadcast.Broadcasted{DpuStyle})
     length(dest) == length(primary) || throw(DimensionMismatch(
         "destination has $(length(dest)) elements, expression $(length(primary))"))
     _check_program(e, operands)
-    retry_on_oom(() -> UpmemVector.launch_pipeline_into(
+    retry_on_oom(() -> PolymerPIM.launch_pipeline_into(
         dest.handle, primary.handle, e.ops, _veclist(operands), Int32[]))
     return dest
 end
@@ -267,9 +267,9 @@ export select_op, sums, lazy_sum, lazy_prod, lazy_minimum, lazy_maximum
 # same way and also works when the library was built with JIT=0.
 
 function _veclist(vs)
-    l = UpmemVector.DpuVecList()
+    l = PolymerPIM.DpuVecList()
     for v in vs
-        UpmemVector.var"veclist_push!"(l, v.handle)
+        PolymerPIM.var"veclist_push!"(l, v.handle)
     end
     return l
 end
@@ -292,7 +292,7 @@ function dpu_pipeline(v::DpuVector, e::DpuExpr;
                   scalars::AbstractVector{<:Integer} = Int32[])
     _check_program(e, operands)
     sc = Int32.(collect(scalars))
-    handle = retry_on_oom(() -> UpmemVector.launch_pipeline(
+    handle = retry_on_oom(() -> PolymerPIM.launch_pipeline(
         v.handle, e.ops, _veclist(operands), sc))
     return DpuVector(handle)
 end
@@ -311,7 +311,7 @@ function dpu_pipeline_reduce(v::DpuVector, e::DpuExpr;
     Opcodes.is_reduction(e.ops[end]) || throw(ArgumentError(
         "program must end in a reduction terminal (sum/prod/minimum/maximum)"))
     sc = Int32.(collect(scalars))
-    handle = retry_on_oom(() -> UpmemVector.launch_pipeline_reduce(
+    handle = retry_on_oom(() -> PolymerPIM.launch_pipeline_reduce(
         v.handle, e.ops, _veclist(operands), sc))
     return DpuFuture(handle)
 end
@@ -366,13 +366,13 @@ Per element, the 0-based index of the winning vector. One fused kernel pass.
 """
 function argmin_of(vs::AbstractVector{DpuVector})
     isempty(vs) && throw(ArgumentError("need at least one vector"))
-    handle = retry_on_oom(() -> UpmemVector.launch_argmin_k(_veclist(vs)))
+    handle = retry_on_oom(() -> PolymerPIM.launch_argmin_k(_veclist(vs)))
     return DpuVector(handle)
 end
 
 function argmax_of(vs::AbstractVector{DpuVector})
     isempty(vs) && throw(ArgumentError("need at least one vector"))
-    handle = retry_on_oom(() -> UpmemVector.launch_argmax_k(_veclist(vs)))
+    handle = retry_on_oom(() -> PolymerPIM.launch_argmax_k(_veclist(vs)))
     return DpuVector(handle)
 end
 
@@ -449,7 +449,7 @@ function DpuLocalVector(n::Integer; reduce_op::Symbol = :sum)
     reduce_op in LOCAL_REDUCE_OPS || throw(ArgumentError(
         "reduce_op must be one of $(LOCAL_REDUCE_OPS)"))
     idx = findfirst(==(reduce_op), LOCAL_REDUCE_OPS) - 1
-    handle = retry_on_oom(() -> UpmemVector.local_alloc(Int32(n), Int32(idx)))
+    handle = retry_on_oom(() -> PolymerPIM.local_alloc(Int32(n), Int32(idx)))
     return DpuLocalVector(handle, Int(n), reduce_op)
 end
 
@@ -457,7 +457,7 @@ Base.length(l::DpuLocalVector) = l.len
 
 function Base.Array(l::DpuLocalVector)
     out = Vector{Int32}(undef, l.len)
-    retry_on_oom(() -> UpmemVector.var"local_to_cpu!"(l.handle, out))
+    retry_on_oom(() -> PolymerPIM.var"local_to_cpu!"(l.handle, out))
     return out
 end
 
@@ -478,12 +478,12 @@ function scatter!(locals::AbstractVector{DpuLocalVector}, v::DpuVector,
         "($MAX_LOCAL_SCRATCH_VECTORS); WRAM has room for no more, and the " *
         "extras would silently read back as zeros"))
     _check_program(program, operands)
-    ll = UpmemVector.DpuLocalList()
+    ll = PolymerPIM.DpuLocalList()
     for l in locals
-        UpmemVector.var"locallist_push!"(ll, l.handle)
+        PolymerPIM.var"locallist_push!"(ll, l.handle)
     end
     sc = Int32.(collect(scalars))
-    retry_on_oom(() -> UpmemVector.launch_pipeline_scatter(
+    retry_on_oom(() -> PolymerPIM.launch_pipeline_scatter(
         v.handle, program.ops, _veclist(operands), sc, ll))
     return locals
 end

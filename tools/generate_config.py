@@ -57,6 +57,17 @@ def generate_config_h(config, output_path):
             # String value
             lines.append(f"#define {macro_name} \"{value}\"")
 
+    # The stamp verbatim, so anything linked against the library can ask what it
+    # was compiled from instead of inferring it.
+    lines.extend([
+        "",
+        "/* The build.config this was generated from, verbatim. */",
+        "#define BUILD_CONFIG_STRING \\",
+    ])
+    for key, value in config.items():
+        lines.append(f'  "{key}={value}\\n" \\')
+    lines.append('  ""')
+
     lines.extend([
         "",
         f"#endif /* {header_guard} */",

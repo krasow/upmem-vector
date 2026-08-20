@@ -10,7 +10,7 @@
     bins = DpuLocalVector(8)
     @test length(bins) == 8
     scatter!([bins], a,
-             scatter_program([LocalReduce(0, UpmemVector.Opcodes.OP_SUM,
+             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_SUM,
                                           input(), constant(Int32(1)))]))
     @test Array(bins) == Int32[count(==(b), data) for b in 0:7]
 end
@@ -24,7 +24,7 @@ end
     bins = DpuLocalVector(nbins)
     bucket = (input() * Int32(nbins)) >> Int32(depth)
     scatter!([bins], a,
-             scatter_program([LocalReduce(0, UpmemVector.Opcodes.OP_SUM,
+             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_SUM,
                                           bucket, constant(Int32(1)))]))
 
     want = zeros(Int32, nbins)
@@ -48,9 +48,9 @@ end
     acc = DpuLocalVector(slots * stride)
     base = input() * Int32(stride)
     prog = scatter_program([
-        LocalReduce(0, UpmemVector.Opcodes.OP_SUM, base, constant(Int32(1))),
-        LocalReduce(0, UpmemVector.Opcodes.OP_SUM, base + Int32(1), input()),
-        LocalReduce(0, UpmemVector.Opcodes.OP_SUM, base + Int32(2), operand(1)),
+        LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, base, constant(Int32(1))),
+        LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, base + Int32(1), input()),
+        LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, base + Int32(2), operand(1)),
     ])
     scatter!([acc], a, prog; operands = [b])
 
@@ -82,14 +82,14 @@ end
 
     lo = DpuLocalVector(slots; reduce_op = :min)
     scatter!([lo], a,
-             scatter_program([LocalReduce(0, UpmemVector.Opcodes.OP_MIN,
+             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_MIN,
                                          input(), operand(1))]);
              operands = [b])
     @test Array(lo) == want_lo
 
     hi = DpuLocalVector(slots; reduce_op = :max)
     scatter!([hi], a,
-             scatter_program([LocalReduce(0, UpmemVector.Opcodes.OP_MAX,
+             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_MAX,
                                          input(), operand(1))]);
              operands = [b])
     @test Array(hi) == want_hi
@@ -105,7 +105,7 @@ end
 
     # WRAM fits only MAX_LOCAL_SCRATCH_VECTORS locals, and the extras used to
     # read back as zeros rather than failing.
-    prog = scatter_program([LocalReduce(0, UpmemVector.Opcodes.OP_SUM,
+    prog = scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_SUM,
                                        input(), constant(Int32(1)))])
     too_many = [DpuLocalVector(4) for _ in 1:(MAX_LOCAL_SCRATCH_VECTORS + 1)]
     @test_throws ArgumentError scatter!(too_many, a, prog)

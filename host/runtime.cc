@@ -1,5 +1,6 @@
 #ifndef DPURT
 #define DPURT
+#include <cstdlib>
 #include <dpu>  // UPMEM rt syslib
 #define CHECK_UPMEM(x) DPU_ASSERT(x)
 #endif
@@ -30,6 +31,15 @@ EventQueue& DpuRuntime::get_event_queue() { return *event_queue_; }
 Logger& DpuRuntime::get_logger() { return *logger_; }
 dpu_set_t& DpuRuntime::dpu_set() { return *dpu_set_; }
 uint32_t DpuRuntime::num_dpus() const { return num_dpus_; }
+
+uint32_t DpuRuntime::configured_num_dpus() {
+  const char* env_val = std::getenv("NR_DPUS");
+  if (env_val == nullptr) {
+    return 8;
+  }
+  int parsed = std::atoi(env_val);
+  return parsed > 0 ? (uint32_t)parsed : 8;
+}
 uint32_t DpuRuntime::num_tasklets() const { return NR_TASKLETS; }
 
 std::string DpuRuntime::get_default_binary_path() const {

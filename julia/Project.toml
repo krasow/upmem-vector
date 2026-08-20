@@ -1,5 +1,5 @@
-name = "UpmemVector"
-uuid = "e8a3c0f1-7b2d-4a5e-9c1f-3d6e8b4a2f10"
+name = "PolymerPIM"
+uuid = "65579929-016c-401d-b509-88f072cf4db2"
 version = "0.1.0"
 
 [deps]
