@@ -139,16 +139,18 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   // ---- host <-> DPU transfers ----
 
   mod.method("from_cpu_int32", [](jlcxx::ArrayRef<int32_t> arr) {
-    std::vector<int32_t> vec(arr.data(), arr.data() + arr.size());
-    Vec result = Vec::from_cpu(vec);
+    // Straight out of the Julia array: the std::vector copy this replaces cost
+    // as much as the transfer.  Safe only because add_fence() below finishes
+    // it.
+    Vec result = Vec::from_cpu(arr.data(), arr.size());
     result.add_fence();  // the Julia array may be collected right after
     return result;
   });
 
   mod.method("to_cpu!", [](Vec& v, jlcxx::ArrayRef<int32_t> out) {
-    std::vector<int32_t> cpu = v.to_cpu();
-    size_t n = std::min((size_t)v.size(), (size_t)out.size());
-    std::copy(cpu.begin(), cpu.begin() + n, out.data());
+    // Straight into the Julia array; the std::vector temporary cost an extra
+    // allocation and copy.
+    v.to_cpu_into(out.data(), out.size());
   });
 
   // ---- elementwise ----

@@ -135,13 +135,13 @@ inline void dpu_fence() {
 }
 
 template <typename T>
-dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
+dpu_vector<T> dpu_vector<T>::from_cpu(T* cpu_data, size_t n,
                                       std::string_view name,
                                       std::source_location loc) {
-  dpu_vector<T> vec(cpu_vec.size(), 0, false, name, loc);
+  dpu_vector<T> vec(n, 0, false, name, loc);
   auto desc = vec.data_desc_ref();
 
-  char* cpu_buffer = reinterpret_cast<char*>(cpu_vec.data());
+  char* cpu_buffer = reinterpret_cast<char*>(cpu_data);
   auto bound_cb = std::bind(detail::vec_xfer_to_dpu, cpu_buffer, desc);
 
   auto& runtime = DpuRuntime::get();
@@ -150,24 +150,42 @@ dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
       std::make_shared<Event>(Event::OperationType::DPU_TRANSFER, bound_cb);
   e->output = desc;
   e->host_ptr = cpu_buffer;
-  e->transfer_size = cpu_vec.size() * sizeof(T);
+  e->transfer_size = n * sizeof(T);
 
   event_queue.submit(e);
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
   logger.lock(logcat::TRANSFER, 2)
-      << "type=DPU_TRANSFER action=submit id=" << e->id
-      << " size=" << cpu_vec.size() << " bytes=" << e->transfer_size
-      << std::endl;
+      << "type=DPU_TRANSFER action=submit id=" << e->id << " size=" << n
+      << " bytes=" << e->transfer_size << std::endl;
   logger.lock(logcat::QUEUE_APPEND, 2)
-      << "type=DPU_TRANSFER size=" << cpu_vec.size() << std::endl;
+      << "type=DPU_TRANSFER size=" << n << std::endl;
 #endif
   return vec;
 }
 
 template <typename T>
+dpu_vector<T> dpu_vector<T>::from_cpu(std::vector<T>& cpu_vec,
+                                      std::string_view name,
+                                      std::source_location loc) {
+  return from_cpu(cpu_vec.data(), cpu_vec.size(), name, loc);
+}
+
+template <typename T>
 vector<T> dpu_vector<T>::to_cpu() {
+  auto desc = this->data_desc_ref();
+  DpuRuntime::get().get_allocator().realize_allocation(desc);
+  const size_t result_elems =
+      detail::shard_layout(*desc).total_logical / sizeof(T);
+
+  vector<T> cpu_vec(result_elems);
+  to_cpu_into(cpu_vec.data(), result_elems);
+  return cpu_vec;
+}
+
+template <typename T>
+size_t dpu_vector<T>::to_cpu_into(T* out, size_t capacity) {
   auto desc = this->data_desc_ref();
   auto& runtime = DpuRuntime::get();
   runtime.get_allocator().realize_allocation(desc);
@@ -177,15 +195,22 @@ vector<T> dpu_vector<T>::to_cpu() {
   // payload already fills the stride we read straight into the result.
   const detail::ShardLayout layout = detail::shard_layout(*desc);
   const size_t result_elems = layout.total_logical / sizeof(T);
+  const size_t n = std::min(result_elems, capacity);
 
-  vector<T> cpu_vec(result_elems);
+  // The transfer lands all result_elems, so it can only target `out` when
+  // `out` has room; a short buffer gets its own and keeps the first n.
+  const bool fits = capacity >= result_elems;
+  vector<T> spill;
+  if (!fits) spill.resize(result_elems);
+  T* dest = fits ? out : spill.data();
+
   vector<char> staging;
   char* cpu_buffer;
   if (layout.needs_padding) {
     staging.resize(layout.padded_bytes());
     cpu_buffer = staging.data();
   } else {
-    cpu_buffer = reinterpret_cast<char*>(cpu_vec.data());
+    cpu_buffer = reinterpret_cast<char*>(dest);
   }
 
   const size_t stride = layout.stride;
@@ -199,7 +224,7 @@ vector<T> dpu_vector<T>::to_cpu() {
   e->inputs = {desc};
   e->host_ptr = cpu_buffer;
   e->transfer_size =
-      layout.needs_padding ? layout.padded_bytes() : cpu_vec.size() * sizeof(T);
+      layout.needs_padding ? layout.padded_bytes() : result_elems * sizeof(T);
 
 #if ENABLE_DPU_LOGGING >= 2
   Logger& logger = DpuRuntime::get().get_logger();
@@ -209,10 +234,9 @@ vector<T> dpu_vector<T>::to_cpu() {
 #if ENABLE_DPU_LOGGING >= 2
   logger.lock(logcat::TRANSFER, 2)
       << "type=HOST_TRANSFER action=submit id=" << e->id
-      << " size=" << cpu_vec.size() << " bytes=" << e->transfer_size
-      << std::endl;
+      << " size=" << result_elems << " bytes=" << e->transfer_size << std::endl;
   logger.lock(logcat::QUEUE_APPEND, 2)
-      << "type=HOST_TRANSFER size=" << cpu_vec.size() << std::endl;
+      << "type=HOST_TRANSFER size=" << result_elems << std::endl;
 #endif
 
   // A staged read has to complete before it can be compacted, so it fences
@@ -235,14 +259,16 @@ vector<T> dpu_vector<T>::to_cpu() {
   }
 
   if (layout.needs_padding) {
-    char* out = reinterpret_cast<char*>(cpu_vec.data());
+    char* compacted = reinterpret_cast<char*>(dest);
     for (size_t dpu = 0; dpu < layout.logical.size(); ++dpu) {
-      std::memcpy(out, staging.data() + dpu * stride, layout.logical[dpu]);
-      out += layout.logical[dpu];
+      std::memcpy(compacted, staging.data() + dpu * stride,
+                  layout.logical[dpu]);
+      compacted += layout.logical[dpu];
     }
   }
 
-  return cpu_vec;
+  if (!fits) std::memcpy(out, spill.data(), n * sizeof(T));
+  return n;
 }
 
 template <typename T>

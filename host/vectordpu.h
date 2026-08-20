@@ -168,8 +168,15 @@ class dpu_vector {
   dpu_vector& operator=(dpu_vector&& other) noexcept;  // move assignment
 
   vector<T> to_cpu();
+  // Reads into caller-owned memory, returning how many elements landed.  A
+  // short `capacity`, or shards needing compaction, still stages internally.
+  size_t to_cpu_into(T* out, size_t capacity);
 
   static dpu_vector<T> from_cpu(std::vector<T>& cpu_vec,
+                                LOGGER_ARGS_WITH_DEFAULTS);
+  // Borrows caller-owned memory instead of copying into a std::vector.  The
+  // transfer is queued, so the buffer must outlive it -- add_fence() first.
+  static dpu_vector<T> from_cpu(T* cpu_data, size_t n,
                                 LOGGER_ARGS_WITH_DEFAULTS);
   void add_fence();
   dpu_vector<T>& operator+=(const dpu_vector<T>& other);

@@ -25,10 +25,17 @@ mutable struct DpuVector
     end
 end
 
-# Construct from a Julia vector -- transfer to DPU memory
-function DpuVector(data::AbstractVector{Int32})
-    handle = retry_on_oom(() -> PolymerPIM.from_cpu_int32(collect(Int32, data)))
+# Construct from a Julia vector -- transfer to DPU memory.  Handed over as-is:
+# it is already the contiguous buffer the wrapper wants, and `collect` would
+# copy the lot (~200ms per 512MB) first.  The wrapper fences before returning.
+function DpuVector(data::Vector{Int32})
+    handle = retry_on_oom(() -> PolymerPIM.from_cpu_int32(data))
     return DpuVector(handle)
+end
+
+# Views and other lazy Int32 vectors have to be materialised first.
+function DpuVector(data::AbstractVector{Int32})
+    return DpuVector(collect(Int32, data))
 end
 
 # Accept any integer array by converting to Int32
@@ -82,6 +89,21 @@ function fence(v::DpuVector)
 end
 
 export fence
+
+"""
+    release!(v::DpuVector)
+
+Free `v`'s DPU memory now instead of waiting for the GC to collect it.  The GC
+cannot see MRAM pressure, so a loop that allocates a fresh vector each pass can
+exhaust the DPUs while the dead ones are still unreclaimed; C++ avoids this by
+destroying each `dpu_vector` at scope exit.  Using `v` afterwards is invalid.
+"""
+function release!(v::DpuVector)
+    finalize(v.handle)
+    return nothing
+end
+
+export release!
 
 # ---- DpuFuture -- a queued reduction whose value has not been read ----
 
