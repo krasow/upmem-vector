@@ -1353,8 +1353,15 @@ uint8_t dpu_pipeline_context<T>::local_id(dpu_local_vector<T>& local) {
   for (size_t i = 0; i < locals_.size(); ++i) {
     if (locals_[i] == desc) return (uint8_t)i;
   }
-  if (locals_.size() >= MAX_HFUSE_CHAINS) {
-    throw std::logic_error("too many local outputs in dpu_pipeline_context");
+  // WRAM only has room for MAX_LOCAL_SCRATCH_VECTORS of these (see
+  // TASKLET_WORKSPACE_SIZE); the codegen happily emits slots up to
+  // MAX_HFUSE_CHAINS, so without this bound a second local vector writes past
+  // its region and silently reads back as zeros.
+  if (locals_.size() >= MAX_LOCAL_SCRATCH_VECTORS) {
+    throw std::logic_error(
+        "dpu_pipeline_context allows at most " +
+        std::to_string(MAX_LOCAL_SCRATCH_VECTORS) +
+        " local vector(s) per program (MAX_LOCAL_SCRATCH_VECTORS)");
   }
   locals_.push_back(desc);
   return (uint8_t)(locals_.size() - 1);

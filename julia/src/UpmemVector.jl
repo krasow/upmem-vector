@@ -71,6 +71,7 @@ end
 # configuration it was compiled with.
 const MAX_VFUSE_INPUTS = Int(UpmemVector.limit_operands())
 const MAX_PIPELINE_SCALARS = Int(UpmemVector.limit_scalars())
+const MAX_LOCAL_SCRATCH_VECTORS = Int(UpmemVector.limit_locals())
 
 include("opcodes.jl")
 include("types.jl")
@@ -79,6 +80,6 @@ include("operations.jl")
 include("display.jl")
 
 export DpuVector, DpuFuture, fence, sync
-export MAX_VFUSE_INPUTS, MAX_PIPELINE_SCALARS
+export MAX_VFUSE_INPUTS, MAX_PIPELINE_SCALARS, MAX_LOCAL_SCRATCH_VECTORS
 
 end # module UpmemVector

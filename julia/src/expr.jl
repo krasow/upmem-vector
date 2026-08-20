@@ -200,3 +200,75 @@ export DpuExpr, input, operand, constant, scalar_var, dup, sqr, select,
        lane_index, argmin_lanes, argmax_lanes, chain
 export add_var, sub_var, mul_var, divide_var, shr_var,
        eq_var, lt_var, gt_var, ge_var, le_var
+
+# ---- local (WRAM) scatter accumulators ----
+#
+# A scatter program is a list of (index, value) pairs written into small per-DPU
+# arrays.  The op stream mirrors dpu_pipeline_context::materialize_ops: the
+# reductions' shared index prefix is emitted once and re-used with OP_DUP, then
+# each reduction contributes its own tail, its value, and OP_APPLY_INDIRECT with
+# the target's slot and reduce opcode.
+
+const LOCAL_REDUCE_OPS = (:sum, :product, :min, :max)
+
+struct LocalReduce
+    slot::Int          # 0-based index into the locals list
+    reduce_op::UInt8
+    index::DpuExpr
+    value::DpuExpr
+end
+
+_local_reduce_opcode(op::Symbol) =
+    op === :sum     ? Opcodes.OP_SUM :
+    op === :product ? Opcodes.OP_PRODUCT :
+    op === :min     ? Opcodes.OP_MIN :
+    op === :max     ? Opcodes.OP_MAX :
+    throw(ArgumentError("unknown local reduce op $op"))
+
+# Length of the longest opcode-aligned prefix common to every index program.
+# Splitting mid-opcode would emit a truncated instruction, so the boundary is
+# walked with inline_bytes rather than compared byte-for-byte.
+function _common_index_prefix(rs::Vector{LocalReduce})
+    isempty(rs) && return 0
+    first_ops = rs[1].index.ops
+    raw = length(first_ops)
+    for r in rs[2:end]
+        other = r.index.ops
+        raw = min(raw, length(other))
+        i = 0
+        while i < raw && first_ops[i + 1] == other[i + 1]
+            i += 1
+        end
+        raw = i
+    end
+    common, i = 0, 0
+    while i < length(first_ops)
+        nxt = i + 1 + Opcodes.inline_bytes(first_ops[i + 1])
+        nxt > raw && break
+        common = nxt
+        i = nxt
+    end
+    return common
+end
+
+function scatter_program(rs::Vector{LocalReduce})
+    isempty(rs) && return DpuExpr()
+    out = UInt8[]
+    common = _common_index_prefix(rs)
+    common > 0 && append!(out, rs[1].index.ops[1:common])
+    for r in rs
+        if common > 0
+            push!(out, Opcodes.OP_DUP)
+            append!(out, r.index.ops[(common + 1):end])
+        else
+            append!(out, r.index.ops)
+        end
+        append!(out, r.value.ops)
+        push!(out, Opcodes.OP_APPLY_INDIRECT)
+        push!(out, UInt8(r.slot))
+        push!(out, r.reduce_op)
+    end
+    return DpuExpr(out)
+end
+
+export LocalReduce, scatter_program, LOCAL_REDUCE_OPS

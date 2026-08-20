@@ -20,6 +20,7 @@
 #include <jlcxx/array.hpp>
 #include <jlcxx/jlcxx.hpp>
 #include <jlcxx/stl.hpp>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -31,6 +32,15 @@ using Future = lazy_reduction_result<int32_t>;
 // over lanes, extra pipeline operands) take a list built up one push at a time.
 struct VecList {
   std::vector<Vec> items;
+};
+
+using Local = dpu_local_vector<int32_t>;
+
+// Same story for the scatter targets of a local-reduce program.  Held by
+// shared_ptr because dpu_local_vector has no copy assignment and Julia needs to
+// keep its own handle alive alongside the list.
+struct LocalList {
+  std::vector<std::shared_ptr<Local>> items;
 };
 
 // Dispatch is keyed on the opcode from common/opcodes.h, which src/opcodes.jl
@@ -213,6 +223,8 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
 
   mod.method("limit_operands", []() -> int64_t { return MAX_VFUSE_INPUTS; });
   mod.method("limit_scalars", []() -> int64_t { return MAX_PIPELINE_SCALARS; });
+  mod.method("limit_locals",
+             []() -> int64_t { return MAX_LOCAL_SCRATCH_VECTORS; });
 
   // Checked at module load: a stale wrapper built against a different
   // configuration should fail with a sentence, not a missing symbol.
@@ -228,6 +240,66 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
       .method("veclist_length", [](const VecList& l) -> int64_t {
         return (int64_t)l.items.size();
       });
+
+  // ---- local (WRAM-resident) scatter accumulators ----
+  //
+  // These back histogram-style workloads: an RPN program indexes into a small
+  // per-DPU array and accumulates, instead of producing one value per lane.
+  // dpu_local_vector's to_cpu() gathers every DPU's copy and merges them.
+
+  mod.add_type<Local>("DpuLocalVectorInt32");
+
+  mod.method("local_alloc", [](int32_t n, int32_t reduce_op_idx) {
+    static const dpu_local_reduce_op kOps[] = {
+        dpu_local_reduce_op::sum, dpu_local_reduce_op::product,
+        dpu_local_reduce_op::min, dpu_local_reduce_op::max};
+    if (n <= 0) throw std::invalid_argument("local vector needs n > 0");
+    if (reduce_op_idx < 0 || reduce_op_idx >= 4)
+      throw std::out_of_range("local reduce op out of range");
+    return std::make_shared<Local>((uint32_t)n, kOps[reduce_op_idx]);
+  });
+
+  mod.method("local_to_cpu!",
+             [](const std::shared_ptr<Local>& l, jlcxx::ArrayRef<int32_t> out) {
+               std::vector<int32_t> merged = l->to_cpu();
+               size_t n = std::min(merged.size(), (size_t)out.size());
+               std::copy(merged.begin(), merged.begin() + n, out.data());
+             });
+
+  mod.method("local_length", [](const std::shared_ptr<Local>& l) -> int64_t {
+    return (int64_t)l->size();
+  });
+
+  mod.add_type<LocalList>("DpuLocalList")
+      .constructor<>()
+      .method("locallist_push!",
+              [](LocalList& l, const std::shared_ptr<Local>& v) {
+                l.items.push_back(v);
+              });
+
+  // The scatter launch.  This is what dpu_jit_foreach reduces to: no
+  // elementwise result, the locals carried as the program's outputs.
+  mod.method("launch_pipeline_scatter",
+             [](Vec& input, jlcxx::ArrayRef<uint8_t> ops, VecList& operands,
+                jlcxx::ArrayRef<int32_t> scalars, LocalList& locals) {
+               std::vector<uint8_t> rpn(ops.data(), ops.data() + ops.size());
+               std::vector<detail::VectorDescRef> operand_refs;
+               operand_refs.reserve(operands.items.size());
+               for (auto& o : operands.items)
+                 operand_refs.push_back(o.data_desc_ref());
+               std::vector<uint32_t> sc;
+               sc.reserve(scalars.size());
+               for (size_t i = 0; i < scalars.size(); ++i)
+                 sc.push_back((uint32_t)scalars[i]);
+               std::vector<detail::VectorDescRef> local_refs;
+               local_refs.reserve(locals.items.size());
+               for (auto& l : locals.items)
+                 local_refs.push_back(l->data_desc_ref());
+               detail::launch_universal_pipeline(
+                   detail::VectorDescRef{}, input.data_desc_ref(), rpn,
+                   operand_refs, OpInfo<int32_t>::universal_pipeline, sc, {},
+                   local_refs);
+             });
 
   // ---- explicit RPN programs ----
   //

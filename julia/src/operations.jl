@@ -430,3 +430,62 @@ end
 Base.:<(a::DpuVector, s::Integer) = transform(a) do x
     x[1] < s
 end
+
+# ---- local scatter accumulators ----
+
+"""
+    DpuLocalVector(n; reduce_op = :sum)
+
+A small per-DPU accumulator array in WRAM, the target of a scatter program.
+`Array(l)` gathers every DPU's copy and merges them with `reduce_op`.
+"""
+mutable struct DpuLocalVector
+    handle::Any
+    len::Int
+    reduce_op::Symbol
+end
+
+function DpuLocalVector(n::Integer; reduce_op::Symbol = :sum)
+    reduce_op in LOCAL_REDUCE_OPS || throw(ArgumentError(
+        "reduce_op must be one of $(LOCAL_REDUCE_OPS)"))
+    idx = findfirst(==(reduce_op), LOCAL_REDUCE_OPS) - 1
+    handle = retry_on_oom(() -> UpmemVector.local_alloc(Int32(n), Int32(idx)))
+    return DpuLocalVector(handle, Int(n), reduce_op)
+end
+
+Base.length(l::DpuLocalVector) = l.len
+
+function Base.Array(l::DpuLocalVector)
+    out = Vector{Int32}(undef, l.len)
+    retry_on_oom(() -> UpmemVector.var"local_to_cpu!"(l.handle, out))
+    return out
+end
+
+"""
+    scatter!(locals, v, program; operands, scalars)
+
+Run a scatter `program` (see [`scatter_program`](@ref)) over `v`, accumulating
+into `locals`. Slot numbers in the program's `LocalReduce` entries are 0-based
+indices into `locals`.
+"""
+function scatter!(locals::AbstractVector{DpuLocalVector}, v::DpuVector,
+                  program::DpuExpr;
+                  operands::AbstractVector{DpuVector} = DpuVector[],
+                  scalars::AbstractVector{<:Integer} = Int32[])
+    isempty(program.ops) && return locals
+    length(locals) <= MAX_LOCAL_SCRATCH_VECTORS || throw(ArgumentError(
+        "$(length(locals)) local vectors exceeds MAX_LOCAL_SCRATCH_VECTORS " *
+        "($MAX_LOCAL_SCRATCH_VECTORS); WRAM has room for no more, and the " *
+        "extras would silently read back as zeros"))
+    _check_program(program, operands)
+    ll = UpmemVector.DpuLocalList()
+    for l in locals
+        UpmemVector.var"locallist_push!"(ll, l.handle)
+    end
+    sc = Int32.(collect(scalars))
+    retry_on_oom(() -> UpmemVector.launch_pipeline_scatter(
+        v.handle, program.ops, _veclist(operands), sc, ll))
+    return locals
+end
+
+export DpuLocalVector, scatter!

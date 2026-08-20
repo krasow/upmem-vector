@@ -229,6 +229,15 @@ All open as of writing; each has a test that documents it.
     `constructor<uint32_t>()` is exposed as the type itself. The README
     documented the constructor and no test exercised it.
 
+14. ~~**A second `dpu_local_vector` in one program reads back as zeros.**~~
+    **Fixed.** `dpu_pipeline_context::local_id` bounded the count at
+    `MAX_HFUSE_CHAINS` (10) and the JIT codegen emits slots for all of them, but
+    WRAM only reserves `MAX_LOCAL_SCRATCH_VECTORS` (1) — see
+    `TASKLET_WORKSPACE_SIZE`. Slot 0 worked and every later slot silently landed
+    outside its region. Now bounded by the real limit, so it fails with a
+    sentence instead. Found while binding the scatter API for Julia; `hist` and
+    `kmeans` use one local each, so neither was affected.
+
 Bugs 9 and 10 were found by running the suite under `PIPELINE=1 JIT=0`, which
 had never been exercised end-to-end — the tests that catch them already existed
 and passed under `JIT=1`. **Run all three configurations**; a green `JIT=1` run
