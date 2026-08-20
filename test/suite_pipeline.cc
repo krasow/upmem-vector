@@ -440,3 +440,53 @@ TEST(jit, argmin_ties_pick_lowest_lane) {
 }
 
 #endif  // JIT
+
+#if PIPELINE
+// --------------------------------------------------------------------------
+// absorbed-intermediate inlining vs. inline scalar immediates
+// --------------------------------------------------------------------------
+
+// A consumer whose RPN carries an inline immediate, reading an intermediate
+// that fusion could absorb.
+//
+// Today this stays two kernel passes -- absorption declines the shape -- and
+// the values are correct.  The test guards a latent hazard rather than a live
+// bug: the rewrite loop in EventQueue::expand_absorbed_inputs handles
+// OP_*_SCALAR_VAR (a one-byte slot index) but has no OP_INLINE_BYTES case, so
+// if absorption ever starts firing here the four immediate bytes of an
+// OP_*_SCALAR would be re-read as opcodes and mangle the program.
+TEST(pipeline, absorbed_input_with_inline_scalar_immediate) {
+  const size_t n = tf::elements();
+  std::vector<T> a = tf::constant_vector<T>(n, 10);
+  std::vector<T> b = tf::constant_vector<T>(n, 4);
+  dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
+  dpu_vector<T> db = dpu_vector<T>::from_cpu(b);
+  tf::drain();
+
+  // mid = a + b = 14, then res = mid + 7 = 21, with the +7 as an immediate.
+  dpu_vector<T> mid = da + db;
+  std::vector<T> actual =
+      mid.pipeline({OP_PUSH_INPUT, OP_ADD_SCALAR, 7, 0, 0, 0}).vec.to_cpu();
+
+  CHECK_VEC_EQ(actual, tf::constant_vector<T>(n, 21));
+}
+
+// The same shape with a scalar *variable*, which absorption does fuse (one
+// kernel pass): the consumer's slot index must shift past the producer's
+// scalar table, or the consumer reads the producer's constant instead.
+TEST(pipeline, absorbed_input_with_scalar_variable) {
+  const size_t n = tf::elements();
+  std::vector<T> a = tf::constant_vector<T>(n, 10);
+  dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
+  tf::drain();
+
+  // mid = a * s0 (s0 = 3) = 30, then res = mid + s0 (s0 = 100) = 130.
+  dpu_vector<T> mid =
+      da.pipeline({OP_PUSH_INPUT, OP_MUL_SCALAR_VAR, 0}, {}, {3u}).vec;
+  std::vector<T> actual =
+      mid.pipeline({OP_PUSH_INPUT, OP_ADD_SCALAR_VAR, 0}, {}, {100u})
+          .vec.to_cpu();
+
+  CHECK_VEC_EQ(actual, tf::constant_vector<T>(n, 130));
+}
+#endif  // PIPELINE

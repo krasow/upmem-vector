@@ -6,30 +6,6 @@
 #if PIPELINE
 
 namespace {
-std::string compact_rpn_label(const std::vector<uint8_t>& rpn) {
-  FusionRpnSummary summary = summarize_fusion_rpn(rpn);
-  std::string label =
-      "Fused Pipeline (ops=" + std::to_string(summary.decoded_ops) +
-      ", bytes=" + std::to_string(rpn.size());
-  if (summary.chains > 1) label += ", chains=" + std::to_string(summary.chains);
-  if (summary.reductions > 0)
-    label += ", reductions=" + std::to_string(summary.reductions);
-  label += ")";
-  return label;
-}
-
-#if JIT
-std::string fused_kernel_hash(const std::shared_ptr<Event>& e) {
-  const char* raw_type_name = nullptr;
-  if (e->output && e->output->type_name)
-    raw_type_name = e->output->type_name;
-  else if (!e->inputs.empty() && e->inputs[0])
-    raw_type_name = e->inputs[0]->type_name;
-  return jit_signature_hash(
-      Signature{e->rpn_ops, jit_canonical_type_name(raw_type_name)});
-}
-#endif
-
 bool rpn_contains_indirect(const std::vector<uint8_t>& rpn) {
   for (size_t i = 0; i < rpn.size(); ++i) {
     uint8_t op = rpn[i];
@@ -87,61 +63,31 @@ bool is_commutative(uint8_t op) {
   return op == OP_ADD || op == OP_MUL || op == OP_EQ;
 }
 
-// Shape of the producer before the merge, for the fusion log.
-struct VfuseBefore {
-  size_t inputs = 0;
-  size_t extra_outputs = 0;
-  size_t producer_scalars = 0;
-  size_t consumer_scalars = 0;
-  std::vector<uint8_t> producer_rpn;
-  std::vector<uint8_t> consumer_rpn;
-};
-
 void log_vertical_fusion(const std::shared_ptr<Event>& last,
                          const std::shared_ptr<Event>& e,
-                         const VfuseBefore& before) {
+                         const FusionBefore& before,
+                         const FusionOperands& ops) {
 #if ENABLE_DPU_LOGGING >= 1
   Logger& logger = DpuRuntime::get().get_logger();
   if (!logger.enabled(2)) return;
 
-  FusionRpnSummary summary = summarize_fusion_rpn(last->rpn_ops);
   auto log = logger.lock(logcat::FUSION);
-  log.first() << "vertical fusion";
-  log.second() << "child #" << e->id << "..#" << e->max_id << " -> fused #"
-               << last->id << "..#" << last->max_id
-               << "  deps=" << last->dependencies.size();
-  log.second() << "reason=dependent_on_stack_output";
-  log.second() << "shape inputs=" << before.inputs << "+" << e->inputs.size()
-               << "=>" << last->inputs.size()
-               << "  extra_outputs=" << before.extra_outputs << "=>"
-               << last->extra_outputs.size()
-               << "  scalars=" << before.producer_scalars << "+"
-               << before.consumer_scalars << "=>" << last->scalars.size();
+  log_fusion_header(log, "vertical fusion", "dependent_on_stack_output", last,
+                    e, before);
   log.second() << "producer expr: "
-               << fusion_rpn_expr_preview(before.producer_rpn, 1, 90);
+               << fusion_rpn_expr_preview(ops.target_rpn, 1, 90);
   log.second() << "consumer expr: "
-               << fusion_rpn_expr_preview(before.consumer_rpn, 1, 90,
-                                          "producer_out", 1)
+               << fusion_rpn_expr_preview(ops.chain_rpn, 1, 90, "producer_out",
+                                          1)
                << "  [producer_out = producer expr]";
-  log.second() << "fused expr: " << fusion_rpn_expr_preview(last->rpn_ops);
-  log.second() << "kernel after: " << fusion_rpn_short(summary)
-#if JIT
-               << "  kernel_hash=" << fused_kernel_hash(last)
-#endif
-               << "  opcode mix: " << fusion_op_counts(summary) << std::endl;
+  log_fused_kernel_tail(log, last, summarize_fusion_rpn(last->rpn_ops));
 #else
   (void)last;
   (void)e;
   (void)before;
+  (void)ops;
 #endif
 }
-
-// A consumer chain rewritten into the producer's operand frame.
-struct MappedChain {
-  bool ok = false;
-  std::vector<uint8_t> rpn;                   // consumer ops, producer frame
-  std::vector<detail::VectorDescRef> inputs;  // merged operand table
-};
 
 // Rewrites the consumer's operand pushes onto the producer's operand table.
 // The producer's result is already on the WRAM stack, so a consumer push of it
@@ -158,16 +104,7 @@ MappedChain map_consumer_onto_producer(
 
   auto push_op_for = [&](const detail::VectorDescRef& vec) -> uint8_t {
     if (vec == on_stack) return PUSH_OP_ALREADY_ON_STACK;
-    if (!mapped.inputs.empty() && mapped.inputs[0] == vec) return OP_PUSH_INPUT;
-    for (size_t i = 1; i < mapped.inputs.size(); ++i)
-      if (mapped.inputs[i] == vec)
-        return (uint8_t)(OP_PUSH_OPERAND_0 + (i - 1));
-    if (mapped.inputs.size() < MAX_COMBINED_INPUTS) {
-      mapped.inputs.push_back(vec);
-      // Slot 0 is the primary, so a new entry at index n takes operand n-1.
-      return (uint8_t)(OP_PUSH_OPERAND_0 + (mapped.inputs.size() - 2));
-    }
-    return PUSH_OP_BUDGET_EXCEEDED;
+    return operand_push_op(mapped.inputs, vec);
   };
 
   bool primary_on_stack = false;
@@ -196,12 +133,6 @@ MappedChain map_consumer_onto_producer(
         mapped.rpn.push_back(push);
       }
 
-    } else if (IS_OP_SCALAR(op)) {
-      mapped.rpn.push_back(op);
-      for (int m = 0; m < SCALAR_INLINE_BYTES && k + 1 < consumer_rpn.size();
-           ++m)
-        mapped.rpn.push_back(consumer_rpn[++k]);
-
     } else if (IS_OP_SCALAR_VAR(op)) {
       // Scalar slots shift up by the producer's scalar table size.
       mapped.rpn.push_back(op);
@@ -210,10 +141,7 @@ MappedChain map_consumer_onto_producer(
             (uint8_t)(producer_scalar_count + consumer_rpn[++k]));
 
     } else if (OP_INLINE_BYTES(op) > 0) {
-      mapped.rpn.push_back(op);
-      for (size_t m = 0; m < OP_INLINE_BYTES(op) && k + 1 < consumer_rpn.size();
-           ++m)
-        mapped.rpn.push_back(consumer_rpn[++k]);
+      append_token_with_inline_bytes(consumer_rpn, k, mapped.rpn);
 
     } else {
       // The only stacked operand is the right-hand one, so a non-commutative
@@ -232,18 +160,7 @@ MappedChain map_consumer_onto_producer(
 uint8_t get_or_add_push_op(std::vector<detail::VectorDescRef>& inputs,
                            const detail::VectorDescRef& vec) {
   if (!vec) return PUSH_OP_BUDGET_EXCEEDED;
-  if (!inputs.empty() && inputs[0] == vec) return OP_PUSH_INPUT;
-  for (size_t i = 1; i < inputs.size(); ++i)
-    if (inputs[i] == vec) return (uint8_t)(OP_PUSH_OPERAND_0 + (i - 1));
-  if (inputs.empty()) {
-    inputs.push_back(vec);
-    return OP_PUSH_INPUT;
-  }
-  if (inputs.size() < MAX_COMBINED_INPUTS) {
-    inputs.push_back(vec);
-    return (uint8_t)(OP_PUSH_OPERAND_0 + (inputs.size() - 2));
-  }
-  return PUSH_OP_BUDGET_EXCEEDED;
+  return operand_push_op(inputs, vec);
 }
 
 void append_inline_scalar(std::vector<uint8_t>& rpn, uint8_t op,
@@ -655,29 +572,17 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
       if (in == out) return false;
   }
 
-  std::vector<uint8_t> last_rpn;
-  std::vector<uint32_t> last_scalars;
-  std::vector<uint8_t> e_rpn;
-  std::vector<uint32_t> e_scalars;
-  build_default_rpn(last, last_rpn, last_scalars);
-  build_default_rpn(e, e_rpn, e_scalars);
-  size_t last_inputs_before = last->inputs.size();
-  size_t last_extra_outputs_before = last->extra_outputs.size();
+  const FusionOperands ops = build_fusion_operands(last, e);
+  const FusionBefore before{last->inputs.size(), last->extra_outputs.size(),
+                            ops.target_scalars.size(),
+                            ops.chain_scalars.size()};
 
-  MappedChain mapped = map_consumer_onto_producer(
-      e_rpn, e->inputs, last->inputs, on_stack, last_scalars.size());
-  if (!mapped.ok) return false;
-  if (last_rpn.size() + mapped.rpn.size() > MAX_VFUSE_OPS) return false;
-  if (last_scalars.size() + e_scalars.size() > MAX_PIPELINE_SCALARS)
+  MappedChain mapped =
+      map_consumer_onto_producer(ops.chain_rpn, e->inputs, last->inputs,
+                                 on_stack, ops.target_scalars.size());
+  if (!splice_mapped_chain(last, ops.target_rpn, ops.target_scalars,
+                           ops.chain_scalars, mapped))
     return false;
-
-  last->rpn_ops = last_rpn;
-  last->rpn_ops.insert(last->rpn_ops.end(), mapped.rpn.begin(),
-                       mapped.rpn.end());
-  last->rpn_ops = normalize_associative_rpn(last->rpn_ops);
-  last->scalars = last_scalars;
-  last->scalars.insert(last->scalars.end(), e_scalars.begin(), e_scalars.end());
-  last->inputs = mapped.inputs;
 
   if (last->extra_outputs.empty())
     last->output = e->output;
@@ -695,20 +600,10 @@ bool EventQueue::try_vfuse(std::shared_ptr<Event> last,
     fused_output->absorbed_inputs = last->inputs;
   }
 
-  last->max_id = std::max(last->max_id, e->id);
-  last->kid = last->pipeline_kid;
-  for (const auto& in : e->inputs)
-    if (in && in->last_producer_id != 0 && in->last_producer_id != last->id)
-      last->dependencies.insert(in->last_producer_id);
-  if (e->output) e->output->last_producer_id = last->id;
-  for (auto& out : e->extra_outputs)
-    if (out) out->last_producer_id = last->id;
+  adopt_fused_event(last, e);
 
-  last->slice_name = compact_rpn_label(last->rpn_ops);
-  log_vertical_fusion(
-      last, e,
-      VfuseBefore{last_inputs_before, last_extra_outputs_before,
-                  last_scalars.size(), e_scalars.size(), last_rpn, e_rpn});
+  last->slice_name = fused_pipeline_label(last->rpn_ops);
+  log_vertical_fusion(last, e, before, ops);
 
   VECTORDPU_NOTE(vertical_fusions);
   trace::event_fused(e, last, "");

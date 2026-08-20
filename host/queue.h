@@ -130,6 +130,21 @@ class EventQueue {
   void expand_absorbed_inputs(std::shared_ptr<Event> e);
 
  private:
+  // process_next() stages, in the order it runs them.
+  std::shared_ptr<Event> take_next_operation();
+  void await_dependencies(const std::shared_ptr<Event>& e);
+  void grow_fusion_batch(const std::shared_ptr<Event>& e);
+  void await_jit_binary(const std::shared_ptr<Event>& e);
+  void begin_running(const std::shared_ptr<Event>& e);
+  void switch_dpu_binary(const std::shared_ptr<Event>& e);
+  void dispatch(const std::shared_ptr<Event>& e);
+  void requeue_after_oom(const std::shared_ptr<Event>& e);
+
+  // submit() stages.
+  void await_queue_space();
+  bool fuse_into_queue_tail(const std::shared_ptr<Event>& e);
+  void enqueue(const std::shared_ptr<Event>& e);
+
   std::recursive_mutex mtx_;
   size_t counter_ = 1;
   size_t max_queue_depth_ = DEFAULT_MAX_QUEUE_DEPTH;

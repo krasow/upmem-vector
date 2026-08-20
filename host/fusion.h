@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "common.h"
+#include "jit.h"
+#include "logger.h"
 #include "opinfo.h"
 #include "perfetto/trace.h"
 #include "perfetto/trace_internal.h"
@@ -500,4 +502,173 @@ inline std::vector<uint8_t> normalize_associative_rpn(
   out.insert(out.end(), normalized.begin(), normalized.end());
   return out;
 }
+// A chain rewritten into another event's operand frame.  Both fusion passes
+// build one of these before deciding whether the merge fits.
+struct MappedChain {
+  bool ok = false;
+  std::vector<uint8_t> rpn;                   // ops in the target's frame
+  std::vector<detail::VectorDescRef> inputs;  // merged operand table
+};
+
+// Finds `vec` in an operand table, appending it when there is room.  Slot 0 is
+// the primary input (OP_PUSH_INPUT); the rest are operand slots.  Returns
+// PUSH_OP_BUDGET_EXCEEDED when the table is full.
+inline uint8_t operand_push_op(std::vector<detail::VectorDescRef>& inputs,
+                               const detail::VectorDescRef& vec) {
+  if (!inputs.empty() && inputs[0] == vec) return OP_PUSH_INPUT;
+  for (size_t i = 1; i < inputs.size(); ++i)
+    if (inputs[i] == vec) return (uint8_t)(OP_PUSH_OPERAND_0 + (i - 1));
+  if (inputs.empty()) {
+    inputs.push_back(vec);
+    return OP_PUSH_INPUT;
+  }
+  if (inputs.size() < MAX_COMBINED_INPUTS) {
+    inputs.push_back(vec);
+    // The new entry sits at index n, which is operand slot n-1.
+    return (uint8_t)(OP_PUSH_OPERAND_0 + (inputs.size() - 2));
+  }
+  return PUSH_OP_BUDGET_EXCEEDED;
+}
+
+// Copies `in[i]` and its inline bytes to `out`, stopping at the end of the
+// program.  Advances `i` past what it consumed.
+inline void append_token_with_inline_bytes(const std::vector<uint8_t>& in,
+                                           size_t& i,
+                                           std::vector<uint8_t>& out) {
+  out.push_back(in[i]);
+  for (size_t b = 0; b < OP_INLINE_BYTES(in[i]) && i + 1 < in.size(); ++b)
+    out.push_back(in[++i]);
+}
+
+// Splices a mapped chain into `last`'s program.  Returns false, leaving `last`
+// untouched, when the merge would exceed the RPN or scalar budget.
+inline bool splice_mapped_chain(const std::shared_ptr<Event>& last,
+                                const std::vector<uint8_t>& last_rpn,
+                                const std::vector<uint32_t>& last_scalars,
+                                const std::vector<uint32_t>& chain_scalars,
+                                const MappedChain& mapped) {
+  if (!mapped.ok) return false;
+  if (last_rpn.size() + mapped.rpn.size() > MAX_VFUSE_OPS) return false;
+  if (last_scalars.size() + chain_scalars.size() > MAX_PIPELINE_SCALARS)
+    return false;
+
+  last->rpn_ops = last_rpn;
+  last->rpn_ops.insert(last->rpn_ops.end(), mapped.rpn.begin(),
+                       mapped.rpn.end());
+  last->rpn_ops = normalize_associative_rpn(last->rpn_ops);
+  last->scalars = last_scalars;
+  last->scalars.insert(last->scalars.end(), chain_scalars.begin(),
+                       chain_scalars.end());
+  last->inputs = mapped.inputs;
+  return true;
+}
+
+// Moves `e`'s identity onto the event that absorbed it: its id range, the
+// dependencies implied by its inputs, and ownership of its outputs.
+inline void adopt_fused_event(const std::shared_ptr<Event>& last,
+                              const std::shared_ptr<Event>& e) {
+  last->max_id = std::max(last->max_id, e->id);
+  last->kid = last->pipeline_kid;
+  for (const auto& in : e->inputs)
+    if (in && in->last_producer_id != 0 && in->last_producer_id != last->id)
+      last->dependencies.insert(in->last_producer_id);
+  if (e->output) e->output->last_producer_id = last->id;
+  for (auto& out : e->extra_outputs)
+    if (out) out->last_producer_id = last->id;
+}
+
+// Perfetto slice name for a fused kernel.
+inline std::string fused_pipeline_label(const std::vector<uint8_t>& rpn,
+                                        const char* prefix = "Fused") {
+  FusionRpnSummary summary = summarize_fusion_rpn(rpn);
+  std::string label = std::string(prefix) +
+                      " Pipeline (ops=" + std::to_string(summary.decoded_ops) +
+                      ", bytes=" + std::to_string(rpn.size());
+  if (summary.chains > 1) label += ", chains=" + std::to_string(summary.chains);
+  if (summary.reductions > 0)
+    label += ", reductions=" + std::to_string(summary.reductions);
+  label += ")";
+  return label;
+}
+
+// The element type an event's kernel is compiled for.
+inline const char* event_raw_type_name(const std::shared_ptr<Event>& e) {
+  if (e->output && e->output->type_name) return e->output->type_name;
+  if (!e->inputs.empty() && e->inputs[0]) return e->inputs[0]->type_name;
+  return nullptr;
+}
+
+#if JIT
+inline Signature event_kernel_signature(const std::shared_ptr<Event>& e) {
+  return Signature{e->rpn_ops, jit_canonical_type_name(event_raw_type_name(e))};
+}
+
+// Identifies the kernel an RPN program will compile to, for fusion logs.
+inline std::string rpn_kernel_hash(const std::vector<uint8_t>& rpn,
+                                   const char* raw_type_name) {
+  return jit_signature_hash(
+      Signature{rpn, jit_canonical_type_name(raw_type_name)});
+}
+
+inline std::string fused_kernel_hash(const std::shared_ptr<Event>& e) {
+  return rpn_kernel_hash(e->rpn_ops, event_raw_type_name(e));
+}
+#endif
+
+// The two events' programs in canonical RPN form, with their scalar tables.
+struct FusionOperands {
+  std::vector<uint8_t> target_rpn;
+  std::vector<uint32_t> target_scalars;
+  std::vector<uint8_t> chain_rpn;
+  std::vector<uint32_t> chain_scalars;
+};
+
+inline FusionOperands build_fusion_operands(const std::shared_ptr<Event>& last,
+                                            const std::shared_ptr<Event>& e) {
+  FusionOperands ops;
+  build_default_rpn(last, ops.target_rpn, ops.target_scalars);
+  build_default_rpn(e, ops.chain_rpn, ops.chain_scalars);
+  return ops;
+}
+
+// Shape of the target before a merge, for the fusion log.
+struct FusionBefore {
+  size_t inputs = 0;
+  size_t extra_outputs = 0;
+  size_t target_scalars = 0;
+  size_t chain_scalars = 0;
+};
+
+#if ENABLE_DPU_LOGGING >= 1
+// The opening lines shared by both fusion log entries.
+inline void log_fusion_header(Logger::Lock& log, const char* title,
+                              const char* reason,
+                              const std::shared_ptr<Event>& last,
+                              const std::shared_ptr<Event>& e,
+                              const FusionBefore& before) {
+  log.first() << title;
+  log.second() << "child #" << e->id << "..#" << e->max_id << " -> fused #"
+               << last->id << "..#" << last->max_id
+               << "  deps=" << last->dependencies.size();
+  log.second() << "reason=" << reason;
+  log.second() << "shape inputs=" << before.inputs << "+" << e->inputs.size()
+               << "=>" << last->inputs.size()
+               << "  extra_outputs=" << before.extra_outputs << "=>"
+               << last->extra_outputs.size()
+               << "  scalars=" << before.target_scalars << "+"
+               << before.chain_scalars << "=>" << last->scalars.size();
+}
+
+// The trailing lines shared by every fusion log entry.
+inline void log_fused_kernel_tail(Logger::Lock& log,
+                                  const std::shared_ptr<Event>& last,
+                                  const FusionRpnSummary& summary) {
+  log.second() << "fused expr: " << fusion_rpn_expr_preview(last->rpn_ops);
+  log.second() << "kernel after: " << fusion_rpn_short(summary)
+#if JIT
+               << "  kernel_hash=" << fused_kernel_hash(last)
+#endif
+               << "  opcode mix: " << fusion_op_counts(summary) << std::endl;
+}
+#endif
 #endif
