@@ -1,8 +1,7 @@
 # Operation dispatch for DpuVector.
 #
-# Every op is named by its opcode from src/opcodes.jl, which the generator emits
-# alongside common/opcodes.h.  The C++ wrapper switches on the same value, so
-# there is one numbering rather than a table of indices to keep in step.
+# Ops are named by their opcode from src/opcodes.jl, which the generator emits
+# alongside common/opcodes.h; the C++ wrapper switches on the same value.
 
 using .Opcodes
 
@@ -70,9 +69,8 @@ Base.prod(v::DpuVector)    = reduce_lazy(v, Opcodes.OP_PRODUCT)
 Base.minimum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MIN)
 Base.maximum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MAX)
 
-# `sum(f, v)` is the one-pass spelling: f arrives as a function, so there is no
-# intermediate to materialise the way `sum(f.(v))` has.  f is traced once over a
-# DpuExpr, and the terminal is appended to the program it builds.
+# `sum(f, v)`: f is traced once over a DpuExpr and the terminal appended, so
+# unlike `sum(f.(v))` there is no intermediate.
 for (f, terminal) in ((:sum, :sum), (:prod, :prod),
                       (:minimum, :minimum), (:maximum, :maximum))
     @eval Base.$f(f, v::DpuVector) =
@@ -84,13 +82,11 @@ const MAPREDUCE_TERMINALS = Dict{Any,Function}(
 
 # ---- Base overloads: which element won ----
 #
-# Two DPU passes: the extreme value, then the lowest index holding it.  Needs
-# `global_index`, since a kernel's own index restarts on every shard.  Without
-# these Base falls back to iterating, which asks for `keys`.
+# Two DPU passes: the extreme value, then the lowest index holding it, which
+# needs `global_index` -- a kernel's own index restarts on every shard.
 
-# Non-winners take a sentinel above every index, so the min is the first winner
-# -- Base's tie too.  Value and sentinel are runtime scalars, so every call and
-# every length share one compiled kernel.
+# Non-winners take a sentinel above every index, so the min is the first winner,
+# as Base's tie is.  Runtime scalars, so one compiled kernel serves every call.
 _arg_index_program() =
     minimum(select(eq_var(input(), 1), global_index(), scalar_var(2)))
 
@@ -137,8 +133,8 @@ function Base.mapreduce(f, op, v::DpuVector)
     return get(dpu_pipeline_reduce(v, terminal(_trace(f))))
 end
 
-# Trace a host function over the expression builders.  Anything outside the
-# supported op set raises here rather than silently falling back to the host.
+# Trace a host function over the builders; an unsupported op raises rather than
+# falling back to the host.
 function _trace(f)
     e = f(input())
     e isa DpuExpr || throw(ArgumentError(
@@ -148,9 +144,8 @@ end
 
 # ---- in-place operations ----
 #
-# These write through the existing DPU buffer.  Chaining them is the
-# memory-frugal way to build an accumulator, since no intermediate is
-# allocated.
+# Write through the existing buffer, so chaining them allocates no
+# intermediate.
 
 """
     add!(a, b) / sub!(a, b) / mul!(a, b) / div!(a, b)
@@ -183,10 +178,8 @@ export apply!, add!, sub!, mul!, div!, shr!
 
 # ---- broadcasting ----
 #
-# The Broadcasted tree is kept lazy and lowered to a single RPN program at
-# materialise time, so `a .+ b .* c` is one kernel pass by construction rather
-# than three ops the runtime then has to fuse back together.  Nothing here
-# depends on the fusion pass or its lookahead window.
+# The tree lowers to one RPN program, so `a .+ b .* c` is one pass by
+# construction rather than three ops the runtime has to fuse back together.
 
 struct DpuStyle <: Base.Broadcast.BroadcastStyle end
 
@@ -201,11 +194,12 @@ const _BCAST_BINARY = Dict{Any,Function}(
 )
 const _BCAST_UNARY = Dict{Any,Function}(
     (-) => (-), abs => abs, identity => identity,
+    # abs2 is x*x, and `sqr` loads x once (OP_DUP) where `x .* x` would twice.
+    abs2 => sqr,
 )
 
-# Lowering state: which vector became input(), and the operand slots assigned so
-# far.  Slots are matched by object identity, so a vector used twice is loaded
-# once.
+# Which vector became input(), and the operand slots so far.  Matched by object
+# identity, so a vector used twice is loaded once.
 mutable struct _Lowering
     primary::Union{Nothing,DpuVector}
     operands::Vector{DpuVector}
@@ -269,31 +263,31 @@ function _lower(bc::Base.Broadcast.Broadcasted, st::_Lowering)
                         "inside a DpuVector broadcast"))
 end
 
-# Lower a whole tree to (program, primary, operands).  Deliberately not via
-# Broadcast.flatten: that rewrites the tree into a synthesised closure over
-# Pick{} leaves, which erases the operator identities this dispatches on.
+# To (program, primary, operands).  Not via Broadcast.flatten: that rewrites the
+# tree into a closure over Pick{} leaves, erasing the operator identities this
+# dispatches on.
 #
-# @noinline is load-bearing on Julia 1.11.3: when a caller discards `primary`,
-# inlining this lets SROA drop `_leaf`'s store to st.primary while keeping the
-# check below, so a perfectly good broadcast reports "contains no DpuVector".
+# Inlining lets SROA drop `_leaf`'s store to st.primary when a caller discards it
+# and a good broadcast then reports "contains no DpuVector".
 @noinline function _lower_tree(bc::Base.Broadcast.Broadcasted;
                                consume::Bool = true)
     st = _Lowering()
     e = _lower(bc, st)
     st.primary === nothing &&
         throw(ArgumentError("broadcast contains no DpuVector"))
-    # Whatever was folded in needs no run of its own.  Not marked when the
-    # program is only being inspected, since nothing is submitted.
+    # Folded in, so it needs no run of its own -- unless nothing was submitted,
+    # i.e. the program is only being inspected.
     consume && for x in st.inlined
         x.consumed = true
+        x.uses += 1
     end
     return e, st.primary, st.operands
 end
 
 # ---- lazy results ----
 #
-# `a .+ b` is the program, not the vector.  Inlined where it is used, so a chain
-# of statements is still one pass and a reduction over one has no intermediate.
+# `a .+ b` is the program, not the vector: inlined where it is used, so a chain
+# of statements is one pass and a reduction over one has no intermediate.
 
 """
     DpuLazy
@@ -306,14 +300,15 @@ mutable struct DpuLazy
     len::Int
     forced::Any     # the DpuVector once it has been run, so it runs once
     consumed::Bool  # inlined into a submitted program, so it needs no run of its own
+    uses::Int       # how many submitted programs folded it in
 end
 
-# Registered weakly so `sync()` can run what nothing else will: a value the
-# caller kept, as opposed to a step on the way to one.
+# Registered weakly so `sync()` can run what nothing else will: a kept value,
+# as opposed to a step towards one.
 const _LAZY_REGISTRY = WeakRef[]
 
 function DpuLazy(bc::Base.Broadcast.Broadcasted, len::Int)
-    x = DpuLazy(bc, len, nothing, false)
+    x = DpuLazy(bc, len, nothing, false, 0)
     push!(_LAZY_REGISTRY, WeakRef(x))
     return x
 end
@@ -340,8 +335,19 @@ Base.broadcastable(x::DpuLazy) = x
 Base.BroadcastStyle(::Type{DpuLazy}) = DpuStyle()
 
 # Inlined where it is used, unless already run -- then that result is cheaper.
+#
+# A second consumer re-derives the whole expression in its own program.
+# Materialising here instead is worse: the first consumer is already queued, so
+# the buffer lands mid-stream and the rest stop fusing (11 launches against 2,
+# no faster).  So warn, until submission defers far enough to know every
+# consumer before queueing any.
 function _lower(x::DpuLazy, st::_Lowering)
     x.forced === nothing || return _leaf(x.forced, st)
+    if x.uses > 0
+        @warn """an unrun expression is being folded into a second program, so it \
+                 is computed once per consumer.  Hoist it with `DpuVector(x)` to \
+                 compute it once and share the result.""" maxlog = 3
+    end
     push!(st.inlined, x)
     return _lower(x.bc, st)
 end
@@ -399,13 +405,14 @@ for f in (:+, :-, :*, :div, :(>>), :(==), :<, :>, :<=, :>=)
         _lazy(Base.broadcasted($f, x, y))
 end
 
-# A reduction over an unrun expression is one pass: the terminal is appended to
-# the program instead of reducing a materialised intermediate.
+# One pass: the terminal joins the program rather than reducing a materialised
+# intermediate.
 for (f, terminal) in ((:sum, :sum), (:prod, :prod),
                       (:minimum, :minimum), (:maximum, :maximum))
     @eval function Base.$f(x::DpuLazy)
         e, primary, operands = _lower_tree(x.bc)
         x.consumed = true       # reduced here, so `sync()` must not run it too
+        x.uses += 1
         return dpu_pipeline_reduce(primary, $terminal(e); operands = operands)
     end
 end
@@ -446,10 +453,9 @@ export select_op
 
 # ---- RPN pipelines ----
 #
-# `transform` and `reduce_expr` are the Julia equivalents of the C++
-# transform()/reduce() expression lambdas.  The program is built here (see
-# expr.jl) and submitted through pipeline()/pipeline_reduce(), so it fuses the
-# same way and also works when the library was built with JIT=0.
+# The Julia equivalents of the C++ transform()/reduce() lambdas: built in
+# expr.jl, submitted through pipeline()/pipeline_reduce(), so they fuse the same
+# way and work under JIT=0 too.
 
 function _veclist(vs)
     vs = map(_force, vs)
@@ -580,8 +586,7 @@ export dpu_pipeline, dpu_pipeline_reduce, dpu_pipeline_multi, transform, reduce_
 # ---- per-element winner across K vectors ----
 #
 # `argmin(collection)` is Base's index of the smallest element, so the winning
-# lane per position is `argmin.(zip(v1, v2, v3))` instead.  1-based, as Julia's
-# is over a tuple.
+# lane per position is `argmin.(zip(v1, v2, v3))`, 1-based as Julia's is.
 
 const DpuZip = Base.Iterators.Zip{<:Tuple{_Lane,Vararg{_Lane}}}
 
@@ -673,8 +678,8 @@ export min_squared_distance
 
 # ---- elementwise comparisons, via RPN ----
 #
-# The opcodes exist and both backends implement them, but no C++ dpu_vector
-# operator wraps them, so these go through a two-operand RPN program.
+# The opcodes exist in both backends but no C++ operator wraps them, so these go
+# through a two-operand RPN program.
 
 for (f, builder) in ((:>, :>), (:>=, :>=), (:<=, :<=))
     @eval Base.$f(a::DpuVector, b::DpuVector) =
@@ -737,8 +742,8 @@ end
 
 Base.length(l::DpuLocalVector) = l.len
 
-# Queued updates, in the order written: one flush emits one program, so updates
-# to different locals still share a pass.
+# In the order written: one flush, one program, so updates to different locals
+# share a pass.
 struct _PendingUpdate
     target::DpuLocalVector
     op::UInt8
@@ -798,8 +803,8 @@ Base.materialize!(::_LocalSlot, ::Base.Broadcast.Broadcasted) = _no_accum()
 _lower_operand(x, st::_Lowering) = _lower(x, st)
 _lower_operand(x::Base.Broadcast.Broadcasted, st::_Lowering) = _lower(x, st)
 
-# The queued updates as one program, without launching it: what flush_locals!
-# submits, and what `@code_jitted` shows.
+# The queued updates as one program, unlaunched: what flush_locals! submits and
+# `@code_jitted` shows.
 function _pending_program(updates::Vector{_PendingUpdate};
                           consume::Bool = true)
     st = _Lowering()
@@ -824,13 +829,13 @@ function _pending_program(updates::Vector{_PendingUpdate};
     # Folded in, so `sync()` must not run them a second time.
     consume && for x in st.inlined
         x.consumed = true
+        x.uses += 1
     end
     return _scatter_program(reductions), st.primary, st.operands, locals
 end
 
-# Everything alive, unrun and not folded into something else: the values a
-# caller is still holding.  A step in a larger expression is referenced by its
-# consumer, so it is not one of these.
+# Alive, unrun, and not folded into anything: the values a caller still holds.
+# A step in a larger expression is referenced by its consumer, so not one.
 function _dangling_lazies()
     live, keep = DpuLazy[], WeakRef[]
     for wr in _LAZY_REGISTRY
@@ -864,9 +869,8 @@ function _mark_referenced(x::DpuLazy, seen)
 end
 _mark_referenced(::Any, _) = nothing
 
-# Run the values nothing else is going to run.  `sync()`'s half of the bargain:
-# a caller who kept a result gets it computed, without the steps behind it
-# being materialised.
+# `sync()`'s half of the bargain: a kept result gets computed, the steps behind
+# it do not.
 function _run_dangling_lazies()
     for x in _dangling_lazies()
         DpuVector(x)

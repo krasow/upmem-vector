@@ -58,6 +58,10 @@ function code_jitted(bc::Base.Broadcast.Broadcasted)
     return code_jitted(e; nelements = length(primary), noperands = length(operands))
 end
 
+# An unrun expression: the program it would submit.  Inspecting must not count
+# as a use, or it would change whether `sync()` runs it.
+code_jitted(x::DpuLazy) = code_jitted(x.bc)
+
 """
     iscompiled(c::JittedCode)
 
@@ -84,6 +88,7 @@ function _code_jitted_reduce(f, bc::Base.Broadcast.Broadcasted)
 end
 
 _code_jitted_reduce(f, e::DpuExpr) = code_jitted(f(e))
+_code_jitted_reduce(f, x::DpuLazy) = _code_jitted_reduce(f, x.bc)
 _code_jitted_reduce(f, x) = code_jitted(x)
 
 # `sum(abs, a)` / `mapreduce(abs, +, a)`: trace the function, append the terminal.
