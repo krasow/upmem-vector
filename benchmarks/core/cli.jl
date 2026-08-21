@@ -16,6 +16,7 @@ function usage(io::IO = stdout)
       --generate-only              Write parameters without building or running
       --dry-run                    Print actions without writing or running
       --keep-going                 Continue after a failed command
+      --verbose                    Print build and benchmark subprocess output
       --resume                     Skip cases completed in --state
       --state PATH                 Runner checkpoint path
       --csv PATH                   Append per-run timings here
@@ -48,7 +49,7 @@ function parse_args(args)
         elseif arg == "--list"
             options.action = :list
         elseif arg in ("--check", "--skip-setup", "--generate-only",
-                       "--dry-run", "--keep-going", "--resume")
+                       "--dry-run", "--keep-going", "--resume", "--verbose")
             setproperty!(options, Symbol(replace(arg[3:end], '-' => '_')), true)
         elseif arg == "--no-profile"
             options.use_profiles = false
@@ -136,6 +137,7 @@ function runner_manifest_entry(config::RunnerConfig, names, requested,
         "timeout_seconds" => options.timeout,
         "build_timeout_seconds" => options.build_timeout,
         "resume" => options.resume,
+        "verbose" => options.verbose,
         "cases" => cases,
     )
     options.use_profiles && (entry["profiles"] = options.profiles)

@@ -23,6 +23,7 @@ Base.@kwdef mutable struct Options
     generate_only::Bool = false
     dry_run::Bool = false
     keep_going::Bool = false
+    verbose::Bool = false
     action::Symbol = :run
     config::String = DEFAULT_CONFIG
     profiles::String = joinpath(BENCHMARK_DIR, "fusion")

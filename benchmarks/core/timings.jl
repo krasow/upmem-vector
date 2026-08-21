@@ -38,6 +38,12 @@ end
 
 successful(result::VariantResult) = result.status == :complete
 
+function print_command_output(result::CommandResult)
+    print(stdout, result.stdout)
+    print(stderr, result.stderr)
+    isempty(result.detail) || println(stderr, result.detail)
+end
+
 function execute_command(config::RunnerConfig, command::AbstractString,
                          directory::AbstractString, dpus::Int;
                          timeout::Union{Nothing,Int} = nothing,
@@ -72,12 +78,9 @@ function execute_command(config::RunnerConfig, command::AbstractString,
     end
     elapsed = (time_ns() - started) / 1.0e9
     out, err = String(take!(output)), String(take!(errors))
-    if echo || status != :success
-        print(stdout, out)
-        print(stderr, err)
-        isempty(detail) || println(stderr, detail)
-    end
-    return CommandResult(status, exit_code, out, err, elapsed, detail)
+    result = CommandResult(status, exit_code, out, err, elapsed, detail)
+    (echo || status != :success) && print_command_output(result)
+    return result
 end
 
 function parsed_value(pattern::Regex, text::AbstractString)

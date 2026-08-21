@@ -96,7 +96,9 @@ function execute_variant(config::RunnerConfig, variant::VariantSpec,
     result = execute_command(
         config, render_template(variant.run, context), directory, case.dpus;
         timeout, timed = true, echo)
-    return assess_run(variant.name, case, result)
+    outcome = assess_run(variant.name, case, result)
+    !echo && !successful(outcome) && print_command_output(result)
+    return outcome
 end
 
 function run_variant(config::RunnerConfig, variant::VariantSpec, case::RunCase,
@@ -117,7 +119,8 @@ function run_variant(config::RunnerConfig, variant::VariantSpec, case::RunCase,
     end
     outcome = execute_variant(
         config, variant, case, directory, context;
-        timeout = options.timeout, build_timeout = options.build_timeout)
+        timeout = options.timeout, build_timeout = options.build_timeout,
+        echo = options.verbose)
     record_timing(results_csv(options), case, variant.name, outcome;
                   invocation, build)
     return outcome
@@ -149,7 +152,8 @@ function run_setup(config::RunnerConfig, active_variants::Vector{String},
             continue
         end
         result = execute_command(config, command, config.paths.benchmarks, 1;
-                                 timeout = options.build_timeout, echo = true)
+                                 timeout = options.build_timeout,
+                                 echo = options.verbose)
         successful(result) || return result
     end
     return nothing
@@ -233,8 +237,7 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
         for dpus in dpus_list, elements_per_dpu in sizes
             case = resolved_case(spec, config.defaults, options, dpus,
                                  elements_per_dpu)
-            println("\n== $name: $dpus DPUs × $elements_per_dpu elements/DPU = ",
-                    total_elements(case), " ==")
+            @info "Benchmark case" benchmark = name dpus elements_per_dpu total_elements = total_elements(case)
             ordered = options.check ? unique(["cpu"; variants]) : variants
             for variant_name in ordered
                 variant = config.variants[variant_name]
@@ -252,6 +255,9 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
                     variant_name in config.setup.variants
                 next_setup_key = fusion_flags(profile)
                 if needs_setup && next_setup_key != setup_key
+                    description = isempty(next_setup_key) ?
+                                  "default fusion parameters" : next_setup_key
+                    println("-- setup ($description)")
                     setup_failure = run_setup(
                         config, [variant_name], options, profile)
                     setup_failure === nothing || error(
@@ -264,6 +270,13 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
                 outcome = run_variant(config, variant, case, options;
                                       profile = keyed_profile, invocation)
                 if successful(outcome)
+                    elapsed = get(outcome.timing, "time", "")
+                    if elapsed isa Number
+                        wall = get(outcome.timing, "real_s", "")
+                        suffix = wall isa Number ?
+                                 " (wall $(round(wall; digits = 2)) s)" : ""
+                        println("   result $(round(elapsed; digits = 3)) ms$suffix")
+                    end
                     push!(state.completed, key)
                     save_state(state)
                     continue

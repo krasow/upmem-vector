@@ -19,7 +19,8 @@ end
         "elementwise", "--variant", "julia,baseline", "--dpus", "2,4",
         "--elements-per-dpu", "64", "--warmup", "0", "--iterations", "1",
         "--timeout", "7", "--build-timeout", "9",
-        "--check", "--skip-setup", "--csv", "/tmp/benchmark-times.csv",
+        "--check", "--skip-setup", "--verbose", "--csv",
+        "/tmp/benchmark-times.csv",
     ])
     @test options.benchmarks == ["elementwise"]
     @test options.variants == ["julia", "baseline"]
@@ -29,7 +30,7 @@ end
     @test options.iterations == 1
     @test options.timeout == 7
     @test options.build_timeout == 9
-    @test options.check && options.skip_setup
+    @test options.check && options.skip_setup && options.verbose
     @test options.csv == "/tmp/benchmark-times.csv"
 end
 
@@ -179,11 +180,14 @@ end
 @testset "dry run" begin
     text = mktemp() do _, output
         redirect_stdout(output) do
-            run_cli([
-                "elementwise-interpreter", "--variant", "baseline", "--dpus", "2",
-                "--elements-per-dpu", "64", "--warmup", "0", "--iterations", "1",
-                "--check", "--skip-setup", "--dry-run",
-            ])
+            redirect_stderr(output) do
+                run_cli([
+                    "elementwise-interpreter", "--variant", "baseline",
+                    "--dpus", "2", "--elements-per-dpu", "64",
+                    "--warmup", "0", "--iterations", "1", "--check",
+                    "--skip-setup", "--dry-run",
+                ])
+            end
         end
         flush(output)
         seekstart(output)
@@ -192,6 +196,7 @@ end
     @test occursin("skip cpu (not implemented)", text)
     @test occursin("variants/baseline/elementwise-interpreter", text)
     @test occursin("generate variants/baseline/elementwise-interpreter", text)
+    @test occursin("total_elements = 128", text)
 end
 
 @testset "fusion search" begin
