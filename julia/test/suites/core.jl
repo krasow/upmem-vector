@@ -57,7 +57,7 @@ end
 
         w = DpuVector(fill(Int32(3), n))
         @test Array(v + w) == data .+ Int32(3)
-        @test sum(v) == sum(Int64.(data))
+        @test sum(v)[] == sum(Int64.(data))
     end
 end
 

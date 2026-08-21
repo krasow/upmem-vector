@@ -34,7 +34,7 @@
     @test Array(argmax.(zip(a .+ b, c))) == argmax.(zip(av .+ bv, cv))
 
     # A reduction over one still folds into a single program.
-    @test sum(argmin.(zip(a, b, c))) == sum(argmin.(zip(av, bv, cv)))
+    @test sum(argmin.(zip(a, b, c)))[] == sum(argmin.(zip(av, bv, cv)))
 
     # One pass for the pair when the build has room for both chains.
     sync(); before = PolymerPIM.stat_compute_launches()
