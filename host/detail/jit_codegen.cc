@@ -235,6 +235,8 @@ class ChainCompiler {
         apply_reduction(op);
       } else if (op == OP_PUSH_INDEX) {
         push(leaf("(blk + i)", "idx"));
+      } else if (op == OP_PUSH_GLOBAL_INDEX) {
+        push(leaf("(args.pipeline.index_base + blk + i)", "gidx"));
       } else if (op == OP_LOAD_INDIRECT) {
         apply_load_indirect(rpn, i);
       } else if (op == OP_ADD_INDIRECT || op == OP_APPLY_INDIRECT) {

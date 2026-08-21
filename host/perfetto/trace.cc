@@ -110,6 +110,8 @@ std::string opcode_to_string(uint8_t op) {
       return "DUP";
     case OP_PUSH_INDEX:
       return "PUSH_INDEX";
+    case OP_PUSH_GLOBAL_INDEX:
+      return "PUSH_GLOBAL_INDEX";
     case OP_LOAD_INDIRECT:
       return "LOAD_INDIRECT";
     case OP_ADD_INDIRECT:
@@ -360,6 +362,8 @@ static size_t estimate_jit_unique_exprs(const std::vector<uint8_t>& ops) {
       if (!stack.empty()) stack.pop_back();
     } else if (op == OP_PUSH_INDEX) {
       stack.push_back(leaf("idx"));
+    } else if (op == OP_PUSH_GLOBAL_INDEX) {
+      stack.push_back(leaf("gidx"));
     } else if (op == OP_LOAD_INDIRECT) {
       if (stack.empty()) {
         i += 1;
@@ -561,6 +565,8 @@ static std::string get_pipeline_breakdown(const Event& e) {
       stack.push_back(res);
     } else if (op == OP_PUSH_INDEX) {
       stack.push_back("IDX");
+    } else if (op == OP_PUSH_GLOBAL_INDEX) {
+      stack.push_back("GIDX");
     } else if (op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR) {
       if (op == OP_PUSH_SCALAR_VAR) {
         if (i + 1 >= size) {

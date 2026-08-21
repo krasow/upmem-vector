@@ -205,6 +205,8 @@ inline std::string fusion_rpn_expr_preview(
       if (!stack.empty()) stack.push_back(stack.back());
     } else if (op == OP_PUSH_INDEX) {
       stack.push_back("idx");
+    } else if (op == OP_PUSH_GLOBAL_INDEX) {
+      stack.push_back("gidx");
     } else if (op == OP_PUSH_SCALAR) {
       stack.push_back(scalar_inline(i));
     } else if (op == OP_PUSH_SCALAR_VAR) {
@@ -392,7 +394,7 @@ inline bool normalize_associative_rpn_chain(const std::vector<uint8_t>& in,
     }
 
     if (IS_OP_STACK(op) || op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR ||
-        op == OP_PUSH_INDEX) {
+        op == OP_PUSH_INDEX || op == OP_PUSH_GLOBAL_INDEX) {
       RpnExpr expr;
       if (!append_rpn_token_with_inline(in, i, expr.tokens)) return false;
       stack.push_back(std::move(expr));

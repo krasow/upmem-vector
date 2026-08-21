@@ -87,6 +87,51 @@ end
 const MAPREDUCE_TERMINALS = Dict{Any,Function}(
     (+) => sum, (*) => prod, min => minimum, max => maximum)
 
+# ---- Base overloads: which element won ----
+#
+# Two passes, both on the DPUs: the extreme value, then the lowest index holding
+# it.  Needs `global_index`, since a kernel's own index restarts on every shard.
+# The value rides in as a runtime scalar, so one compiled kernel serves every
+# call.  Without these Base falls back to iterating, which asks for `keys`.
+
+# Non-winners take a sentinel above every index, so the min is the first winning
+# position -- the tie Base picks too.  Both the value and the sentinel are
+# runtime scalars, so the program is the same for every call and every length:
+# one compiled kernel, cached.
+_arg_index_program() =
+    minimum(select(eq_var(input(), 1), global_index(), scalar_var(2)))
+
+function _arg_reduce(v::DpuVector, want_max::Bool)
+    length(v) > 0 || throw(ArgumentError("collection must be non-empty"))
+    best = want_max ? maximum(v) : minimum(v)
+    index = get(dpu_pipeline_reduce(v, _arg_index_program();
+                                    scalars = Int32[best, length(v)]))
+    return best, Int(index) + 1   # the kernel counts from 0
+end
+
+"""
+    findmax(v::DpuVector) -> (value, index)
+    findmin(v::DpuVector) -> (value, index)
+
+The extreme value and the first index holding it, as Base's do. The value is an
+`Int64`, the type a DPU reduction returns, not the vector's `Int32`.
+
+Two kernel passes, both on the DPUs, and only scalars come back -- the vector
+stays put. [`maximum`](@ref) and [`minimum`](@ref) are one pass, so prefer them
+when the position is not needed.
+"""
+Base.findmax(v::DpuVector) = _arg_reduce(v, true)
+Base.findmin(v::DpuVector) = _arg_reduce(v, false)
+
+"""
+    argmax(v::DpuVector) -> Int
+    argmin(v::DpuVector) -> Int
+
+The first index holding the extreme value; see [`findmax`](@ref).
+"""
+Base.argmax(v::DpuVector) = _arg_reduce(v, true)[2]
+Base.argmin(v::DpuVector) = _arg_reduce(v, false)[2]
+
 """
     mapreduce(f, op, v::DpuVector)
 
@@ -393,25 +438,112 @@ function reduce_expr(f, v::DpuVector, operands::DpuVector...;
                            scalars = scalars)
 end
 
-export dpu_pipeline, dpu_pipeline_reduce, transform, reduce_expr
-
-# ---- K-ary argmin / argmax over whole vectors ----
-
 """
-    argmin_of(vectors) / argmax_of(vectors) -> DpuVector
+    dpu_pipeline_multi(v, chains; operands, scalars) -> Vector{DpuVector}
 
-Per element, the 0-based index of the winning vector. One fused kernel pass.
+Run several independent chains over `v` in **one** kernel pass, one result
+vector per chain. The chains see the same `input()`, `operand(i)` and
+`scalar_var(i)`, so shared loads happen once.
+
+    values, labels = dpu_pipeline_multi(a, [best, argmax_lanes(lanes)];
+                                       operands = [b, c])
+
+This is the shape horizontal fusion produces when it merges independent
+programs; here it is submitted directly, so it does not depend on the two
+programs landing next to each other in the queue. The results are written
+through their own buffers, so -- as with `dest .= expr` -- they do not
+vertically fuse into a later consumer.
 """
-function argmin_of(vs::AbstractVector{DpuVector})
-    isempty(vs) && throw(ArgumentError("need at least one vector"))
-    handle = retry_on_oom(() -> PolymerPIM.launch_argmin_k(_veclist(vs)))
-    return DpuVector(handle)
+function dpu_pipeline_multi(v::DpuVector, chains::AbstractVector{DpuExpr};
+                            operands::AbstractVector{DpuVector} = DpuVector[],
+                            scalars::AbstractVector{<:Integer} = Int32[])
+    isempty(chains) && throw(ArgumentError("need at least one chain"))
+    length(chains) <= MAX_CHAINS || throw(ArgumentError(
+        "$(length(chains)) chains exceeds MAX_HFUSE_CHAINS ($MAX_CHAINS)"))
+    program = chain(chains...)
+    _check_program(program, operands)
+    dests = [DpuVector(length(v)) for _ in chains]
+    sc = Int32.(collect(scalars))
+    retry_on_oom(() -> PolymerPIM.launch_pipeline_multi(
+        _veclist(dests), v.handle, program.ops, _veclist(operands), sc))
+    return dests
 end
 
-function argmax_of(vs::AbstractVector{DpuVector})
+export dpu_pipeline, dpu_pipeline_reduce, dpu_pipeline_multi, transform, reduce_expr
+
+# ---- per-element winner across K vectors ----
+#
+# `argmin(collection)` in Base is the index of the collection's smallest
+# element, so it cannot also mean "the winning lane at each position": that is a
+# broadcast over the zipped lanes, `argmin.(zip(v1, v2, v3))`, and that is the
+# spelling bound here.  Indices are 1-based, as Julia's are over a tuple; the
+# kernel counts lanes from 0, so the program adds one.  (`argmin_lanes` inside
+# an expression stays 0-based -- it is the raw opcode.)
+
+const DpuZip = Base.Iterators.Zip{<:Tuple{DpuVector,Vararg{DpuVector}}}
+
+# Anything else broadcast over a zip would fall back to Base collecting it,
+# which reads every vector back one element at a time.
+Base.broadcastable(::DpuZip) = throw(ArgumentError(
+    "only argmin./argmax. are supported over zip(::DpuVector...); another " *
+    "broadcast would collect the vectors to the host one element at a time"))
+
+function _lane_program(nlanes::Integer, want_max::Bool)
+    lanes = DpuExpr[input(); [operand(j) for j in 1:(nlanes - 1)]]
+    label = want_max ? argmax_lanes(lanes) : argmin_lanes(lanes)
+    return lanes, label + 1
+end
+
+function _lane_arg(vs::Tuple, want_max::Bool)
     isempty(vs) && throw(ArgumentError("need at least one vector"))
-    handle = retry_on_oom(() -> PolymerPIM.launch_argmax_k(_veclist(vs)))
-    return DpuVector(handle)
+    _, label = _lane_program(length(vs), want_max)
+    return dpu_pipeline(vs[1], label; operands = DpuVector[vs[2:end]...])
+end
+
+Base.broadcasted(::typeof(argmin), z::DpuZip) = _lane_arg(z.is, false)
+Base.broadcasted(::typeof(argmax), z::DpuZip) = _lane_arg(z.is, true)
+
+function _find_lanes(vs::AbstractVector{DpuVector}, want_max::Bool)
+    isempty(vs) && throw(ArgumentError("need at least one vector"))
+    lanes, label = _lane_program(length(vs), want_max)
+    value = _best_expr(lanes, want_max)
+    if MAX_CHAINS < 2   # room for one chain only; a pass each
+        return (dpu_pipeline(vs[1], value; operands = vs[2:end]),
+                dpu_pipeline(vs[1], label; operands = vs[2:end]))
+    end
+    values, labels = dpu_pipeline_multi(vs[1], [value, label];
+                                       operands = vs[2:end])
+    return values, labels
+end
+
+"""
+    findmin_lanes(vectors) -> (values, labels)
+    findmax_lanes(vectors) -> (values, labels)
+
+Per element, the winning value and the 1-based index of the vector it came from,
+as two `DpuVector`s. One kernel pass (see [`dpu_pipeline_multi`](@ref)), so it
+costs no more than the label alone.
+
+Julia spells this `findmin.(zip(v1, v2, v3))`, one tuple per element. A DPU
+cannot hold a vector of tuples, so the two columns come back unzipped:
+
+    values, labels = findmin_lanes([v1, v2, v3])
+    collect(zip(Array(values), Array(labels))) == findmin.(zip(a1, a2, a3))
+"""
+findmin_lanes(vs::AbstractVector{DpuVector}) = _find_lanes(vs, false)
+findmax_lanes(vs::AbstractVector{DpuVector}) = _find_lanes(vs, true)
+
+export findmin_lanes, findmax_lanes
+
+# The winning value is a comparison/select chain rather than an opcode: there is
+# no min-of-K-vectors op.  Strict comparison, so ties keep the lowest lane and
+# the value agrees with the label.
+function _best_expr(lanes::AbstractVector{DpuExpr}, want_max::Bool)
+    best = lanes[1]
+    for j in 2:length(lanes)
+        best = select(want_max ? best < lanes[j] : lanes[j] < best, lanes[j], best)
+    end
+    return best
 end
 
 """
@@ -438,7 +570,7 @@ function min_squared_distance(cols::AbstractVector{DpuVector},
     end
 end
 
-export argmin_of, argmax_of, min_squared_distance
+export min_squared_distance
 
 # ---- elementwise comparisons, via RPN ----
 #

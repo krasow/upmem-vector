@@ -149,6 +149,15 @@ over `d` DPUs each shard sees `0:(n÷d - 1)`.
 lane_index() = DpuExpr([Opcodes.OP_PUSH_INDEX])
 
 """
+    global_index()
+
+The element's index in the whole vector: [`lane_index`](@ref) plus the shard's
+base offset, which the host passes in the launch args. This is the one to
+reduce over when the answer is a position, as `argmax` does.
+"""
+global_index() = DpuExpr([Opcodes.OP_PUSH_GLOBAL_INDEX])
+
+"""
     select(cond, then_e, else_e)
 
 Per lane: `cond != 0 ? then_e : else_e`.
@@ -197,7 +206,7 @@ function chain(exprs::DpuExpr...)
 end
 
 export DpuExpr, input, operand, constant, scalar_var, dup, sqr, select,
-       lane_index, argmin_lanes, argmax_lanes, chain
+       lane_index, global_index, argmin_lanes, argmax_lanes, chain
 export add_var, sub_var, mul_var, divide_var, shr_var,
        eq_var, lt_var, gt_var, ge_var, le_var
 

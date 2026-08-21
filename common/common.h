@@ -147,6 +147,10 @@ typedef struct {
       uint32_t local_sizes[MAX_HFUSE_CHAINS];
       uint32_t local_reduce_ops[MAX_HFUSE_CHAINS];
       uint32_t extra_scalars[8];  // Extra JIT configuration (e.g. bin counts)
+      // Element index of this DPU's first element in the whole vector.  A
+      // kernel only sees its own shard, so this is what turns a shard-local
+      // index into a global one (OP_PUSH_GLOBAL_INDEX).
+      uint32_t index_base;
     } pipeline;
   };
 } __attribute__((aligned(8))) DPU_LAUNCH_ARGS;

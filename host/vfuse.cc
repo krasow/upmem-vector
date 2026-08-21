@@ -15,7 +15,8 @@ bool rpn_contains_indirect(const std::vector<uint8_t>& rpn) {
   for (size_t i = 0; i < rpn.size(); ++i) {
     uint8_t op = rpn[i];
     if (op == OP_LOAD_INDIRECT || op == OP_ADD_INDIRECT ||
-        op == OP_APPLY_INDIRECT || op == OP_PUSH_INDEX)
+        op == OP_APPLY_INDIRECT || op == OP_PUSH_INDEX ||
+        op == OP_PUSH_GLOBAL_INDEX)
       return true;
     if (OP_INLINE_BYTES(op) > 0) i += OP_INLINE_BYTES(op);
   }

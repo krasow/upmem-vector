@@ -337,6 +337,10 @@ void internal_launch_universal_pipeline(
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
 
+  // Running element offset of each shard.  Sizes can be ragged, so this is
+  // accumulated from the descriptors rather than assumed to be i * stride.
+  uint32_t index_base = 0;
+
   for (uint32_t i = 0; i < nr_of_dpus; i++) {
     args[i].kernel = static_cast<uint32_t>(kernel_id);
     args[i].ktype = static_cast<uint8_t>(KERNEL_UNARY);
@@ -348,6 +352,8 @@ void internal_launch_universal_pipeline(
 
     args[i].pipeline.init_offset = init ? init->desc[i].ptr : 0;
     args[i].pipeline.res_offset = res ? res->desc[i].ptr : 0;
+    args[i].pipeline.index_base = index_base;
+    index_base += args[i].num_elements;
 
     for (size_t j = 0; j < MAX_HFUSE_CHAINS; ++j) {
       if (j < extra_outputs.size()) {

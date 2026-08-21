@@ -102,3 +102,23 @@ end
     @test read(code.path, String) == code.source
     @test occursin("(compiled)", sprint(show, MIME"text/plain"(), code))
 end
+
+# The arg forms launch as they build, so the macro rebuilds their program rather
+# than describing the vector that came back.
+@testset "code_jitted covers the arg forms" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+
+    lanes = @code_jitted argmax.(zip(a, b))
+    @test PolymerPIM.Opcodes.OP_ARGMAX_K in lanes.ops
+    @test lanes.noperands == 1
+    @test lanes.nelements == N
+    @test PolymerPIM.Opcodes.OP_ARGMIN_K in (@code_jitted argmin.(zip(a, b))).ops
+
+    # The vertical form has a kernel too now: the index pass.
+    idx = @code_jitted argmax(a)
+    @test PolymerPIM.Opcodes.OP_PUSH_GLOBAL_INDEX in idx.ops
+    @test idx.ops[end] == PolymerPIM.Opcodes.OP_MIN
+    @test (@code_jitted findmin(a)).hash == idx.hash
+
+    @test_throws ArgumentError @code_jitted findmax.(zip(a, b))
+end

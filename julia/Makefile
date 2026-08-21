@@ -28,8 +28,11 @@ INSTALL_DIR := lib/wrapper/PolymerPIM
 
 all: build
 
+# Precompilation is off for the instantiate step: it loads PolymerPIM, which
+# binds the wrapper deps/build.jl has not rebuilt yet, so a newly added wrapper
+# method would fail here before the library that has it exists.
 build:
-	$(JULIA) --project=. -e 'using Pkg; Pkg.instantiate()'
+	JULIA_PKG_PRECOMPILE_AUTO=0 $(JULIA) --project=. -e 'using Pkg; Pkg.instantiate()'
 	VECTORDPU_DIR=$(VECTORDPU_DIR) $(JULIA) --project=. deps/build.jl
 
 # JIT shells out to the DPU compiler per kernel, which greets each invocation

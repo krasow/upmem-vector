@@ -159,6 +159,7 @@ end
 const MAX_VFUSE_INPUTS = Int(PolymerPIM.limit_operands())
 const MAX_PIPELINE_SCALARS = Int(PolymerPIM.limit_scalars())
 const MAX_LOCAL_SCRATCH_VECTORS = Int(PolymerPIM.limit_locals())
+const MAX_CHAINS = Int(PolymerPIM.limit_chains())
 
 include("opcodes.jl")
 include("types.jl")
@@ -170,6 +171,7 @@ include("logging.jl")
 
 export DpuVector, DpuFuture, fence, sync
 export MAX_VFUSE_INPUTS, MAX_PIPELINE_SCALARS, MAX_LOCAL_SCRATCH_VECTORS
+export MAX_CHAINS
 export installinfo, configuration, ndpus, ntasklets
 export code_jitted, @code_jitted, iscompiled
 export withlog, @show_log

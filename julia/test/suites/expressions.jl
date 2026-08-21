@@ -136,3 +136,37 @@ end
     @test Array(dpu_pipeline(a, -input())) == .-av
     @test get(dpu_pipeline_reduce(a, sum(input()))) == sum(Int64.(av))
 end
+
+# Independent chains, one program, one pass -- the shape horizontal fusion
+# builds by itself, submitted directly.
+@testset "dpu_pipeline_multi" begin
+    av = Int32.(1:N); bv = Int32.(N:-1:1)
+    a = DpuVector(av); b = DpuVector(bv)
+
+    # MAX_HFUSE_CHAINS is a swept build parameter, so how many chains fit is
+    # whatever this library was compiled with.
+    programs = [input() + operand(1), input() - operand(1), sqr(input())]
+    expected = [av .+ bv, av .- bv, av .* av]
+    k = min(MAX_CHAINS, length(programs))
+
+    before = PolymerPIM.stat_compute_launches()
+    outs = dpu_pipeline_multi(a, programs[1:k]; operands = [b])
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+
+    @test length(outs) == k
+    for j in 1:k
+        @test Array(outs[j]) == expected[j]
+    end
+
+    # Scalars and operands are shared by every chain.
+    if MAX_CHAINS >= 2
+        outs = dpu_pipeline_multi(a, [add_var(input(), 1), mul_var(input(), 1)];
+                                  scalars = Int32[7])
+        @test Array(outs[1]) == av .+ 7
+        @test Array(outs[2]) == av .* 7
+    end
+
+    @test_throws ArgumentError dpu_pipeline_multi(a, DpuExpr[])
+    @test_throws ArgumentError dpu_pipeline_multi(a, [input() for _ in 1:(MAX_CHAINS + 1)])
+end
