@@ -14,7 +14,7 @@ for arg in "$@"; do
     case "${arg}" in
         --tune) phase=tune ;;
         --runner) phase=runner ;;
-        --reset-tune) reset_tune=true ;;
+        --reset|--reset-tune) reset_tune=true ;;
         *)
             case "${phase}" in
                 shared) shared+=("${arg}") ;;

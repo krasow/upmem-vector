@@ -252,6 +252,11 @@ end
     @test reset.reset && !reset.resume
     @test BenchmarkRunner.parse_tune_args(
         ["elementwise", "--verbose"]).verbose
+    @test BenchmarkRunner.tuning_sizes(spec, BenchmarkRunner.TuneOptions()) ==
+          [minimum(spec.elements_per_dpu)]
+    @test BenchmarkRunner.tuning_sizes(
+        spec, BenchmarkRunner.TuneOptions(elements_per_dpu = [64, 128])) ==
+          [64, 128]
     mktempdir() do directory
         options = BenchmarkRunner.TuneOptions(
             dpus = [2], elements_per_dpu = [64], warmup = 0, iterations = 1,

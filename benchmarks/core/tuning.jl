@@ -220,9 +220,12 @@ function run_variant_capture(config::RunnerConfig, variant::VariantSpec,
         echo = options.verbose)
 end
 
+tuning_sizes(spec::BenchmarkSpec, options::TuneOptions) = something(
+    options.elements_per_dpu, [minimum(spec.elements_per_dpu)])
+
 function tuning_cases(spec::BenchmarkSpec, defaults::RunnerDefaults,
                       options::TuneOptions; check::Bool = false)
-    sizes = something(options.elements_per_dpu, spec.elements_per_dpu)
+    sizes = tuning_sizes(spec, options)
     warmup = something(options.warmup, spec.warmup, defaults.warmup)
     iterations = something(options.iterations, spec.iterations, defaults.iterations)
     return [RunCase(spec.name, dpus, size, warmup, iterations, check,
@@ -308,8 +311,7 @@ function checkpoint_signature(config::RunnerConfig, spec::BenchmarkSpec,
                               options::TuneOptions)
     return Dict{String,Any}(
         "dpus" => options.dpus,
-        "elements_per_dpu" => something(options.elements_per_dpu,
-                                          spec.elements_per_dpu),
+        "elements_per_dpu" => tuning_sizes(spec, options),
         "warmup" => something(options.warmup, spec.warmup, config.defaults.warmup),
         "iterations" => something(options.iterations, spec.iterations,
                                    config.defaults.iterations),
@@ -443,8 +445,7 @@ function write_profile(path, config, spec, build, initial, best, options, verifi
         "ratio_vs_initial" => round(best.objective / initial.objective; digits = 6),
         "case_times_ms" => case_times,
         "dpus" => options.dpus,
-        "elements_per_dpu" => something(options.elements_per_dpu,
-                                          spec.elements_per_dpu),
+        "elements_per_dpu" => tuning_sizes(spec, options),
         "warmup" => something(options.warmup, spec.warmup,
                               config.defaults.warmup),
         "iterations" => something(options.iterations, spec.iterations,

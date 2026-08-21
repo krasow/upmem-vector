@@ -33,6 +33,8 @@ Tuning resumes automatically and skips completed profiles. Use `--reset-tune`
 to retune the selected benchmarks. The runner prints and applies tuned values
 by default; use `--no-profile` to disable them. Tuning output is concise by
 default; pass `--verbose` after `--tune` for complete subprocess output.
+By default tuning uses the smallest configured problem size; pass
+`--elements-per-dpu` to tune against one or more explicit sizes.
 
 ## Outputs
 
