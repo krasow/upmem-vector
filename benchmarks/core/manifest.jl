@@ -8,8 +8,14 @@ function write_toml(io::IO, document)
     buffer = IOBuffer()
     TOML.print(buffer, document; sorted = true)
     seekstart(buffer)
-    for line in eachline(buffer; keep = true)
-        write(io, lstrip(line))
+    previous_blank = true
+    for raw in eachline(buffer)
+        line = lstrip(raw)
+        if startswith(line, '[') && !previous_blank
+            println(io)
+        end
+        println(io, line)
+        previous_blank = isempty(line)
     end
 end
 

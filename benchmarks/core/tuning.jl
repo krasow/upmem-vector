@@ -247,7 +247,8 @@ function evaluate_build(config::RunnerConfig, spec::BenchmarkSpec, build,
 
     times, case_ids = Float64[], Tuple{Int,Int}[]
     for case in tuning_cases(spec, config.defaults, options; check)
-        println("[fusion] run $(spec.name) $(case.dpus)x$(case.elements_per_dpu)")
+        println("[fusion] run $(spec.name): $(case.dpus) DPUs × ",
+                "$(case.elements_per_dpu) elements/DPU")
         if check && is_implemented(config, config.variants["cpu"], case)
             cpu = run_variant_capture(config, config.variants["cpu"], case, options)
             record_timing(joinpath(options.checkpoints, "runs.csv"), case, "cpu", cpu;

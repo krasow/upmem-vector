@@ -276,6 +276,7 @@ end
         checkpoint_text = read(checkpoint.path, String)
         @test occursin("\n[signature.search]\n", checkpoint_text)
         @test !occursin(r"(?m)^[ \t]+\S", checkpoint_text)
+        @test !occursin(r"(?m)\S\n\[", checkpoint_text)
 
         mismatched = BenchmarkRunner.TuneOptions(
             dpus = [4], elements_per_dpu = [64], warmup = 0, iterations = 1,
@@ -368,7 +369,9 @@ end
         @test document["invocations"][2]["error"] == "boom"
         @test haskey(document["invocations"][1], "started_at")
         @test haskey(document["invocations"][1], "finished_at")
-        @test !occursin(r"(?m)^[ \t]+\S", read(path, String))
+        manifest_text = read(path, String)
+        @test !occursin(r"(?m)^[ \t]+\S", manifest_text)
+        @test !occursin(r"(?m)\S\n\[", manifest_text)
     end
 
     config = load_config()
