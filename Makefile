@@ -35,7 +35,8 @@ ENABLE_DPU_PRINTING ?= 0
 
 # this option enables tracing with Perfetto
 TRACE ?= 1
-PERFETTO_HOME ?= /scratch/david/benchmark-upmem/opt/perfetto
+PERFETTO_HOME ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/opt/Perfetto)
+DEPENDENCY_INSTALLER := scripts/install_dependencies.sh
 
 # this option prevents the automatic removal of the JIT build directory at shutdown
 DEBUG_KEEP_JIT_DIR ?= 0
@@ -49,8 +50,10 @@ CXX_STANDARD ?= c++17
 
 # ----------------- Edit above this line -----------------
 
+ifneq ($(MAKECMDGOALS),dependencies)
 ifndef UPMEM_HOME
 $(error UPMEM_HOME is not defined. Please source upmem_env.sh.)
+endif
 endif
 
 # JIT requires pipeline logic to dispatch events correctly
@@ -106,7 +109,7 @@ ifeq ($(TRACE),1)
   LDFLAGS += -L$(PERFETTO_HOME)/lib -lperfetto -ldl -lpthread
 endif
 
-.PHONY: config_check cache_old reconfigure all clean clean-internal test build-test list-tests install install-julia uninstall print_config make_header
+.PHONY: dependencies config_check cache_old reconfigure all clean clean-internal test build-test list-tests install install-julia uninstall print_config make_header
 
 GENERATED_TARGETS := dpu/kernels.h host/opinfo.h host/kernelids.h common/opcodes.h
 # Same generator, but not a C header -- must stay out of the install list.
@@ -120,8 +123,11 @@ HOST_FLAGS := ${COMMON_FLAGS} ${CXXFLAGS} `dpu-pkg-config --cflags --libs dpu`
 # DPU-specific flags
 DPU_FLAGS := ${COMMON_FLAGS} -Os -DNR_TASKLETS=${NR_TASKLETS}
 
-all: $(GENERATED_TARGETS) $(GENERATED_JULIA) config_check print_config ${HOST_TARGET} ${DPU_TARGET}
+all: dependencies $(GENERATED_TARGETS) $(GENERATED_JULIA) config_check print_config ${HOST_TARGET} ${DPU_TARGET}
 	@echo "Build complete: $(BUILD_TYPE) \n"
+
+dependencies: $(DEPENDENCY_INSTALLER) scripts/install_perfetto.sh
+	@$(DEPENDENCY_INSTALLER)
 
 
 $(GENERATED_TARGETS) $(GENERATED_JULIA): tools/generate.py
@@ -178,7 +184,7 @@ config_check: cache_old reconfigure make_header
 		rm -f $(CONFIG_STAMP).old; \
 	fi
 
-${HOST_TARGET}: ${HOST_SOURCES} ${HOST_HEADERS} ${COMMON_HEADERS} $(GENERATED_TARGETS)
+${HOST_TARGET}: ${HOST_SOURCES} ${HOST_HEADERS} ${COMMON_HEADERS} $(GENERATED_TARGETS) | dependencies
 	$(CXX) -std=${CXX_STANDARD} -shared -fPIC -o $@ ${HOST_SOURCES} ${HOST_FLAGS} $(LDFLAGS)
 
 ${DPU_TARGET}: ${DPU_SOURCES} ${DPU_HEADERS} ${COMMON_HEADERS} $(GENERATED_TARGETS)

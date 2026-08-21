@@ -1,7 +1,9 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
 
-DEST_DIR="${1:-/scratch/david/benchmark-upmem/opt/perfetto}"
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST_DIR="${1:-${ROOT}/opt/Perfetto}"
 PERFETTO_REPO="https://github.com/google/perfetto.git"
 PERFETTO_TAG="v50.1"
 TEMP_DIR=$(mktemp -d)

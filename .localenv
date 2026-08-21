@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+VECTORDPU_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SIMPLE_PIM_LIB="${VECTORDPU_ROOT}/opt/SimplePIM/lib"
+unset VECTORDPU_ROOT

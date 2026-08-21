@@ -6,6 +6,7 @@
 #include <string>
 
 #include "config.h"
+#include "perfetto/trace.h"
 #include "queue.h"
 
 std::string operationtype_to_string(Event::OperationType op);
@@ -15,9 +16,6 @@ std::string operationtype_to_string(Event::OperationType op);
 
 namespace trace {
 #if TRACE == 1
-bool enabled();
-void initialize();
-void shutdown();
 void event_enqueued(std::shared_ptr<Event> e,
                     const std::deque<std::shared_ptr<Event>>& ops,
                     const std::list<std::shared_ptr<Event>>& running);
@@ -29,9 +27,6 @@ void execution_end();
 void active_ops_counter(size_t count);
 void ensure_callback_thread_named();
 #else
-inline bool enabled() { return false; }
-inline void initialize() {}
-inline void shutdown() {}
 inline void event_enqueued(std::shared_ptr<Event> e,
                            const std::deque<std::shared_ptr<Event>>& ops,
                            const std::list<std::shared_ptr<Event>>& running) {
@@ -52,11 +47,3 @@ inline void active_ops_counter(size_t count) { (void)count; }
 inline void ensure_callback_thread_named() {}
 #endif
 }  // namespace trace
-
-#if TRACE == 1
-#define TRACE_INIT() trace::initialize()
-#define TRACE_SHUTDOWN() trace::shutdown()
-#else
-#define TRACE_INIT()
-#define TRACE_SHUTDOWN()
-#endif
