@@ -101,7 +101,7 @@ end
 
     # Runtime scalars, so length does not change the program: one kernel.
     @test (@code_jitted argmax(a)).hash == (@code_jitted argmax(up)).hash
-    @test PolymerPIM.Opcodes.OP_PUSH_GLOBAL_INDEX in (@code_jitted argmax(a)).ops
+    @test PolymerPIM.Internal.Opcodes.OP_PUSH_GLOBAL_INDEX in (@code_jitted argmax(a)).ops
 end
 
 # An unrun expression reduces in one pass: the terminal joins the program rather

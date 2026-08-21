@@ -24,5 +24,5 @@
 
     # No in-place form exists for a comparison; the wrapper rejects the
     # opcode rather than silently picking a different one.
-    @test_throws Exception apply!(x, 1, PolymerPIM.Opcodes.OP_EQ_SCALAR)
+    @test_throws Exception apply!(x, 1, PolymerPIM.Internal.Opcodes.OP_EQ_SCALAR)
 end

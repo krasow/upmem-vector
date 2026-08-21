@@ -1,9 +1,4 @@
-# RPN expression builder.
-#
-# The C++ side exposes transform()/reduce() taking an expression lambda, but
-# CxxWrap cannot pass a Julia closure into them.  Instead we build the opcode
-# stream here and submit it through pipeline()/pipeline_reduce(), which reaches
-# the same fused kernel.
+# Internal RPN expression builder used by lazy lowering.
 #
 # Slot numbering is 1-based on this side: `operand(1)` is the first vector in
 # the `operands` list, `scalar_var(1)` the first entry in `scalars`.
@@ -13,8 +8,7 @@ using .Opcodes
 """
     DpuExpr
 
-A partially built RPN program. Combine with the usual arithmetic and comparison
-operators, then hand to [`transform`](@ref) or [`reduce_expr`](@ref).
+A partially built RPN program used by `PolymerPIM.Internal`.
 """
 struct DpuExpr
     ops::Vector{UInt8}
@@ -267,11 +261,6 @@ function chain(exprs::DpuExpr...)
     return DpuExpr(out)
 end
 
-export DpuExpr, input, operand, constant, scalar_var, dup, sqr, select,
-       lane_index, global_index, chain
-export add_var, sub_var, mul_var, divide_var, shr_var,
-       eq_var, lt_var, gt_var, ge_var, le_var
-
 # ---- local (WRAM) scatter accumulators ----
 #
 # (index, value) pairs written into small per-DPU arrays, as
@@ -340,5 +329,3 @@ function _scatter_program(rs::Vector{_LocalReduce})
     end
     return DpuExpr(out)
 end
-
-export LOCAL_REDUCE_OPS

@@ -148,39 +148,6 @@ MAX_LOCAL_SCRATCH_VECTORS >= 2 && @testset "two locals in one program" begin
     @test Array(totals) == Int32[s * count(==(s), av) for s in 0:(slots - 1)]
 end
 
-# The lazy spelling builds the same runtime-scalar program by hand.
-@testset "the scatter program matches its expression" begin
-    depth, nbins = 10, 16
-    da = DpuVector(Int32[i % (1 << depth) for i in 0:255])
-
-    bucket = shr_var(mul_var(input(), 1), 2)
-    byhand = PolymerPIM._scatter_program(
-        [PolymerPIM._LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, bucket,
-                                 scalar_var(3))])
-
-    bins = DpuLocalVector(nbins)
-    bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
-    program, primary, operands, scalars, locals = PolymerPIM._pending_program(
-        PolymerPIM._PENDING_UPDATES; consume = false)
-
-    # The macro shows the same program, and leaves the queue as it found it.
-    queued = length(PolymerPIM._PENDING_UPDATES)
-    shown = @code_jitted bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
-    @test length(PolymerPIM._PENDING_UPDATES) == queued
-    @test shown.ops == byhand.ops
-    @test shown.nelements == length(da)
-    @test occursin("local_accum_0[", shown.source)
-
-    @test program.ops == byhand.ops
-    @test primary === da
-    @test isempty(operands)
-    @test scalars == Int32[nbins, depth, 1]
-    @test length(locals) == 1
-    @test code_jitted(program).hash == code_jitted(byhand).hash
-
-    sync()                     # leave nothing queued for the next testset
-end
-
 @testset "scatter argument validation" begin
     @test_throws ArgumentError DpuLocalVector(8; reduce_op = :median)
     @test_throws Exception DpuLocalVector(0)

@@ -6,9 +6,9 @@ using PolymerPIM
 const N = 4096
 
 # One file per concern, under suites/.  Pass substrings to run a subset:
-#   julia --project=. test/runtests.jl broadcast expressions
+#   julia --project=. test/runtests.jl broadcast internal
 const SUITES = ["core", "elementwise", "reductions", "inplace",
-                "expressions", "kary", "scatter", "broadcast", "jit", "logging"]
+                "kary", "scatter", "broadcast", "jit", "logging", "internal"]
 
 const SELECTED = isempty(ARGS) ? SUITES :
     filter(s -> any(a -> occursin(a, s), ARGS), SUITES)

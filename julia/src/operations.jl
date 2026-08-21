@@ -1,9 +1,7 @@
 # Operation dispatch for DpuVector.
 #
-# Ops are named by their opcode from src/opcodes.jl, which the generator emits
+# Ops are named by their generated internal opcode definitions, which the generator emits
 # alongside common/opcodes.h; the C++ wrapper switches on the same value.
-
-using .Opcodes
 
 # ---- generic dispatch functions ----
 
@@ -22,16 +20,6 @@ function unary_op(a::DpuVector, op::UInt8)
     return DpuVector(handle)
 end
 
-"""
-    reduce_lazy(v, op) -> DpuFuture
-
-Queue a reduction without reading it -- what `sum` and friends are built on.
-"""
-function reduce_lazy(a::DpuVector, op::UInt8)
-    handle = retry_on_oom(() -> PolymerPIM.launch_reduction_lazy(a.handle, op))
-    return DpuFuture(handle)
-end
-
 function select_op(cond::DpuVector, a::DpuVector, b::DpuVector)
     handle = retry_on_oom(() -> PolymerPIM.launch_select(cond.handle, a.handle, b.handle))
     return DpuVector(handle)
@@ -39,42 +27,42 @@ end
 
 # ---- Base overloads: binary vector ⊕ vector ----
 
-Base.:+(a::DpuVector, b::DpuVector) = binary_op(a, b, Opcodes.OP_ADD)
-Base.:-(a::DpuVector, b::DpuVector) = binary_op(a, b, Opcodes.OP_SUB)
-Base.:*(a::DpuVector, b::DpuVector) = binary_op(a, b, Opcodes.OP_MUL)
-Base.div(a::DpuVector, b::DpuVector) = binary_op(a, b, Opcodes.OP_DIV)
-Base.:<(a::DpuVector, b::DpuVector)  = binary_op(a, b, Opcodes.OP_LT)
+Base.:+(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_ADD)
+Base.:-(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_SUB)
+Base.:*(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_MUL)
+Base.div(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_DIV)
+Base.:<(a::DpuVector, b::DpuVector)  = binary_op(a, b, Internal.Opcodes.OP_LT)
 
 # ---- Base overloads: vector ⊕ scalar / scalar ⊕ vector ----
 
-Base.:+(a::DpuVector, s::Integer) = scalar_op(a, s, Opcodes.OP_ADD_SCALAR)
-Base.:+(s::Integer, a::DpuVector) = scalar_op(a, s, Opcodes.OP_ADD_SCALAR)
-Base.:-(a::DpuVector, s::Integer) = scalar_op(a, s, Opcodes.OP_SUB_SCALAR)
-Base.:*(a::DpuVector, s::Integer) = scalar_op(a, s, Opcodes.OP_MUL_SCALAR)
-Base.:*(s::Integer, a::DpuVector) = scalar_op(a, s, Opcodes.OP_MUL_SCALAR)
-Base.div(a::DpuVector, s::Integer) = scalar_op(a, s, Opcodes.OP_DIV_SCALAR)
-Base.:>>(a::DpuVector, s::Integer) = scalar_op(a, s, Opcodes.OP_ASR_SCALAR)
-Base.:(==)(a::DpuVector, s::Integer) = scalar_op(a, s, Opcodes.OP_EQ_SCALAR)
+Base.:+(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_ADD_SCALAR)
+Base.:+(s::Integer, a::DpuVector) = scalar_op(a, s, Internal.Opcodes.OP_ADD_SCALAR)
+Base.:-(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_SUB_SCALAR)
+Base.:*(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_MUL_SCALAR)
+Base.:*(s::Integer, a::DpuVector) = scalar_op(a, s, Internal.Opcodes.OP_MUL_SCALAR)
+Base.div(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_DIV_SCALAR)
+Base.:>>(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_ASR_SCALAR)
+Base.:(==)(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_EQ_SCALAR)
 
 # ---- Base overloads: unary ----
 
-Base.:-(a::DpuVector)  = unary_op(a, Opcodes.OP_NEGATE)
-Base.abs(a::DpuVector) = unary_op(a, Opcodes.OP_ABS)
+Base.:-(a::DpuVector)  = unary_op(a, Internal.Opcodes.OP_NEGATE)
+Base.abs(a::DpuVector) = unary_op(a, Internal.Opcodes.OP_ABS)
 
 # ---- Base overloads: reductions ----
 
 # Futures, not numbers: left unread, independent reductions share a kernel.
-Base.sum(v::DpuVector)     = reduce_lazy(v, Opcodes.OP_SUM)
-Base.prod(v::DpuVector)    = reduce_lazy(v, Opcodes.OP_PRODUCT)
-Base.minimum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MIN)
-Base.maximum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MAX)
+Base.sum(v::DpuVector)     = Internal.reduce_lazy(v, Internal.Opcodes.OP_SUM)
+Base.prod(v::DpuVector)    = Internal.reduce_lazy(v, Internal.Opcodes.OP_PRODUCT)
+Base.minimum(v::DpuVector) = Internal.reduce_lazy(v, Internal.Opcodes.OP_MIN)
+Base.maximum(v::DpuVector) = Internal.reduce_lazy(v, Internal.Opcodes.OP_MAX)
 
 # `sum(f, v)`: f is traced once over a DpuExpr and the terminal appended, so
 # unlike `sum(f.(v))` there is no intermediate.
 for (f, terminal) in ((:sum, :sum), (:prod, :prod),
                       (:minimum, :minimum), (:maximum, :maximum))
     @eval Base.$f(f, v::DpuVector) =
-        dpu_pipeline_reduce(v, $terminal(_trace(f)))
+        Internal.dpu_pipeline_reduce(v, $terminal(_trace(f)))
 end
 
 const MAPREDUCE_TERMINALS = Dict{Any,Function}(
@@ -93,8 +81,8 @@ _arg_index_program() =
 function _arg_reduce(v::DpuVector, want_max::Bool)
     length(v) > 0 || throw(ArgumentError("collection must be non-empty"))
     best = (want_max ? maximum(v) : minimum(v))[]
-    index = get(dpu_pipeline_reduce(v, _arg_index_program();
-                                    scalars = Int32[best, length(v)]))
+    index = get(Internal.dpu_pipeline_reduce(
+        v, _arg_index_program(); scalars = Int32[best, length(v)]))
     return best, Int(index) + 1   # the kernel counts from 0
 end
 
@@ -130,7 +118,7 @@ function Base.mapreduce(f, op, v::DpuVector)
     terminal = get(MAPREDUCE_TERMINALS, op, nothing)
     terminal === nothing && throw(ArgumentError(
         "mapreduce over a DpuVector needs op in (+, *, min, max), got $op"))
-    return get(dpu_pipeline_reduce(v, terminal(_trace(f))))
+    return get(Internal.dpu_pipeline_reduce(v, terminal(_trace(f))))
 end
 
 # Trace a host function over the builders; an unsupported op raises rather than
@@ -163,16 +151,16 @@ function apply!(a::DpuVector, s::Integer, op::UInt8)
     return a
 end
 
-add!(a::DpuVector, b::DpuVector) = apply!(a, b, Opcodes.OP_ADD)
-sub!(a::DpuVector, b::DpuVector) = apply!(a, b, Opcodes.OP_SUB)
-mul!(a::DpuVector, b::DpuVector) = apply!(a, b, Opcodes.OP_MUL)
-div!(a::DpuVector, b::DpuVector) = apply!(a, b, Opcodes.OP_DIV)
+add!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_ADD)
+sub!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_SUB)
+mul!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_MUL)
+div!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_DIV)
 
-add!(a::DpuVector, s::Integer) = apply!(a, s, Opcodes.OP_ADD_SCALAR)
-sub!(a::DpuVector, s::Integer) = apply!(a, s, Opcodes.OP_SUB_SCALAR)
-mul!(a::DpuVector, s::Integer) = apply!(a, s, Opcodes.OP_MUL_SCALAR)
-div!(a::DpuVector, s::Integer) = apply!(a, s, Opcodes.OP_DIV_SCALAR)
-shr!(a::DpuVector, s::Integer) = apply!(a, s, Opcodes.OP_ASR_SCALAR)
+add!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_ADD_SCALAR)
+sub!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_SUB_SCALAR)
+mul!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_MUL_SCALAR)
+div!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_DIV_SCALAR)
+shr!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_ASR_SCALAR)
 
 export apply!, add!, sub!, mul!, div!, shr!
 
@@ -413,7 +401,8 @@ function DpuVector(x::DpuLazy)
         x.consumed = true
         rethrow()
     end
-    x.forced = dpu_pipeline(primary, e; operands = operands, scalars = scalars)
+    x.forced = Internal.dpu_pipeline(
+        primary, e; operands = operands, scalars = scalars)
     return x.forced
 end
 
@@ -467,8 +456,8 @@ for (f, terminal) in ((:sum, :sum), (:prod, :prod),
         e, primary, operands, scalars = _lower_tree(x.bc)
         x.consumed = true       # reduced here, so `sync()` must not run it too
         x.uses += 1
-        return dpu_pipeline_reduce(primary, $terminal(e); operands = operands,
-                                   scalars = scalars)
+        return Internal.dpu_pipeline_reduce(
+            primary, $terminal(e); operands = operands, scalars = scalars)
     end
 end
 
@@ -490,7 +479,7 @@ function Base.copyto!(dest::DpuVector, bc::Base.Broadcast.Broadcasted{DpuStyle})
     e, primary, operands, scalars = _lower_tree(bc)
     length(dest) == length(primary) || throw(DimensionMismatch(
         "destination has $(length(dest)) elements, expression $(length(primary))"))
-    _check_program(e, operands)
+    Internal._check_program(e, operands)
     retry_on_oom(() -> PolymerPIM.launch_pipeline_into(
         dest.handle, primary.handle, e.ops, _veclist(operands), scalars))
     return dest
@@ -506,11 +495,7 @@ Base.axes(v::DpuVector) = (Base.OneTo(length(v)),)
 
 export select_op
 
-# ---- RPN pipelines ----
-#
-# The Julia equivalents of the C++ transform()/reduce() lambdas: built in
-# expr.jl, submitted through pipeline()/pipeline_reduce(), so they fuse the same
-# way and work under JIT=0 too.
+# ---- launch argument helpers ----
 
 function _veclist(vs)
     vs = map(_force, vs)
@@ -520,123 +505,6 @@ function _veclist(vs)
     end
     return l
 end
-
-function _check_program(_::DpuExpr, operands)
-    length(operands) <= MAX_VFUSE_INPUTS || throw(ArgumentError(
-        "$(length(operands)) operands exceeds MAX_VFUSE_INPUTS ($MAX_VFUSE_INPUTS)"))
-    return nothing
-end
-
-"""
-    dpu_pipeline(v, e; operands=DpuVector[], scalars=Int32[]) -> DpuVector
-
-Run the RPN program `e` over `v`, returning the elementwise result.
-`input()` refers to `v`, `operand(i)` to `operands[i]`, `scalar_var(i)` to
-`scalars[i]`.
-"""
-function dpu_pipeline(v::_Lane, e::DpuExpr;
-                  operands::AbstractVector{DpuVector} = DpuVector[],
-                  scalars::AbstractVector{<:Integer} = Int32[])
-    _check_program(e, operands)
-    sc = Int32.(collect(scalars))
-    handle = retry_on_oom(() -> PolymerPIM.launch_pipeline(
-        _force(v).handle, e.ops, _veclist(operands), sc))
-    return DpuVector(handle)
-end
-
-"""
-    dpu_pipeline_reduce(v, e; operands, scalars) -> DpuFuture
-
-As [`dpu_pipeline`](@ref), but `e` must end in a reduction terminal (`sum`, `prod`,
-`minimum`, `maximum`). Returns a future so independent reductions still fuse.
-"""
-function dpu_pipeline_reduce(v::_Lane, e::DpuExpr;
-                          operands::AbstractVector{DpuVector} = DpuVector[],
-                          scalars::AbstractVector{<:Integer} = Int32[])
-    _check_program(e, operands)
-    isempty(e.ops) && throw(ArgumentError("empty program"))
-    Opcodes.is_reduction(e.ops[end]) || throw(ArgumentError(
-        "program must end in a reduction terminal (sum/prod/minimum/maximum)"))
-    sc = Int32.(collect(scalars))
-    handle = retry_on_oom(() -> PolymerPIM.launch_pipeline_reduce(
-        _force(v).handle, e.ops, _veclist(operands), sc))
-    return DpuFuture(handle)
-end
-
-"""
-    transform(f, v, operands...; scalars=Int32[]) -> DpuVector
-
-Build an elementwise expression and run it in one fused kernel. `f` receives a
-`Vector{DpuExpr}` whose first entry is `v` and whose rest are `operands`.
-
-    transform(a, b) do x
-        abs(x[1] - x[2])
-    end
-"""
-function transform(f, v::_Lane, operands::_Lane...;
-                   scalars::AbstractVector{<:Integer} = Int32[])
-    exprs = DpuExpr[input()]
-    for i in 1:length(operands)
-        push!(exprs, operand(i))
-    end
-    return dpu_pipeline(_force(v), f(exprs);
-                        operands = DpuVector[map(_force, operands)...],
-                        scalars = scalars)
-end
-
-"""
-    reduce_expr(f, v, operands...; scalars=Int32[]) -> DpuFuture
-
-As [`transform`](@ref), but `f` must return a reduction. Left unread, several of
-these fuse into a single kernel pass.
-
-    reduce_expr(a, b) do x
-        sum(x[1] * x[2])          # dot product
-    end
-"""
-function reduce_expr(f, v::_Lane, operands::_Lane...;
-                     scalars::AbstractVector{<:Integer} = Int32[])
-    exprs = DpuExpr[input()]
-    for i in 1:length(operands)
-        push!(exprs, operand(i))
-    end
-    return dpu_pipeline_reduce(_force(v), f(exprs);
-                               operands = DpuVector[map(_force, operands)...],
-                               scalars = scalars)
-end
-
-"""
-    dpu_pipeline_multi(v, chains; operands, scalars) -> Vector{DpuVector}
-
-Run several independent chains over `v` in **one** kernel pass, one result
-vector per chain. The chains see the same `input()`, `operand(i)` and
-`scalar_var(i)`, so shared loads happen once.
-
-    values, labels = dpu_pipeline_multi(a, [best, argmax(lanes)];
-                                       operands = [b, c])
-
-This is the shape horizontal fusion produces when it merges independent
-programs; here it is submitted directly, so it does not depend on the two
-programs landing next to each other in the queue. The results are written
-through their own buffers, so -- as with `dest .= expr` -- they do not
-vertically fuse into a later consumer.
-"""
-function dpu_pipeline_multi(v::DpuVector, chains::AbstractVector{DpuExpr};
-                            operands::AbstractVector{DpuVector} = DpuVector[],
-                            scalars::AbstractVector{<:Integer} = Int32[])
-    isempty(chains) && throw(ArgumentError("need at least one chain"))
-    length(chains) <= MAX_CHAINS || throw(ArgumentError(
-        "$(length(chains)) chains exceeds MAX_HFUSE_CHAINS ($MAX_CHAINS)"))
-    program = chain(chains...)
-    _check_program(program, operands)
-    dests = [DpuVector(length(v)) for _ in chains]
-    sc = Int32.(collect(scalars))
-    retry_on_oom(() -> PolymerPIM.launch_pipeline_multi(
-        _veclist(dests), v.handle, program.ops, _veclist(operands), sc))
-    return dests
-end
-
-export dpu_pipeline, dpu_pipeline_reduce, dpu_pipeline_multi, transform, reduce_expr
 
 # ---- per-element winner across K vectors ----
 #
@@ -671,11 +539,11 @@ function _find_lanes(vs::AbstractVector{DpuVector}, want_max::Bool)
     lanes, label = _lane_program(length(vs), want_max)
     value = _best_expr(lanes, want_max)
     if MAX_CHAINS < 2   # room for one chain only; a pass each
-        return (dpu_pipeline(vs[1], value; operands = vs[2:end]),
-                dpu_pipeline(vs[1], label; operands = vs[2:end]))
+        return (Internal.dpu_pipeline(vs[1], value; operands = vs[2:end]),
+                Internal.dpu_pipeline(vs[1], label; operands = vs[2:end]))
     end
-    values, labels = dpu_pipeline_multi(vs[1], [value, label];
-                                       operands = vs[2:end])
+    values, labels = Internal.dpu_pipeline_multi(
+        vs[1], [value, label]; operands = vs[2:end])
     return values, labels
 end
 
@@ -720,7 +588,7 @@ function min_squared_distance(cols::AbstractVector{DpuVector},
     length(cols) == length(query) || throw(ArgumentError(
         "$(length(cols)) columns but $(length(query)) query coordinates"))
     rest = DpuVector[cols[j] for j in 2:length(cols)]
-    return reduce_expr(cols[1], rest...) do x
+    return Internal.reduce_expr(cols[1], rest...) do x
         acc = sqr(x[1] - query[1])
         for j in 2:length(x)
             acc = acc + sqr(x[j] - query[j])
@@ -738,25 +606,25 @@ export min_squared_distance
 
 for (f, builder) in ((:>, :>), (:>=, :>=), (:<=, :<=))
     @eval Base.$f(a::DpuVector, b::DpuVector) =
-        transform(a, b) do x
+        Internal.transform(a, b) do x
             $builder(x[1], x[2])
         end
 end
 
-Base.:(==)(a::DpuVector, b::DpuVector) = transform(a, b) do x
+Base.:(==)(a::DpuVector, b::DpuVector) = Internal.transform(a, b) do x
     x[1] == x[2]
 end
 
-Base.:>(a::DpuVector, s::Integer) = transform(a) do x
+Base.:>(a::DpuVector, s::Integer) = Internal.transform(a) do x
     x[1] > s
 end
-Base.:>=(a::DpuVector, s::Integer) = transform(a) do x
+Base.:>=(a::DpuVector, s::Integer) = Internal.transform(a) do x
     x[1] >= s
 end
-Base.:<=(a::DpuVector, s::Integer) = transform(a) do x
+Base.:<=(a::DpuVector, s::Integer) = Internal.transform(a) do x
     x[1] <= s
 end
-Base.:<(a::DpuVector, s::Integer) = transform(a) do x
+Base.:<(a::DpuVector, s::Integer) = Internal.transform(a) do x
     x[1] < s
 end
 
@@ -820,8 +688,8 @@ Base.dotview(l::DpuLocalVector, index) = _LocalSlot(l, index)
 Base.getindex(l::DpuLocalVector, index) = _LocalSlot(l, index)
 
 const _ACCUM_OPS = Dict{Any,UInt8}(
-    (+) => Opcodes.OP_SUM, (*) => Opcodes.OP_PRODUCT,
-    min => Opcodes.OP_MIN, max => Opcodes.OP_MAX,
+    (+) => Internal.Opcodes.OP_SUM, (*) => Internal.Opcodes.OP_PRODUCT,
+    min => Internal.Opcodes.OP_MIN, max => Internal.Opcodes.OP_MAX,
 )
 
 struct _LocalAccum

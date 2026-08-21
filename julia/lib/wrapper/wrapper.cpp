@@ -53,10 +53,11 @@ struct LocalList {
   std::vector<std::shared_ptr<Local>> items;
 };
 
-// Dispatch is keyed on the opcode from common/opcodes.h, which src/opcodes.jl
-// is generated from -- so there is exactly one numbering shared by both sides
-// and nothing to keep in step by hand.  Each arm is the public C++ operator, so
-// the host-side fusion pipeline sees the same op stream it would from C++.
+// Dispatch is keyed on the opcode from common/opcodes.h, which
+// internal/opcodes.jl is generated from -- so there is exactly one numbering
+// shared by both sides and nothing to keep in step by hand.  Each arm is the
+// public C++ operator, so the host-side fusion pipeline sees the same op stream
+// it would from C++.
 
 Vec apply_binary_op(const Vec& a, const Vec& b, uint8_t op) {
   switch (op) {

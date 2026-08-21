@@ -1,5 +1,59 @@
-# The RPN expression builder: leaves, operators, terminals, runtime
-# scalars, and the raw pipeline primitives underneath transform/reduce_expr.
+# Low-level RPN builders and launch primitives.
+
+using PolymerPIM: Internal
+using PolymerPIM.Internal: DpuExpr, input, operand, constant, scalar_var
+using PolymerPIM.Internal: dup, sqr, select, lane_index
+using PolymerPIM.Internal: add_var, mul_var, shr_var
+using PolymerPIM.Internal: transform, reduce_expr
+using PolymerPIM.Internal: dpu_pipeline, dpu_pipeline_reduce, dpu_pipeline_multi
+
+@testset "public boundary" begin
+    @test !(:DpuExpr in names(PolymerPIM))
+    @test !(:transform in names(PolymerPIM))
+    @test !(:reduce_expr in names(PolymerPIM))
+    @test !(:dpu_pipeline in names(PolymerPIM))
+    @test isdefined(Internal, :DpuExpr)
+    @test isdefined(Internal, :dpu_pipeline)
+    @test !(:DpuExpr in names(Internal))
+    @test !(:dpu_pipeline in names(Internal))
+end
+
+@testset "broadcast matches hand-built RPN" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    lazy = @code_jitted abs2.(a .- b)
+    xs = DpuExpr[input(), operand(1)]
+    byhand = code_jitted(sqr(xs[1] - xs[2]); nelements = length(a), noperands = 1)
+    @test lazy.ops == byhand.ops
+    @test lazy.hash == byhand.hash
+end
+
+@testset "scatter matches hand-built RPN" begin
+    depth, nbins = 10, 16
+    da = DpuVector(Int32[i % (1 << depth) for i in 0:255])
+    bucket = shr_var(mul_var(input(), 1), 2)
+    byhand = Internal._scatter_program(
+        [Internal._LocalReduce(0, Internal.Opcodes.OP_SUM, bucket,
+                               scalar_var(3))])
+
+    bins = DpuLocalVector(nbins)
+    bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
+    program, primary, operands, scalars, locals = PolymerPIM._pending_program(
+        PolymerPIM._PENDING_UPDATES; consume = false)
+    queued = length(PolymerPIM._PENDING_UPDATES)
+    shown = @code_jitted bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
+
+    @test length(PolymerPIM._PENDING_UPDATES) == queued
+    @test shown.ops == byhand.ops
+    @test shown.nelements == length(da)
+    @test occursin("local_accum_0[", shown.source)
+    @test program.ops == byhand.ops
+    @test primary === da
+    @test isempty(operands)
+    @test scalars == Int32[nbins, depth, 1]
+    @test length(locals) == 1
+    @test code_jitted(program).hash == code_jitted(byhand).hash
+    sync()
+end
 
 @testset "expression builder" begin
     av = Int32.(collect(1:N))
@@ -196,7 +250,7 @@ end
     # The lane label folds back to the bare opcode.
     lanes = DpuExpr[input(), operand(1)]
     zeroed = argmin(lanes) - 1
-    @test zeroed.ops[end - 1] == PolymerPIM.Opcodes.OP_ARGMIN_K
+    @test zeroed.ops[end - 1] == Internal.Opcodes.OP_ARGMIN_K
     @test zeroed.ops[end] == 0x02
 
     # ... and still computes what it did before.
