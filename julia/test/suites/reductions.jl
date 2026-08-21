@@ -197,3 +197,21 @@ end
     @test PolymerPIM.stat_compute_launches() - before == 1
     @test Array(bins)[1] == N
 end
+
+# A reduction over an expression that has already run must reduce the result,
+# not re-derive the program.
+@testset "reducing an already-run expression" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+    av = Array(a); bv = Array(b)
+
+    x = a .+ b
+    sync()                    # dangling, so this runs it
+    @test x.forced !== nothing
+
+    before = PolymerPIM.stat_compute_launches()
+    total = sum(x)[]
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test total == sum(Int64.(av) .+ Int64.(bv))
+    @test minimum(x)[] == minimum(Int64.(av) .+ Int64.(bv))
+end

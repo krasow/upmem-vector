@@ -93,5 +93,10 @@ end
 @testset "broadcast rejects what it cannot lower" begin
     a = DpuVector(Int32.(collect(1:64)))
     @test_throws ArgumentError Array(sqrt.(a))
+    # Lazily built, so it raises at first use -- and only once: a failed
+    # expression must not be retried by a later, unrelated sync().
+    bad = sqrt.(a)
+    @test_throws ArgumentError Array(bad)
+    @test sync() === nothing
     @test_throws ArgumentError Array(sin.(a))
 end

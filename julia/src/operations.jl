@@ -360,7 +360,15 @@ without reading as a conversion.
 """
 function DpuVector(x::DpuLazy)
     x.forced === nothing || return x.forced
-    e, primary, operands = _lower_tree(x.bc)
+    # An expression that cannot be lowered is not retried: otherwise it stays
+    # in the registry and the next `sync()` raises it again, far from whoever
+    # wrote it.
+    e, primary, operands = try
+        _lower_tree(x.bc)
+    catch
+        x.consumed = true
+        rethrow()
+    end
     x.forced = dpu_pipeline(primary, e; operands = operands)
     return x.forced
 end
@@ -410,6 +418,8 @@ end
 for (f, terminal) in ((:sum, :sum), (:prod, :prod),
                       (:minimum, :minimum), (:maximum, :maximum))
     @eval function Base.$f(x::DpuLazy)
+        # Already run: reduce that result rather than re-deriving the program.
+        x.forced === nothing || return Base.$f(x.forced)
         e, primary, operands = _lower_tree(x.bc)
         x.consumed = true       # reduced here, so `sync()` must not run it too
         x.uses += 1
