@@ -635,13 +635,13 @@ end
 # `sync()`, flushes them.
 
 """
-    DpuLocalVector(n; reduce_op = :sum)
+    DPULocalVector(n; reduce_op = :sum)
 
 A small per-DPU accumulator array in WRAM. Scatter into it by indexing with a
 lazy expression, and read it with `Array`, which merges every DPU's copy with
 `reduce_op`:
 
-    bins = DpuLocalVector(16)
+    bins = DPULocalVector(16)
     bins[(da .* 16) .>> 10] .+= 1        # queued
     Array(bins)                          # flushed, then merged
 
@@ -649,26 +649,26 @@ lazy expression, and read it with `Array`, which merges every DPU's copy with
 accumulation each update performs, so `.+=` belongs to a `:sum` local and
 `.= min.(...)` to a `:min` one.
 """
-mutable struct DpuLocalVector
+mutable struct DPULocalVector
     handle::Any
     len::Int
     reduce_op::Symbol
 end
 
-function DpuLocalVector(n::Integer; reduce_op::Symbol = :sum)
+function DPULocalVector(n::Integer; reduce_op::Symbol = :sum)
     reduce_op in LOCAL_REDUCE_OPS || throw(ArgumentError(
         "reduce_op must be one of $(LOCAL_REDUCE_OPS)"))
     idx = findfirst(==(reduce_op), LOCAL_REDUCE_OPS) - 1
     handle = retry_on_oom(() -> PolymerPIM.local_alloc(Int32(n), Int32(idx)))
-    return DpuLocalVector(handle, Int(n), reduce_op)
+    return DPULocalVector(handle, Int(n), reduce_op)
 end
 
-Base.length(l::DpuLocalVector) = l.len
+Base.length(l::DPULocalVector) = l.len
 
 # In the order written: one flush, one program, so updates to different locals
 # share a pass.
 struct _PendingUpdate
-    target::DpuLocalVector
+    target::DPULocalVector
     op::UInt8
     index::Any
     value::Any
@@ -678,14 +678,14 @@ const _PENDING_UPDATES = _PendingUpdate[]
 
 # `bins[idx]` on its own is not a value -- only the target of an accumulation.
 struct _LocalSlot
-    target::DpuLocalVector
+    target::DPULocalVector
     index::Any
 end
 
 # `bins[i] .+= v` desugars to `bins[i] .= bins[i] .+ v`: only the assignment
 # target goes through dotview, so the read needs the same slot object.
-Base.dotview(l::DpuLocalVector, index) = _LocalSlot(l, index)
-Base.getindex(l::DpuLocalVector, index) = _LocalSlot(l, index)
+Base.dotview(l::DPULocalVector, index) = _LocalSlot(l, index)
+Base.getindex(l::DPULocalVector, index) = _LocalSlot(l, index)
 
 const _ACCUM_OPS = Dict{Any,UInt8}(
     (+) => Internal.Opcodes.OP_SUM, (*) => Internal.Opcodes.OP_PRODUCT,
@@ -732,7 +732,7 @@ _lower_operand(x::Base.Broadcast.Broadcasted, st::_Lowering) = _lower(x, st)
 function _pending_program(updates::Vector{_PendingUpdate};
                           consume::Bool = true)
     st = _Lowering()
-    locals = DpuLocalVector[]
+    locals = DPULocalVector[]
     reductions = _LocalReduce[]
     for u in updates
         index = _lower_operand(u.index, st)
@@ -824,11 +824,11 @@ function flush_locals!()
     return nothing
 end
 
-function Base.Array(l::DpuLocalVector)
+function Base.Array(l::DPULocalVector)
     flush_locals!()
     out = Vector{Int32}(undef, l.len)
     retry_on_oom(() -> PolymerPIM.var"local_to_cpu!"(l.handle, out))
     return out
 end
 
-export DpuLocalVector, flush_locals!
+export DPULocalVector, flush_locals!

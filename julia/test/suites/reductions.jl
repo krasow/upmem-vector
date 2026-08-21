@@ -190,7 +190,7 @@ end
     @test Array(final) == (av .+ bv) .* 2
 
     # Nor is an index folded into a scatter.
-    bins = DpuLocalVector(8)
+    bins = DPULocalVector(8)
     sync(); before = PolymerPIM.stat_compute_launches()
     bins[a .* Int32(0)] .+= 1
     sync()

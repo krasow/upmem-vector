@@ -35,7 +35,7 @@ end
         [Internal._LocalReduce(0, Internal.Opcodes.OP_SUM, bucket,
                                scalar_var(3))])
 
-    bins = DpuLocalVector(nbins)
+    bins = DPULocalVector(nbins)
     bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
     program, primary, operands, scalars, locals = PolymerPIM._pending_program(
         PolymerPIM._PENDING_UPDATES; consume = false)
