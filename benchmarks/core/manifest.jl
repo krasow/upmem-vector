@@ -9,8 +9,7 @@ function write_toml(io::IO, document)
     TOML.print(buffer, document; sorted = true)
     seekstart(buffer)
     for line in eachline(buffer; keep = true)
-        stripped = lstrip(line)
-        write(io, startswith(stripped, '[') ? stripped : line)
+        write(io, lstrip(line))
     end
 end
 

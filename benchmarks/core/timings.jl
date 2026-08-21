@@ -151,6 +151,10 @@ end
 csv_cell(value) = occursin(r"[\",\n]", string(value)) ?
     "\"" * replace(string(value), "\"" => "\"\"") * "\"" : string(value)
 
+format_parameters(parameters) = join(
+    ("$key=$(repr(value))" for (key, value) in
+     sort(collect(parameters); by = first)), ";")
+
 results_csv(options::Options) = something(
     options.csv, joinpath(dirname(options.state), "runs.csv"))
 sections_csv(path::AbstractString) = splitext(path)[1] * ".sections.csv"
@@ -218,7 +222,7 @@ function record_timing(path::AbstractString, case::RunCase, variant::AbstractStr
         "check" => case.check,
         "seed" => case.seed,
         "operation" => something(case.operation, ""),
-        "parameters" => repr(sort(collect(case.parameters); by = first)),
+        "parameters" => format_parameters(case.parameters),
     )
     for knob in FUSION_BUILD_KNOBS
         row[knob] = build === nothing ? "" : build[knob]

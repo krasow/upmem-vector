@@ -70,6 +70,7 @@ end
         @test length(lines) == 2
         @test startswith(lines[1], "timestamp,invocation,benchmark,variant,phase,status")
         @test occursin("polymerpim,run,complete,success,0", lines[2])
+        @test !occursin("Pair{String, Any}[]", lines[2])
         @test occursin(",FUSION_LOOKAHEAD,MAX_HFUSE_CHAINS,JIT_BATCH_SIZE,", lines[1])
         @test occursin(",128,10,16,128,11,4,", lines[2])
         sections = readlines(joinpath(directory, "runs.sections.csv"))
@@ -93,6 +94,8 @@ end
     @test BenchmarkRunner.command_failure(
         :build, BenchmarkRunner.CommandResult(:timed_out, 124, "", "", 2.0, "")) ==
           :build_timed_out
+    @test BenchmarkRunner.format_parameters(
+        Dict{String,Any}("k" => 10, "dim" => 4)) == "dim=4;k=10"
 
     config = load_config()
     failed = BenchmarkRunner.execute_command(
@@ -267,7 +270,7 @@ end
         @test length(BenchmarkRunner.tuning_source_fingerprint(config, spec)) == 64
         checkpoint_text = read(checkpoint.path, String)
         @test occursin("\n[signature.search]\n", checkpoint_text)
-        @test !occursin(r"(?m)^[ \t]+\[", checkpoint_text)
+        @test !occursin(r"(?m)^[ \t]+\S", checkpoint_text)
 
         mismatched = BenchmarkRunner.TuneOptions(
             dpus = [4], elements_per_dpu = [64], warmup = 0, iterations = 1,
@@ -360,7 +363,7 @@ end
         @test document["invocations"][2]["error"] == "boom"
         @test haskey(document["invocations"][1], "started_at")
         @test haskey(document["invocations"][1], "finished_at")
-        @test !occursin(r"(?m)^[ \t]+\[", read(path, String))
+        @test !occursin(r"(?m)^[ \t]+\S", read(path, String))
     end
 
     config = load_config()
