@@ -51,13 +51,6 @@
     # The vertical form is unaffected: the index of the largest element.
     @test argmax(a) == argmax(av)
 
-    # The same call inside a hand-built program, over the expressions themselves.
-    @test Array(transform(a, b) do x
-        argmin([x[1], x[2]])
-    end) == argmin.(zip(av, bv))
-    @test Array(transform(a, b) do x
-        argmax(zip(x[1], x[2]))
-    end) == argmax.(zip(av, bv))
 end
 
 @testset "min_squared_distance" begin

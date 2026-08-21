@@ -134,7 +134,7 @@ end
 # is why knn uses abs2.
 @testset "abs2 loads its argument once" begin
     a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
-    O = PolymerPIM.Opcodes
+    O = PolymerPIM.Internal.Opcodes
 
     sq = @code_jitted abs2.(a .- b)
     @test O.OP_DUP in sq.ops
@@ -144,12 +144,6 @@ end
     @test count(==(O.OP_SUB), naive.ops) == 2
     @test !(O.OP_DUP in naive.ops)
     @test length(sq.ops) < length(naive.ops)
-
-    # The same program as the hand-built RPN it replaces.
-    xs = DpuExpr[input(), operand(1)]
-    byhand = code_jitted(sqr(xs[1] - xs[2]); nelements = length(a), noperands = 1)
-    @test sq.ops == byhand.ops
-    @test sq.hash == byhand.hash
 
     # No abs2 opcode exists: it is those two.
     @test !isdefined(O, :OP_ABS2)

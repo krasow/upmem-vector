@@ -77,8 +77,7 @@ code_jitted(x) = error("""
         @code_jitted a .+ b
         @code_jitted sum(a .+ b)""")
 
-# `sum(a .+ b)`: the chain with a reduction terminal appended.  Julia materialises
-# the broadcast first, so evaluating it costs an extra pass; reduce_expr does not.
+# `sum(a .+ b)`: append the reduction terminal to the lazy chain.
 const REDUCERS = (:sum, :prod, :minimum, :maximum)
 
 function _code_jitted_reduce(f, bc::Base.Broadcast.Broadcasted)

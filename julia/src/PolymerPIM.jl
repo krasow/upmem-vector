@@ -163,9 +163,14 @@ const MAX_PIPELINE_SCALARS = Int(PolymerPIM.limit_scalars())
 const MAX_LOCAL_SCRATCH_VECTORS = Int(PolymerPIM.limit_locals())
 const MAX_CHAINS = Int(PolymerPIM.limit_chains())
 
-include("opcodes.jl")
 include("types.jl")
-include("expr.jl")
+include("internal/Internal.jl")
+using .Internal: DpuExpr, input, operand, constant, scalar_var
+using .Internal: sqr, select, global_index
+using .Internal: add_var, sub_var, mul_var, divide_var, shr_var
+using .Internal: eq_var, lt_var, gt_var, ge_var, le_var
+using .Internal: _DpuScalar, LOCAL_REDUCE_OPS, _LocalReduce
+using .Internal: _local_reduce_opcode, _scatter_program
 include("operations.jl")
 include("jit.jl")
 include("display.jl")

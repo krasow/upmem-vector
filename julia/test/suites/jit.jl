@@ -41,7 +41,7 @@ end
 
     code = @code_jitted sum(a .+ b)
     @test length(code.ops) == 4          # push, push, add, reduce
-    @test code.ops[end] == PolymerPIM.Opcodes.OP_SUM
+    @test code.ops[end] == PolymerPIM.Internal.Opcodes.OP_SUM
     @test occursin("acc_0", code.source)  # a reduction chain, not a store
 
     # An assignment describes its right-hand side; without stripping it first the
@@ -64,7 +64,7 @@ end
     @test (@code_jitted sum(abs, a)).ops == UInt8[30, 2, 25]
     @test (@code_jitted mapreduce(abs, +, a)).hash == (@code_jitted sum(abs, a)).hash
     @test (@code_jitted mapreduce(abs, max, a)).ops[end] ==
-          PolymerPIM.Opcodes.OP_MAX
+          PolymerPIM.Internal.Opcodes.OP_MAX
 
     # sum.(a .+ b) is elementwise sum, not a reduction, and is not lowerable.
     @test_throws ArgumentError @code_jitted sum.(a .+ b)
@@ -110,16 +110,16 @@ end
 
     # The lane node lowers like any broadcast, so the macro has no special case.
     lanes = @code_jitted argmax.(zip(a, b))
-    @test PolymerPIM.Opcodes.OP_ARGMAX_K in lanes.ops
+    @test PolymerPIM.Internal.Opcodes.OP_ARGMAX_K in lanes.ops
     @test lanes.noperands == 1
     @test lanes.nelements == N
-    @test PolymerPIM.Opcodes.OP_ARGMIN_K in (@code_jitted argmin.(zip(a, b))).ops
+    @test PolymerPIM.Internal.Opcodes.OP_ARGMIN_K in (@code_jitted argmin.(zip(a, b))).ops
     @test length((@code_jitted argmax.(zip(a, b)) .* 3).ops) > length(lanes.ops)
 
     # The vertical form has a kernel too now: the index pass.
     idx = @code_jitted argmax(a)
-    @test PolymerPIM.Opcodes.OP_PUSH_GLOBAL_INDEX in idx.ops
-    @test idx.ops[end] == PolymerPIM.Opcodes.OP_MIN
+    @test PolymerPIM.Internal.Opcodes.OP_PUSH_GLOBAL_INDEX in idx.ops
+    @test idx.ops[end] == PolymerPIM.Internal.Opcodes.OP_MIN
     @test (@code_jitted findmin(a)).hash == idx.hash
 
 end

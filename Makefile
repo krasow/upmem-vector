@@ -110,7 +110,7 @@ endif
 
 GENERATED_TARGETS := dpu/kernels.h host/opinfo.h host/kernelids.h common/opcodes.h
 # Same generator, but not a C header -- must stay out of the install list.
-GENERATED_JULIA := julia/src/opcodes.jl
+GENERATED_JULIA := julia/src/internal/opcodes.jl
 
 
 __dirs := $(shell mkdir -p ${BUILDDIR} && mkdir -p ${BUILDDIR}/bin && mkdir -p ${BUILDDIR}/lib)
