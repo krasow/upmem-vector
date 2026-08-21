@@ -44,6 +44,12 @@ end
     @test code.ops[end] == PolymerPIM.Opcodes.OP_SUM
     @test occursin("acc_0", code.source)  # a reduction chain, not a store
 
+    # An assignment describes its right-hand side; without stripping it first the
+    # macro missed the reduction, evaluated it, and got a materialised Int.
+    @test (@code_jitted g = sum(a .+ b)).hash == code.hash
+    @test !@isdefined(g)
+    @test (@code_jitted g = a .+ b).hash == (@code_jitted a .+ b).hash
+
     # Written literally: the macro matches the reduction by name, as macros do.
     @test length((@code_jitted prod(a .+ b)).ops) == 4
     @test length((@code_jitted minimum(a .+ b)).ops) == 4

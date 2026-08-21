@@ -101,6 +101,12 @@ function _code_jitted_mapreduce(f, op, v::DpuVector)
     return _code_jitted_map(terminal, f, v)
 end
 
+# `g = sum(a .+ b)` and `c .= a .+ b` describe the program on the right; the
+# destination is not written, since nothing is launched.  Stripped before the
+# macro looks at the expression so a reduction stays visible under one.
+_rhs(x) = x
+_rhs(ex::Expr) = (ex.head === :(=) || ex.head === :.=) ? _rhs(ex.args[2]) : ex
+
 # `a .+ b` parses as a call to `.+`, and `f.(x)` as Expr(:., f, tuple); both
 # lower to materialize(broadcasted(...)).  Rewriting them to `broadcasted`
 # keeps the tree lazy -- materialising it would launch the kernel.
@@ -114,8 +120,6 @@ function _bcify(ex::Expr)
            ex.args[2] isa Expr && ex.args[2].head === :tuple
         return Expr(:call, Base.broadcasted, ex.args[1],
                     map(_bcify, ex.args[2].args)...)
-    elseif ex.head === :.= || ex.head === :(=)
-        return _bcify(ex.args[2])   # dest only receives the rhs's program
     end
     return ex
 end
@@ -135,8 +139,12 @@ name; being a macro, this cannot see through a variable holding `sum`.
 
 `a + b` and `sum(a)` use statically compiled kernels and have no generated
 source.
+
+An assignment describes its right-hand side -- `@code_jitted g = sum(a .+ b)` is
+`@code_jitted sum(a .+ b)`. Nothing is launched, so nothing is assigned.
 """
 macro code_jitted(ex)
+    ex = _rhs(ex)
     if ex isa Expr && ex.head === :call && ex.args[1] isa Symbol
         if length(ex.args) == 2 && ex.args[1] in REDUCERS
             return :(_code_jitted_reduce($(esc(ex.args[1])),
