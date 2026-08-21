@@ -1,5 +1,6 @@
 #!/usr/bin/env julia
 
-include(joinpath(@__DIR__, "core", "BenchmarkRunner.jl"))
+pushfirst!(LOAD_PATH, @__DIR__)
+using BenchmarkRunner
 
 exit(BenchmarkRunner.tune_main(ARGS))

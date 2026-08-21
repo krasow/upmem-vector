@@ -28,14 +28,14 @@ Base.@kwdef mutable struct TuneOptions
     warmup::Union{Nothing,Int} = nothing
     iterations::Union{Nothing,Int} = nothing
     passes::Int = 2
-    timeout::Int = 120
+    timeout::Int = DEFAULT_RUN_TIMEOUT
     build_timeout::Int = 120
     check::Bool = false
     verbose::Bool = false
     resume::Bool = true
     reset::Bool = false
     config::String = DEFAULT_CONFIG
-    profiles::String = joinpath(BENCHMARK_DIR, "fusion")
+    profiles::String = joinpath(BENCHMARK_DIR, "results", "fusion", "profiles")
     checkpoints::String = joinpath(BENCHMARK_DIR, "results", "fusion")
     search::Dict{String,Vector{Int}} = deepcopy(DEFAULT_FUSION_SEARCH)
     workspace_profiles::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[]
@@ -110,7 +110,7 @@ function tune_usage(io::IO = stdout)
       --reset                     Discard saved tuning for selected benchmarks
       --profiles PATH             Output profile directory
       --checkpoints PATH          Tuning checkpoint directory
-      --timeout N                 Run timeout in seconds
+      --timeout N                 Run timeout in seconds (default: 1800)
       --build-timeout N           Build timeout in seconds
       --config PATH               Benchmark TOML path
       -h, --help                  Show this help
@@ -281,7 +281,7 @@ function tuning_source_fingerprint(config::RunnerConfig, spec::BenchmarkSpec)
         joinpath(config.paths.repo, "dpu"),
         joinpath(config.paths.repo, "host"),
         joinpath(config.paths.repo, "tools"),
-        joinpath(config.paths.benchmarks, "core"),
+        joinpath(config.paths.benchmarks, "src"),
         joinpath(config.paths.benchmarks, "variants", "polymerpim", "variant.toml"),
         joinpath(config.paths.benchmarks, "variants", "polymerpim", spec.name),
     ]
@@ -531,12 +531,10 @@ function tuning_manifest_entry(config::RunnerConfig, names,
     sweeps = Dict{String,Any}[]
     for name in names
         spec = only(config.benchmarks[name])
-        cases = [manifest_case(case, ["polymerpim"])
-                 for case in tuning_cases(spec, config.defaults, options;
-                                          check = options.check)]
-        push!(sweeps, Dict{String,Any}(
-            "benchmark" => name,
-            "cases" => cases,
+        cases = tuning_cases(spec, config.defaults, options;
+                             check = options.check)
+        sweep = manifest_dimensions(cases, ["polymerpim"])
+        merge!(sweep, Dict{String,Any}(
             "seed_build" => DEFAULT_FUSION_BUILD,
             "search" => options.search,
             "workspace_profiles" => ["$a:$b" for (a, b) in
@@ -545,6 +543,7 @@ function tuning_manifest_entry(config::RunnerConfig, names,
             "profile" => joinpath(options.profiles, name * ".toml"),
             "checkpoint" => joinpath(options.checkpoints, name * ".toml"),
         ))
+        push!(sweeps, sweep)
     end
     return Dict{String,Any}(
         "arguments" => string.(args),
@@ -552,6 +551,7 @@ function tuning_manifest_entry(config::RunnerConfig, names,
         "profiles" => options.profiles,
         "checkpoints" => options.checkpoints,
         "csv" => joinpath(options.checkpoints, "runs.csv"),
+        "check" => options.check,
         "resume" => options.resume,
         "reset" => options.reset,
         "verbose" => options.verbose,

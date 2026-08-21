@@ -84,14 +84,17 @@ end
 
 function execute_variant(config::RunnerConfig, variant::VariantSpec,
                          case::RunCase, directory::AbstractString, context;
-                         timeout::Int, build_timeout::Int, echo::Bool = true)
-    for raw in variant.build
-        result = execute_command(
-            config, render_template(raw, context), directory, case.dpus;
-            timeout = build_timeout, echo)
-        successful(result) || return VariantResult(
-            command_failure(:build, result), :build, result,
-            Dict{String,Any}())
+                         timeout::Int, build_timeout::Int, echo::Bool = true,
+                         build_variant::Bool = true)
+    if build_variant
+        for raw in variant.build
+            result = execute_command(
+                config, render_template(raw, context), directory, case.dpus;
+                timeout = build_timeout, echo)
+            successful(result) || return VariantResult(
+                command_failure(:build, result), :build, result,
+                Dict{String,Any}())
+        end
     end
     result = execute_command(
         config, render_template(variant.run, context), directory, case.dpus;
@@ -102,17 +105,25 @@ function execute_variant(config::RunnerConfig, variant::VariantSpec,
 end
 
 function run_variant(config::RunnerConfig, variant::VariantSpec, case::RunCase,
-                     options::Options; profile = nothing, invocation::Int = 0)
-    directory, context = prepare_variant(
-        config, variant, case; dry_run = options.dry_run)
+                     options::Options; profile = nothing, invocation::Int = 0,
+                     trial::Int = 1, build_variant::Bool = true)
+    if build_variant
+        directory, context = prepare_variant(
+            config, variant, case; dry_run = options.dry_run)
+    else
+        context = variant_context(config, case)
+        directory = variant_directory(config, variant, case)
+    end
     empty = CommandResult(:success, 0, "", "", 0.0, "")
     options.generate_only && return VariantResult(
         :complete, :generate, empty, Dict{String,Any}())
     build = profile === nothing ? nothing : profile.build
 
     if options.dry_run
-        for raw in variant.build
-            print_command(config, render_template(raw, context), directory)
+        if build_variant
+            for raw in variant.build
+                print_command(config, render_template(raw, context), directory)
+            end
         end
         print_command(config, render_template(variant.run, context), directory)
         return VariantResult(:complete, :dry_run, empty, Dict{String,Any}())
@@ -120,9 +131,9 @@ function run_variant(config::RunnerConfig, variant::VariantSpec, case::RunCase,
     outcome = execute_variant(
         config, variant, case, directory, context;
         timeout = options.timeout, build_timeout = options.build_timeout,
-        echo = options.verbose)
+        echo = options.verbose, build_variant)
     record_timing(results_csv(options), case, variant.name, outcome;
-                  invocation, build)
+                  invocation, trial, build)
     return outcome
 end
 
@@ -185,6 +196,7 @@ end
 mutable struct RunState
     path::String
     completed::Set{String}
+    records::Vector{Dict{String,Any}}
     enabled::Bool
 end
 
@@ -193,30 +205,135 @@ function save_state(state::RunState)
     mkpath(dirname(state.path))
     temporary = state.path * ".tmp"
     open(temporary, "w") do io
-        write_toml(io, Dict("version" => 1,
-                            "completed" => sort(collect(state.completed))))
+        write_toml(io, Dict("version" => 3, "completed" => state.records))
     end
     mv(temporary, state.path; force = true)
 end
 
+function archive_runner_state(path::AbstractString)
+    archived = path * ".legacy"
+    index = 1
+    while ispath(archived)
+        index += 1
+        archived = path * ".legacy.$index"
+    end
+    mv(path, archived)
+    println("Archived legacy runner checkpoint: $archived")
+end
+
 function run_state(options::Options)
     enabled = !(options.dry_run || options.generate_only)
-    completed = Set{String}()
+    records = Dict{String,Any}[]
+    fresh = !options.resume
     if enabled && options.resume && isfile(options.state)
         raw = TOML.parsefile(options.state)
-        get(raw, "version", 0) == 1 || error("unsupported runner state $(options.state)")
-        union!(completed, string.(get(raw, "completed", String[])))
+        version = get(raw, "version", 0)
+        if version in (1, 2)
+            archive_runner_state(options.state)
+            fresh = true
+        elseif version == 3
+            append!(records, (Dict{String,Any}(entry) for entry in
+                              get(raw, "completed", Dict{String,Any}[])))
+        else
+            error("unsupported runner state $(options.state)")
+        end
     end
-    state = RunState(options.state, completed, enabled)
-    options.resume || save_state(state)
+    state = RunState(options.state, Set(run_key.(records)), records, enabled)
+    fresh && save_state(state)
     return state
 end
 
-function run_key(case::RunCase, variant::AbstractString, profile)
-    parameters = sort(collect(case.parameters); by = first)
-    return repr((case.benchmark, variant, case.dpus, case.elements_per_dpu,
-                 case.warmup, case.iterations, case.check, case.seed,
-                 parameters, case.operation, fusion_flags(profile)))
+function run_record(case::RunCase, variant::AbstractString, profile,
+                    trial::Int = 1)
+    record = Dict{String,Any}(
+        "benchmark" => case.benchmark,
+        "variant" => variant,
+        "dpus" => case.dpus,
+        "elements_per_dpu" => case.elements_per_dpu,
+        "warmup" => case.warmup,
+        "iterations" => case.iterations,
+        "trial" => trial,
+        "check" => case.check,
+        "seed" => case.seed,
+    )
+    isempty(case.parameters) || (record["parameters"] = case.parameters)
+    case.operation === nothing || (record["operation"] = case.operation)
+    profile === nothing || (record["fusion_build"] = profile.build)
+    return record
+end
+
+function run_key(record)
+    buffer = IOBuffer()
+    TOML.print(buffer, record; sorted = true)
+    return bytes2hex(sha256(take!(buffer)))
+end
+
+function remove_benchmark_rows(path::AbstractString, names)
+    isfile(path) || return 0
+    lines = readlines(path)
+    isempty(lines) && return 0
+    columns = split(first(lines), ',')
+    benchmark_column = findfirst(==("benchmark"), columns)
+    benchmark_column === nothing && error("$path has no benchmark column")
+    selected = Set(names)
+    kept = String[first(lines)]
+    removed = 0
+    for line in Iterators.drop(lines, 1)
+        fields = split(line, ','; limit = benchmark_column + 1)
+        if length(fields) >= benchmark_column && fields[benchmark_column] in selected
+            removed += 1
+        else
+            push!(kept, line)
+        end
+    end
+    removed == 0 && return 0
+    temporary = path * ".tmp"
+    open(temporary, "w") do io
+        foreach(line -> println(io, line), kept)
+    end
+    mv(temporary, path; force = true)
+    return removed
+end
+
+function reset_runs(names, options::Options)
+    records = Dict{String,Any}[]
+    if isfile(options.state)
+        raw = TOML.parsefile(options.state)
+        version = get(raw, "version", 0)
+        if version in (1, 2)
+            archive_runner_state(options.state)
+        elseif version == 3
+            append!(records, (Dict{String,Any}(entry) for entry in
+                              get(raw, "completed", Dict{String,Any}[])))
+        else
+            error("unsupported runner state $(options.state)")
+        end
+    end
+    selected = Set(names)
+    before = length(records)
+    filter!(record -> !(get(record, "benchmark", "") in selected), records)
+    state = RunState(options.state, Set(run_key.(records)), records, true)
+    save_state(state)
+    csv = results_csv(options)
+    rows = remove_benchmark_rows(csv, names)
+    sections = remove_benchmark_rows(sections_csv(csv), names)
+    options.resume = true
+    println("[runner] reset ", join(names, ", "), ": ",
+            before - length(records), " checkpoints, ", rows,
+            " runs, ", sections, " sections")
+end
+
+function trial_summary(timing, iterations::Int)
+    metric(key) = get(timing, key, "") isa Number ?
+                  @sprintf("%10.3f", timing[key]) : lpad("-", 10)
+    wall = get(timing, "real_s", "")
+    wall_text = wall isa Number ? @sprintf("%8.2f", wall) : lpad("-", 8)
+    return @sprintf("iterations=%4d", iterations) *
+           "  mean=$(metric("time")) ms" *
+           "  stddev=$(metric("stddev")) ms" *
+           "  min=$(metric("min")) ms" *
+           "  max=$(metric("max")) ms" *
+           "  wall=$wall_text s"
 end
 
 function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
@@ -234,10 +351,12 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
             ": ", fusion_flags(profile))
         dpus_list = something(options.dpus, spec.dpus, config.defaults.dpus)
         sizes = something(options.elements_per_dpu, spec.elements_per_dpu)
+        ntrials = options.generate_only ? 1 :
+                  something(options.ntrials, config.defaults.ntrials)
         for dpus in dpus_list, elements_per_dpu in sizes
             case = resolved_case(spec, config.defaults, options, dpus,
                                  elements_per_dpu)
-            @info "Benchmark case" benchmark = name dpus elements_per_dpu total_elements = total_elements(case)
+            @info "Benchmark case" benchmark = name dpus elements_per_dpu total_elements = total_elements(case) iterations = case.iterations ntrials
             ordered = options.check ? unique(["cpu"; variants]) : variants
             for variant_name in ordered
                 variant = config.variants[variant_name]
@@ -246,8 +365,17 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
                     continue
                 end
                 keyed_profile = variant_name in ("polymerpim", "julia") ? profile : nothing
-                key = run_key(case, variant_name, keyed_profile)
-                if options.resume && key in state.completed
+                pending = Tuple{Int,Dict{String,Any},String}[]
+                for trial in 1:ntrials
+                    record = run_record(case, variant_name, keyed_profile, trial)
+                    key = run_key(record)
+                    if options.resume && key in state.completed
+                        println("  skip $variant_name trial $trial/$ntrials (completed)")
+                    else
+                        push!(pending, (trial, record, key))
+                    end
+                end
+                if isempty(pending)
                     println("  skip $variant_name (completed)")
                     continue
                 end
@@ -267,26 +395,33 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
                     setup_key = next_setup_key
                 end
                 println("-- $variant_name")
-                outcome = run_variant(config, variant, case, options;
-                                      profile = keyed_profile, invocation)
-                if successful(outcome)
-                    elapsed = get(outcome.timing, "time", "")
-                    if elapsed isa Number
-                        wall = get(outcome.timing, "real_s", "")
-                        suffix = wall isa Number ?
-                                 " (wall $(round(wall; digits = 2)) s)" : ""
-                        println("   result $(round(elapsed; digits = 3)) ms$suffix")
+                built = false
+                for (trial, record, key) in pending
+                    println("   trial $trial/$ntrials")
+                    outcome = run_variant(
+                        config, variant, case, options;
+                        profile = keyed_profile, invocation, trial,
+                        build_variant = !built)
+                    built = outcome.phase != :build
+                    if successful(outcome)
+                        get(outcome.timing, "time", "") isa Number &&
+                            println("      ", trial_summary(
+                                outcome.timing, case.iterations))
+                        push!(state.completed, key)
+                        push!(state.records, record)
+                        save_state(state)
+                        continue
                     end
-                    push!(state.completed, key)
-                    save_state(state)
-                    continue
+                    println("      $(outcome.status)")
+                    push!(failures,
+                          "$name/$variant_name/$dpus/$elements_per_dpu/trial-$trial: " *
+                          string(outcome.status))
+                    options.keep_going || error(
+                        "benchmark $name/$variant_name trial $trial failed: " *
+                        string(outcome.status) *
+                        (outcome.command.exit_code === nothing ? "" :
+                         " (exit $(outcome.command.exit_code))"))
                 end
-                push!(failures,
-                      "$name/$variant_name/$dpus/$elements_per_dpu: $(outcome.status)")
-                options.keep_going || error(
-                    "benchmark $name/$variant_name failed: $(outcome.status)" *
-                    (outcome.command.exit_code === nothing ? "" :
-                     " (exit $(outcome.command.exit_code))"))
             end
         end
     end

@@ -10,12 +10,12 @@ const RUN_COLUMNS = [
     "timestamp", "invocation", "benchmark", "variant", "phase", "status",
     "command_status", "exit_code", "elapsed_s", "detail",
     "elements_per_dpu", "total_elements", "dpus", "warmup", "iterations",
-    "check", "seed", "operation", "parameters", FUSION_BUILD_KNOBS...,
+    "trial", "check", "seed", "operation", "parameters", FUSION_BUILD_KNOBS...,
     MEASURE_COLUMNS...,
 ]
 const SECTION_COLUMNS = [
-    "timestamp", "invocation", "benchmark", "variant", "section", "kind",
-    "time_ms",
+    "timestamp", "invocation", "benchmark", "variant", "trial", "section",
+    "kind", "time_ms",
 ]
 
 struct CommandResult
@@ -184,7 +184,8 @@ end
 
 function record_sections(path::AbstractString, case::RunCase,
                          variant::AbstractString, timing;
-                         invocation::Int, timestamp::AbstractString)
+                         invocation::Int, trial::Int,
+                         timestamp::AbstractString)
     for stage in STAGE_NAMES, (kind, key) in (
             ("measured", "$(stage)_ms"), ("cold", "$(stage)_cold_ms"))
         value = get(timing, key, "")
@@ -194,6 +195,7 @@ function record_sections(path::AbstractString, case::RunCase,
             "invocation" => invocation,
             "benchmark" => case.benchmark,
             "variant" => variant,
+            "trial" => trial,
             "section" => stage,
             "kind" => kind,
             "time_ms" => value,
@@ -203,7 +205,7 @@ end
 
 function record_timing(path::AbstractString, case::RunCase, variant::AbstractString,
                        result::VariantResult; invocation::Int = 0,
-                       build = nothing)
+                       trial::Int = 1, build = nothing)
     timing = result.timing
     timestamp = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
     row = Dict{String,Any}(
@@ -222,6 +224,7 @@ function record_timing(path::AbstractString, case::RunCase, variant::AbstractStr
         "dpus" => case.dpus,
         "warmup" => case.warmup,
         "iterations" => case.iterations,
+        "trial" => trial,
         "check" => case.check,
         "seed" => case.seed,
         "operation" => something(case.operation, ""),
@@ -232,6 +235,6 @@ function record_timing(path::AbstractString, case::RunCase, variant::AbstractStr
     end
     merge!(row, timing)
     append_csv(path, RUN_COLUMNS, row)
-    record_sections(path, case, variant, timing; invocation, timestamp)
+    record_sections(path, case, variant, timing; invocation, trial, timestamp)
     return timing
 end

@@ -1,3 +1,5 @@
+const DEFAULT_RUN_TIMEOUT = 1800
+
 struct Paths
     benchmarks::String
     repo::String
@@ -16,7 +18,8 @@ Base.@kwdef mutable struct Options
     elements_per_dpu::Union{Nothing,Vector{Int}} = nothing
     warmup::Union{Nothing,Int} = nothing
     iterations::Union{Nothing,Int} = nothing
-    timeout::Int = 120
+    ntrials::Union{Nothing,Int} = nothing
+    timeout::Int = DEFAULT_RUN_TIMEOUT
     build_timeout::Int = 120
     check::Bool = false
     skip_setup::Bool = false
@@ -26,9 +29,10 @@ Base.@kwdef mutable struct Options
     verbose::Bool = false
     action::Symbol = :run
     config::String = DEFAULT_CONFIG
-    profiles::String = joinpath(BENCHMARK_DIR, "fusion")
+    profiles::String = joinpath(BENCHMARK_DIR, "results", "fusion", "profiles")
     use_profiles::Bool = true
     resume::Bool = false
+    reset::Bool = false
     state::String = joinpath(BENCHMARK_DIR, "results", "runner-state.toml")
     csv::Union{Nothing,String} = nothing
 end
@@ -46,6 +50,7 @@ struct RunnerDefaults
     dpus::Vector{Int}
     warmup::Int
     iterations::Int
+    ntrials::Int
     seed::Int
     variants::Vector{String}
 end
@@ -192,8 +197,10 @@ function load_config(path::AbstractString = DEFAULT_CONFIG)
     default_warmup === nothing && error("runner.warmup is required")
     default_iterations = nonnegative(runner, "iterations")
     default_iterations === nothing && error("runner.iterations is required")
+    default_ntrials = Int(get(runner, "ntrials", 1))
+    default_ntrials > 0 || error("runner.ntrials must be positive")
     defaults = RunnerDefaults(
-        default_dpus, default_warmup, default_iterations,
+        default_dpus, default_warmup, default_iterations, default_ntrials,
         Int(get(runner, "seed", 1)),
         string_list(runner, "variants"; default = sort(collect(keys(variants)))))
 

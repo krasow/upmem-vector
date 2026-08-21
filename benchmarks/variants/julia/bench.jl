@@ -1,7 +1,7 @@
 # Julia counterpart of benchmarks/benchmark.h.
 #
-# The output formats here are load-bearing: benchmarks/core/benchmark.py parses
-# them with regexes keyed on the label, so they must match benchmark.h exactly.
+# The output formats here are load-bearing: the benchmark timing parser reads
+# labels with regexes, so they must match benchmark.h exactly.
 #   <label> (ms): mean=%.3f stddev=%.3f min=%.3f max=%.3f n=%d
 #   <label>_stage_<stage> (ms): %f
 

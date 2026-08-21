@@ -3,6 +3,7 @@ module BenchmarkRunner
 using TOML
 using Dates
 using SHA
+using Printf
 
 const BENCHMARK_DIR = dirname(@__DIR__)
 const REPO_ROOT = dirname(BENCHMARK_DIR)

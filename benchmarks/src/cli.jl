@@ -9,7 +9,8 @@ function usage(io::IO = stdout)
       --elements-per-dpu N[,N...] Override configured problem sizes
       --warmup N                   Override warmup iterations
       --iterations N               Override measured iterations
-      --timeout N                  Runtime timeout in seconds
+      --ntrials N                  Launch each benchmark process N times
+      --timeout N                  Runtime timeout in seconds (default: 1800)
       --build-timeout N            Build timeout in seconds
       --check                      Generate CPU references and verify results
       --skip-setup                 Skip the shared setup commands
@@ -23,6 +24,7 @@ function usage(io::IO = stdout)
       --config PATH                Read another benchmark TOML file
       --profiles PATH              Read per-benchmark fusion profiles here
       --no-profile                 Ignore fusion profiles
+      --reset                      Discard selected benchmarks' saved runs
       -h, --help                   Show this help
     """)
 end
@@ -49,13 +51,14 @@ function parse_args(args)
         elseif arg == "--list"
             options.action = :list
         elseif arg in ("--check", "--skip-setup", "--generate-only",
-                       "--dry-run", "--keep-going", "--resume", "--verbose")
+                       "--dry-run", "--keep-going", "--resume", "--reset",
+                       "--verbose")
             setproperty!(options, Symbol(replace(arg[3:end], '-' => '_')), true)
         elseif arg == "--no-profile"
             options.use_profiles = false
         elseif arg in ("--variant", "--dpus", "--elements-per-dpu",
                        "--warmup", "--iterations", "--timeout", "--build-timeout",
-                       "--config", "--profiles", "--csv")
+                       "--ntrials", "--config", "--profiles", "--csv")
             value = option_value(args, index, arg)
             index += 1
             if arg == "--variant"
@@ -68,6 +71,9 @@ function parse_args(args)
                 parsed = parse(Int, value)
                 parsed >= 0 || error("$arg must be non-negative")
                 setproperty!(options, Symbol(arg[3:end]), parsed)
+            elseif arg == "--ntrials"
+                options.ntrials = parse(Int, value)
+                options.ntrials > 0 || error("--ntrials must be positive")
             elseif arg in ("--timeout", "--build-timeout")
                 parsed = parse(Int, value)
                 parsed > 0 || error("$arg must be positive")
@@ -117,17 +123,16 @@ end
 
 function runner_manifest_entry(config::RunnerConfig, names, requested,
                                options::Options, args)
-    cases = Dict{String,Any}[]
+    benchmarks = Dict{String,Any}[]
     for name in names, spec in config.benchmarks[name]
         variants = selected_variants(spec, requested)
         profile = benchmark_profile(spec, variants, options)
         dpus_list = something(options.dpus, spec.dpus, config.defaults.dpus)
         sizes = something(options.elements_per_dpu, spec.elements_per_dpu)
         selected = options.check ? unique(["cpu"; variants]) : variants
-        for dpus in dpus_list, size in sizes
-            case = resolved_case(spec, config.defaults, options, dpus, size)
-            push!(cases, manifest_case(case, selected; profile))
-        end
+        cases = [resolved_case(spec, config.defaults, options, dpus, size)
+                 for dpus in dpus_list for size in sizes]
+        push!(benchmarks, manifest_dimensions(cases, selected; profile))
     end
     entry = Dict{String,Any}(
         "arguments" => string.(args),
@@ -136,9 +141,12 @@ function runner_manifest_entry(config::RunnerConfig, names, requested,
         "csv" => results_csv(options),
         "timeout_seconds" => options.timeout,
         "build_timeout_seconds" => options.build_timeout,
+        "ntrials" => something(options.ntrials, config.defaults.ntrials),
+        "check" => options.check,
         "resume" => options.resume,
+        "reset" => options.reset,
         "verbose" => options.verbose,
-        "cases" => cases,
+        "benchmarks" => benchmarks,
     )
     options.use_profiles && (entry["profiles"] = options.profiles)
     return entry
@@ -158,6 +166,13 @@ function run_cli(args = ARGS)
     end
 
     names, variants = resolve_selection(config, options)
+    if options.reset
+        if options.dry_run
+            println("[runner] would reset ", join(names, ", "))
+        else
+            reset_runs(names, options)
+        end
+    end
     if options.dry_run || options.generate_only
         run_benchmarks(config, names, variants, options)
         return nothing

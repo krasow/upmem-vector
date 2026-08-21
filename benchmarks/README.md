@@ -12,6 +12,7 @@ Tune first, then run the suite:
 ```bash
 ./run.sh
 ./run.sh elementwise --resume
+./run.sh elementwise --reset --default-params
 ./run.sh elementwise --reset-tune
 ./run.sh elementwise --default-params
 ./run.sh elementwise --tune --passes 2 --runner --variant polymerpim,julia
@@ -20,15 +21,21 @@ Tune first, then run the suite:
 Arguments before `--tune` or `--runner` apply to both phases. Arguments after a
 marker apply only to that phase. Set `JULIA` to choose the Julia executable.
 `--default-params` skips tuning and ignores saved fusion profiles.
+`--reset` removes the selected benchmarks from run CSVs and checkpoints;
+`--reset-tune` discards their tuning checkpoints and profiles.
+
+`ntrials` in `benchmark.toml` launches each benchmark process independently;
+`iterations` remains the workload's in-process loop count. Override trials with
+`--ntrials`.
 
 Run either phase directly when needed:
 
 ```bash
-julia tune.jl elementwise --dpus 256 --passes 2 --check
-julia runner.jl elementwise --variant julia --dpus 2 \
+julia --project=. tune.jl elementwise --dpus 256 --passes 2 --check
+julia --project=. runner.jl elementwise --variant julia --dpus 2 \
   --elements-per-dpu 4096 --warmup 1 --iterations 1 --check
-julia runner.jl --list
-julia test/runtests.jl
+julia --project=. runner.jl --list
+julia --project=. test/runtests.jl
 ```
 
 Tuning resumes automatically and skips completed profiles. Use `--reset-tune`
@@ -41,10 +48,10 @@ By default tuning uses the smallest configured problem size; pass
 
 ## Outputs
 
-- `fusion/<benchmark>.toml`: best fusion parameters
-- `results/Manifest.toml`: expanded invocations and status
+- `results/Manifest.toml`: resolved benchmark dimensions and run status
 - `results/runs.csv`: run status, parameters, and total timings
 - `results/runs.sections.csv`: printed stage timings in long form
+- `results/fusion/profiles/<benchmark>.toml`: best fusion parameters
 - `results/fusion/`: tuning manifest, measurements, trials, and resume state
 
 Benchmark commands run under `/usr/bin/time`. Generated parameters, binaries,

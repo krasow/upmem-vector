@@ -2,6 +2,7 @@
 dpus = [64, 128, 256, 512, 1024, 2048]
 warmup = 5
 iterations = 20
+ntrials = 5
 seed = 1
 variants = ["polymerpim", "julia", "baseline", "simplepim"]
 
