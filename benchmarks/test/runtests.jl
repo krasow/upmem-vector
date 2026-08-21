@@ -247,6 +247,8 @@ end
     @test BenchmarkRunner.TuneOptions().resume
     reset = BenchmarkRunner.parse_tune_args(["elementwise", "--reset"])
     @test reset.reset && !reset.resume
+    @test BenchmarkRunner.parse_tune_args(
+        ["elementwise", "--verbose"]).verbose
     mktempdir() do directory
         options = BenchmarkRunner.TuneOptions(
             dpus = [2], elements_per_dpu = [64], warmup = 0, iterations = 1,

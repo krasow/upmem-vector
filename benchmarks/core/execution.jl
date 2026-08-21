@@ -84,18 +84,18 @@ end
 
 function execute_variant(config::RunnerConfig, variant::VariantSpec,
                          case::RunCase, directory::AbstractString, context;
-                         timeout::Int, build_timeout::Int)
+                         timeout::Int, build_timeout::Int, echo::Bool = true)
     for raw in variant.build
         result = execute_command(
             config, render_template(raw, context), directory, case.dpus;
-            timeout = build_timeout, echo = true)
+            timeout = build_timeout, echo)
         successful(result) || return VariantResult(
             command_failure(:build, result), :build, result,
             Dict{String,Any}())
     end
     result = execute_command(
         config, render_template(variant.run, context), directory, case.dpus;
-        timeout, timed = true, echo = true)
+        timeout, timed = true, echo)
     return assess_run(variant.name, case, result)
 end
 

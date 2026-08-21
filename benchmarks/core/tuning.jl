@@ -31,6 +31,7 @@ Base.@kwdef mutable struct TuneOptions
     timeout::Int = 120
     build_timeout::Int = 120
     check::Bool = false
+    verbose::Bool = false
     resume::Bool = true
     reset::Bool = false
     config::String = DEFAULT_CONFIG
@@ -105,6 +106,7 @@ function tune_usage(io::IO = stdout)
       --vfuse-ops N[,N...]        MAX_VFUSE_OPS candidates
       --workspace I:B[,I:B...]    MAX_VFUSE_INPUTS:BLOCK_SIZE_LOG2 profiles
       --check                     Verify each winner
+      --verbose                   Print benchmark and build subprocess output
       --reset                     Discard saved tuning for selected benchmarks
       --profiles PATH             Output profile directory
       --checkpoints PATH          Tuning checkpoint directory
@@ -142,7 +144,7 @@ function parse_tune_args(args)
         if arg in ("-h", "--help")
             tune_usage()
             return nothing
-        elseif arg in ("--check", "--resume")
+        elseif arg in ("--check", "--resume", "--verbose")
             setproperty!(options, Symbol(arg[3:end]), true)
         elseif arg == "--reset"
             options.reset = true
@@ -202,7 +204,8 @@ function rebuild_for_tuning(config::RunnerConfig, benchmark::String, build,
         julia || (command *= " JULIA=__skip_julia_wrapper__")
         println("[fusion] build ", fusion_flags(profile))
         result = execute_command(config, command, config.paths.benchmarks, 1;
-                                 timeout = options.build_timeout, echo = true)
+                                 timeout = options.build_timeout,
+                                 echo = options.verbose)
         successful(result) || return result
     end
     return nothing
@@ -213,7 +216,8 @@ function run_variant_capture(config::RunnerConfig, variant::VariantSpec,
     directory, context = prepare_variant(config, variant, case)
     return execute_variant(
         config, variant, case, directory, context;
-        timeout = options.timeout, build_timeout = options.build_timeout)
+        timeout = options.timeout, build_timeout = options.build_timeout,
+        echo = options.verbose)
 end
 
 function tuning_cases(spec::BenchmarkSpec, defaults::RunnerDefaults,
@@ -255,7 +259,11 @@ function evaluate_build(config::RunnerConfig, spec::BenchmarkSpec, build,
                       invocation = options.invocation, build)
         successful(result) || return TuneResult(
             string(result.status), Inf, times, case_ids)
-        push!(times, result.timing["time"])
+        elapsed = result.timing["time"]
+        wall = result.timing["real_s"]
+        suffix = wall isa Number ? " (wall $(round(wall; digits = 2)) s)" : ""
+        println("[fusion] result $(round(elapsed; digits = 3)) ms$suffix")
+        push!(times, elapsed)
         push!(case_ids, (case.dpus, case.elements_per_dpu))
     end
     return TuneResult("ok", geomean(times), times, case_ids)
@@ -544,6 +552,7 @@ function tuning_manifest_entry(config::RunnerConfig, names,
         "csv" => joinpath(options.checkpoints, "runs.csv"),
         "resume" => options.resume,
         "reset" => options.reset,
+        "verbose" => options.verbose,
         "timeout_seconds" => options.timeout,
         "build_timeout_seconds" => options.build_timeout,
         "sweeps" => sweeps,

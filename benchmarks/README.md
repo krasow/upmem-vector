@@ -31,7 +31,8 @@ julia test/runtests.jl
 
 Tuning resumes automatically and skips completed profiles. Use `--reset-tune`
 to retune the selected benchmarks. The runner prints and applies tuned values
-by default; use `--no-profile` to disable them.
+by default; use `--no-profile` to disable them. Tuning output is concise by
+default; pass `--verbose` after `--tune` for complete subprocess output.
 
 ## Outputs
 
