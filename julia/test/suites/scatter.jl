@@ -5,9 +5,9 @@
 @testset "histogram into one accumulator" begin
     n = 512
     data = Int32[i % 8 for i in 0:(n - 1)]
-    a = DpuVector(data)
+    a = DPUVector(data)
 
-    bins = DpuLocalVector(8)
+    bins = DPULocalVector(8)
     @test length(bins) == 8
     bins[a] .+= 1
     @test Array(bins) == Int32[count(==(b), data) for b in 0:7]
@@ -17,9 +17,9 @@ end
     n = 1024
     depth, nbins = 10, 16
     data = Int32[i % (1 << depth) for i in 0:(n - 1)]
-    a = DpuVector(data)
+    a = DPUVector(data)
 
-    bins = DpuLocalVector(nbins)
+    bins = DPULocalVector(nbins)
     bins[(a .* Int32(nbins)) .>> Int32(depth)] .+= 1
 
     want = zeros(Int32, nbins)
@@ -31,13 +31,13 @@ end
 
 @testset "runtime scalars reach a scatter launch" begin
     data = Int32[i % 4 for i in 0:255]
-    a = DpuVector(data)
+    a = DPUVector(data)
     offset = 1
     weight = 2
 
     # Five int32s need padding to 24 bytes; six already occupy 24.
     for nlocal in (5, 6)
-        bins = DpuLocalVector(nlocal)
+        bins = DPULocalVector(nlocal)
         bins[a .+ offset] .+= weight
 
         program, primary, operands, scalars, locals = PolymerPIM._pending_program(
@@ -57,7 +57,7 @@ end
 end
 
 @testset "shared scatter indices reuse scalar slots" begin
-    a = DpuVector(Int32[i % 4 for i in 0:255])
+    a = DPUVector(Int32[i % 4 for i in 0:255])
     # Equal values are deliberate: equality must not collapse distinct leaves.
     params = zeros(Int32, MAX_PIPELINE_SCALARS)
 
@@ -67,7 +67,7 @@ end
     for p in params
         shared = shared .+ p
     end
-    bins = DpuLocalVector(6)
+    bins = DPULocalVector(6)
     bins[shared] .+= a
     bins[shared] .+= a
 
@@ -85,9 +85,9 @@ end
     stride = 3                     # [count, sum(a), sum(b)] per slot
     av = Int32[i % slots for i in 0:(n - 1)]
     bv = Int32[i for i in 0:(n - 1)]
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
-    acc = DpuLocalVector(slots * stride)
+    acc = DPULocalVector(slots * stride)
     base = a .* Int32(stride)
     sync(); before = PolymerPIM.stat_compute_launches()
     acc[base] .+= 1
@@ -111,7 +111,7 @@ end
     slots = 4
     av = Int32[i % slots for i in 0:(n - 1)]
     bv = Int32[(i * 37) % 1000 for i in 0:(n - 1)]
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
     want_lo = fill(typemax(Int32), slots)
     want_hi = fill(typemin(Int32), slots)
@@ -121,11 +121,11 @@ end
         want_hi[s] = max(want_hi[s], bv[i])
     end
 
-    lo = DpuLocalVector(slots; reduce_op = :min)
+    lo = DPULocalVector(slots; reduce_op = :min)
     lo[a] .= min.(lo[a], b)
     @test Array(lo) == want_lo
 
-    hi = DpuLocalVector(slots; reduce_op = :max)
+    hi = DPULocalVector(slots; reduce_op = :max)
     hi[a] .= max.(hi[a], b)
     @test Array(hi) == want_hi
 end
@@ -135,10 +135,10 @@ MAX_LOCAL_SCRATCH_VECTORS >= 2 && @testset "two locals in one program" begin
     n = 128
     slots = 4
     av = Int32[i % slots for i in 0:(n - 1)]
-    a = DpuVector(av)
+    a = DPUVector(av)
 
-    counts = DpuLocalVector(slots)
-    totals = DpuLocalVector(slots)
+    counts = DPULocalVector(slots)
+    totals = DPULocalVector(slots)
     sync(); before = PolymerPIM.stat_compute_launches()
     counts[a] .+= 1
     totals[a] .+= a
@@ -149,24 +149,24 @@ MAX_LOCAL_SCRATCH_VECTORS >= 2 && @testset "two locals in one program" begin
 end
 
 @testset "scatter argument validation" begin
-    @test_throws ArgumentError DpuLocalVector(8; reduce_op = :median)
-    @test_throws Exception DpuLocalVector(0)
+    @test_throws ArgumentError DPULocalVector(8; reduce_op = :median)
+    @test_throws Exception DPULocalVector(0)
 
-    a = DpuVector(Int32[1, 2, 3, 4])
+    a = DPUVector(Int32[1, 2, 3, 4])
     # Nothing queued: flushing is a no-op rather than an error.
     sync()
     @test flush_locals!() === nothing
 
     # The accumulation has to match how the local merges.
-    lo = DpuLocalVector(4; reduce_op = :min)
+    lo = DPULocalVector(4; reduce_op = :min)
     @test_throws ArgumentError lo[a] .+= 1
-    bins = DpuLocalVector(4)
+    bins = DPULocalVector(4)
     @test_throws ArgumentError bins[a] .= a
     @test_throws ArgumentError bins[a] .= div.(bins[a], 2)
 
     # WRAM fits only MAX_LOCAL_SCRATCH_VECTORS locals, and the extras used to
     # read back as zeros rather than failing.
-    too_many = [DpuLocalVector(4) for _ in 1:(MAX_LOCAL_SCRATCH_VECTORS + 1)]
+    too_many = [DPULocalVector(4) for _ in 1:(MAX_LOCAL_SCRATCH_VECTORS + 1)]
     for l in too_many
         l[a] .+= 1
     end

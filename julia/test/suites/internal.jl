@@ -19,7 +19,7 @@ using PolymerPIM.Internal: dpu_pipeline, dpu_pipeline_reduce, dpu_pipeline_multi
 end
 
 @testset "broadcast matches hand-built RPN" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(Int32.(N:-1:1))
     lazy = @code_jitted abs2.(a .- b)
     xs = DpuExpr[input(), operand(1)]
     byhand = code_jitted(sqr(xs[1] - xs[2]); nelements = length(a), noperands = 1)
@@ -29,13 +29,13 @@ end
 
 @testset "scatter matches hand-built RPN" begin
     depth, nbins = 10, 16
-    da = DpuVector(Int32[i % (1 << depth) for i in 0:255])
+    da = DPUVector(Int32[i % (1 << depth) for i in 0:255])
     bucket = shr_var(mul_var(input(), 1), 2)
     byhand = Internal._scatter_program(
         [Internal._LocalReduce(0, Internal.Opcodes.OP_SUM, bucket,
                                scalar_var(3))])
 
-    bins = DpuLocalVector(nbins)
+    bins = DPULocalVector(nbins)
     bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
     program, primary, operands, scalars, locals = PolymerPIM._pending_program(
         PolymerPIM._PENDING_UPDATES; consume = false)
@@ -58,7 +58,7 @@ end
 @testset "expression builder" begin
     av = Int32.(collect(1:N))
     bv = Int32.(collect(N:-1:1))
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
     # arithmetic
     @test Array(transform(a, b) do x; x[1] + x[2] end) == av .+ bv
@@ -87,7 +87,7 @@ end
 @testset "expression comparisons" begin
     av = Int32[3, 1, 4, 1, 5, 9, 2, 6]
     bv = Int32[2, 7, 1, 8, 2, 8, 1, 8]
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
     @test Array(transform(a, b) do x; x[1] < x[2] end)  == Int32.(av .< bv)
     @test Array(transform(a, b) do x; x[1] > x[2] end)  == Int32.(av .> bv)
@@ -95,7 +95,7 @@ end
     @test Array(transform(a, b) do x; x[1] >= x[2] end) == Int32.(av .>= bv)
     @test Array(transform(a, b) do x; x[1] == x[2] end) == Int32.(av .== bv)
 
-    # the DpuVector-level operators, which route through RPN
+    # the DPUVector-level operators, which route through RPN
     @test Array(a > b)  == Int32.(av .> bv)
     @test Array(a >= b) == Int32.(av .>= bv)
     @test Array(a <= b) == Int32.(av .<= bv)
@@ -107,7 +107,7 @@ end
 
 @testset "runtime scalars" begin
     av = Int32.(collect(1:N))
-    a = DpuVector(av)
+    a = DPUVector(av)
     # Same program, different scalar slot contents.
     e1 = transform(a; scalars = Int32[10]) do x; add_var(x[1], 1) end
     e2 = transform(a; scalars = Int32[100]) do x; add_var(x[1], 1) end
@@ -122,7 +122,7 @@ end
 @testset "expression reductions" begin
     av = Int32.(collect(1:N))
     bv = Int32.(fill(2, N))
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
     @test get(reduce_expr(a, b) do x; sum(x[1] * x[2]) end) ==
           sum(Int64.(av) .* Int64.(bv))
@@ -131,7 +131,7 @@ end
     # The DPU accumulates a sum in Int32 unless the library is built with
     # ENABLE_PROMOTION_REDUCTIONS, so keep this one inside 32-bit range.
     small = Int32.(collect(1:64))
-    @test get(reduce_expr(DpuVector(small)) do x; sum(sqr(x[1] - 1)) end) ==
+    @test get(reduce_expr(DPUVector(small)) do x; sum(sqr(x[1] - 1)) end) ==
           sum(Int64.(small .- 1) .^ 2)
 
     # a non-reduction program is rejected rather than silently misread
@@ -140,7 +140,7 @@ end
 
 @testset "reductions still fuse through RPN" begin
     n = 512
-    vs = [DpuVector(Int32.(collect(1:n) .+ k)) for k in 1:6]
+    vs = [DPUVector(Int32.(collect(1:n) .+ k)) for k in 1:6]
     PolymerPIM.sync()
 
     before = PolymerPIM.stat_compute_launches()
@@ -158,7 +158,7 @@ end
 
 @testset "lane_index is shard-local" begin
     n = 40
-    idx = Array(transform(DpuVector(zeros(Int32, n))) do x
+    idx = Array(transform(DPUVector(zeros(Int32, n))) do x
         lane_index()
     end)
     # Restarts at 0 on every DPU, so it is repeated ranges, not 0:n-1.
@@ -168,7 +168,7 @@ end
 end
 
 @testset "program limits are validated" begin
-    a = DpuVector(Int32.(collect(1:N)))
+    a = DPUVector(Int32.(collect(1:N)))
     @test_throws ArgumentError operand(0)
     @test_throws ArgumentError operand(MAX_VFUSE_INPUTS + 1)
     @test_throws ArgumentError scalar_var(0)
@@ -185,7 +185,7 @@ end
 
 @testset "raw pipeline submission" begin
     av = Int32.(collect(1:N))
-    a = DpuVector(av)
+    a = DPUVector(av)
     # pipeline/pipeline_reduce are the primitives transform/reduce_expr use.
     @test Array(dpu_pipeline(a, -input())) == .-av
     @test get(dpu_pipeline_reduce(a, sum(input()))) == sum(Int64.(av))
@@ -195,7 +195,7 @@ end
 # builds by itself, submitted directly.
 @testset "dpu_pipeline_multi" begin
     av = Int32.(1:N); bv = Int32.(N:-1:1)
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
     # MAX_HFUSE_CHAINS is a swept build parameter, so how many chains fit is
     # whatever this library was compiled with.
@@ -254,7 +254,7 @@ end
     @test zeroed.ops[end] == 0x02
 
     # ... and still computes what it did before.
-    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(Int32.(N:-1:1))
     @test Array(transform(a, b) do x
         argmin([x[1], x[2]]) - 1
     end) == argmin.(zip(Array(a), Array(b))) .- 1

@@ -1,67 +1,67 @@
-# Operation dispatch for DpuVector.
+# Operation dispatch for DPUVector.
 #
 # Ops are named by their generated internal opcode definitions, which the generator emits
 # alongside common/opcodes.h; the C++ wrapper switches on the same value.
 
 # ---- generic dispatch functions ----
 
-function binary_op(a::DpuVector, b::DpuVector, op::UInt8)
+function binary_op(a::DPUVector, b::DPUVector, op::UInt8)
     handle = retry_on_oom(() -> PolymerPIM.launch_binary(a.handle, b.handle, op))
-    return DpuVector(handle)
+    return DPUVector(handle)
 end
 
-function scalar_op(a::DpuVector, s::Integer, op::UInt8)
+function scalar_op(a::DPUVector, s::Integer, op::UInt8)
     handle = retry_on_oom(() -> PolymerPIM.launch_binary_scalar(a.handle, Int32(s), op))
-    return DpuVector(handle)
+    return DPUVector(handle)
 end
 
-function unary_op(a::DpuVector, op::UInt8)
+function unary_op(a::DPUVector, op::UInt8)
     handle = retry_on_oom(() -> PolymerPIM.launch_unary(a.handle, op))
-    return DpuVector(handle)
+    return DPUVector(handle)
 end
 
-function select_op(cond::DpuVector, a::DpuVector, b::DpuVector)
+function select_op(cond::DPUVector, a::DPUVector, b::DPUVector)
     handle = retry_on_oom(() -> PolymerPIM.launch_select(cond.handle, a.handle, b.handle))
-    return DpuVector(handle)
+    return DPUVector(handle)
 end
 
 # ---- Base overloads: binary vector ⊕ vector ----
 
-Base.:+(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_ADD)
-Base.:-(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_SUB)
-Base.:*(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_MUL)
-Base.div(a::DpuVector, b::DpuVector) = binary_op(a, b, Internal.Opcodes.OP_DIV)
-Base.:<(a::DpuVector, b::DpuVector)  = binary_op(a, b, Internal.Opcodes.OP_LT)
+Base.:+(a::DPUVector, b::DPUVector) = binary_op(a, b, Internal.Opcodes.OP_ADD)
+Base.:-(a::DPUVector, b::DPUVector) = binary_op(a, b, Internal.Opcodes.OP_SUB)
+Base.:*(a::DPUVector, b::DPUVector) = binary_op(a, b, Internal.Opcodes.OP_MUL)
+Base.div(a::DPUVector, b::DPUVector) = binary_op(a, b, Internal.Opcodes.OP_DIV)
+Base.:<(a::DPUVector, b::DPUVector)  = binary_op(a, b, Internal.Opcodes.OP_LT)
 
 # ---- Base overloads: vector ⊕ scalar / scalar ⊕ vector ----
 
-Base.:+(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_ADD_SCALAR)
-Base.:+(s::Integer, a::DpuVector) = scalar_op(a, s, Internal.Opcodes.OP_ADD_SCALAR)
-Base.:-(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_SUB_SCALAR)
-Base.:*(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_MUL_SCALAR)
-Base.:*(s::Integer, a::DpuVector) = scalar_op(a, s, Internal.Opcodes.OP_MUL_SCALAR)
-Base.div(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_DIV_SCALAR)
-Base.:>>(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_ASR_SCALAR)
-Base.:(==)(a::DpuVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_EQ_SCALAR)
+Base.:+(a::DPUVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_ADD_SCALAR)
+Base.:+(s::Integer, a::DPUVector) = scalar_op(a, s, Internal.Opcodes.OP_ADD_SCALAR)
+Base.:-(a::DPUVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_SUB_SCALAR)
+Base.:*(a::DPUVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_MUL_SCALAR)
+Base.:*(s::Integer, a::DPUVector) = scalar_op(a, s, Internal.Opcodes.OP_MUL_SCALAR)
+Base.div(a::DPUVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_DIV_SCALAR)
+Base.:>>(a::DPUVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_ASR_SCALAR)
+Base.:(==)(a::DPUVector, s::Integer) = scalar_op(a, s, Internal.Opcodes.OP_EQ_SCALAR)
 
 # ---- Base overloads: unary ----
 
-Base.:-(a::DpuVector)  = unary_op(a, Internal.Opcodes.OP_NEGATE)
-Base.abs(a::DpuVector) = unary_op(a, Internal.Opcodes.OP_ABS)
+Base.:-(a::DPUVector)  = unary_op(a, Internal.Opcodes.OP_NEGATE)
+Base.abs(a::DPUVector) = unary_op(a, Internal.Opcodes.OP_ABS)
 
 # ---- Base overloads: reductions ----
 
 # Futures, not numbers: left unread, independent reductions share a kernel.
-Base.sum(v::DpuVector)     = Internal.reduce_lazy(v, Internal.Opcodes.OP_SUM)
-Base.prod(v::DpuVector)    = Internal.reduce_lazy(v, Internal.Opcodes.OP_PRODUCT)
-Base.minimum(v::DpuVector) = Internal.reduce_lazy(v, Internal.Opcodes.OP_MIN)
-Base.maximum(v::DpuVector) = Internal.reduce_lazy(v, Internal.Opcodes.OP_MAX)
+Base.sum(v::DPUVector)     = Internal.reduce_lazy(v, Internal.Opcodes.OP_SUM)
+Base.prod(v::DPUVector)    = Internal.reduce_lazy(v, Internal.Opcodes.OP_PRODUCT)
+Base.minimum(v::DPUVector) = Internal.reduce_lazy(v, Internal.Opcodes.OP_MIN)
+Base.maximum(v::DPUVector) = Internal.reduce_lazy(v, Internal.Opcodes.OP_MAX)
 
 # `sum(f, v)`: f is traced once over a DpuExpr and the terminal appended, so
 # unlike `sum(f.(v))` there is no intermediate.
 for (f, terminal) in ((:sum, :sum), (:prod, :prod),
                       (:minimum, :minimum), (:maximum, :maximum))
-    @eval Base.$f(f, v::DpuVector) =
+    @eval Base.$f(f, v::DPUVector) =
         Internal.dpu_pipeline_reduce(v, $terminal(_trace(f)))
 end
 
@@ -78,7 +78,7 @@ const MAPREDUCE_TERMINALS = Dict{Any,Function}(
 _arg_index_program() =
     minimum(select(eq_var(input(), 1), global_index(), scalar_var(2)))
 
-function _arg_reduce(v::DpuVector, want_max::Bool)
+function _arg_reduce(v::DPUVector, want_max::Bool)
     length(v) > 0 || throw(ArgumentError("collection must be non-empty"))
     best = (want_max ? maximum(v) : minimum(v))[]
     index = get(Internal.dpu_pipeline_reduce(
@@ -87,8 +87,8 @@ function _arg_reduce(v::DpuVector, want_max::Bool)
 end
 
 """
-    findmax(v::DpuVector) -> (value, index)
-    findmin(v::DpuVector) -> (value, index)
+    findmax(v::DPUVector) -> (value, index)
+    findmin(v::DPUVector) -> (value, index)
 
 The extreme value and the first index holding it, as Base's do. The value is an
 `Int64`, the type a DPU reduction returns, not the vector's `Int32`.
@@ -96,28 +96,28 @@ The extreme value and the first index holding it, as Base's do. The value is an
 Two DPU passes; only scalars come back, the vector stays put. [`maximum`](@ref)
 is one pass, so prefer it when the position is not needed.
 """
-Base.findmax(v::DpuVector) = _arg_reduce(v, true)
-Base.findmin(v::DpuVector) = _arg_reduce(v, false)
+Base.findmax(v::DPUVector) = _arg_reduce(v, true)
+Base.findmin(v::DPUVector) = _arg_reduce(v, false)
 
 """
-    argmax(v::DpuVector) -> Int
-    argmin(v::DpuVector) -> Int
+    argmax(v::DPUVector) -> Int
+    argmin(v::DPUVector) -> Int
 
 The first index holding the extreme value; see [`findmax`](@ref).
 """
-Base.argmax(v::DpuVector) = _arg_reduce(v, true)[2]
-Base.argmin(v::DpuVector) = _arg_reduce(v, false)[2]
+Base.argmax(v::DPUVector) = _arg_reduce(v, true)[2]
+Base.argmin(v::DPUVector) = _arg_reduce(v, false)[2]
 
 """
-    mapreduce(f, op, v::DpuVector)
+    mapreduce(f, op, v::DPUVector)
 
 One kernel pass: `f` is traced into the program and `op` becomes its reduction
 terminal. `op` must be `+`, `*`, `min` or `max`.
 """
-function Base.mapreduce(f, op, v::DpuVector)
+function Base.mapreduce(f, op, v::DPUVector)
     terminal = get(MAPREDUCE_TERMINALS, op, nothing)
     terminal === nothing && throw(ArgumentError(
-        "mapreduce over a DpuVector needs op in (+, *, min, max), got $op"))
+        "mapreduce over a DPUVector needs op in (+, *, min, max), got $op"))
     return get(Internal.dpu_pipeline_reduce(v, terminal(_trace(f))))
 end
 
@@ -126,7 +126,7 @@ end
 function _trace(f)
     e = f(input())
     e isa DpuExpr || throw(ArgumentError(
-        "$f did not build a DpuVector expression (got $(typeof(e)))"))
+        "$f did not build a DPUVector expression (got $(typeof(e)))"))
     return e
 end
 
@@ -138,29 +138,29 @@ end
 """
     add!(a, b) / sub!(a, b) / mul!(a, b) / div!(a, b)
 
-Apply an operation to `a` in place. `b` may be a `DpuVector` or an integer.
+Apply an operation to `a` in place. `b` may be a `DPUVector` or an integer.
 Returns `a`.
 """
-function apply!(a::DpuVector, b::DpuVector, op::UInt8)
+function apply!(a::DPUVector, b::DPUVector, op::UInt8)
     retry_on_oom(() -> PolymerPIM.var"apply_binary!"(a.handle, b.handle, op))
     return a
 end
 
-function apply!(a::DpuVector, s::Integer, op::UInt8)
+function apply!(a::DPUVector, s::Integer, op::UInt8)
     retry_on_oom(() -> PolymerPIM.var"apply_scalar!"(a.handle, Int32(s), op))
     return a
 end
 
-add!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_ADD)
-sub!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_SUB)
-mul!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_MUL)
-div!(a::DpuVector, b::DpuVector) = apply!(a, b, Internal.Opcodes.OP_DIV)
+add!(a::DPUVector, b::DPUVector) = apply!(a, b, Internal.Opcodes.OP_ADD)
+sub!(a::DPUVector, b::DPUVector) = apply!(a, b, Internal.Opcodes.OP_SUB)
+mul!(a::DPUVector, b::DPUVector) = apply!(a, b, Internal.Opcodes.OP_MUL)
+div!(a::DPUVector, b::DPUVector) = apply!(a, b, Internal.Opcodes.OP_DIV)
 
-add!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_ADD_SCALAR)
-sub!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_SUB_SCALAR)
-mul!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_MUL_SCALAR)
-div!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_DIV_SCALAR)
-shr!(a::DpuVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_ASR_SCALAR)
+add!(a::DPUVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_ADD_SCALAR)
+sub!(a::DPUVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_SUB_SCALAR)
+mul!(a::DPUVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_MUL_SCALAR)
+div!(a::DPUVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_DIV_SCALAR)
+shr!(a::DPUVector, s::Integer) = apply!(a, s, Internal.Opcodes.OP_ASR_SCALAR)
 
 export apply!, add!, sub!, mul!, div!, shr!
 
@@ -171,8 +171,8 @@ export apply!, add!, sub!, mul!, div!, shr!
 
 struct DpuStyle <: Base.Broadcast.BroadcastStyle end
 
-Base.broadcastable(v::DpuVector) = v
-Base.BroadcastStyle(::Type{DpuVector}) = DpuStyle()
+Base.broadcastable(v::DPUVector) = v
+Base.BroadcastStyle(::Type{DPUVector}) = DpuStyle()
 Base.BroadcastStyle(::DpuStyle, ::Base.Broadcast.BroadcastStyle) = DpuStyle()
 
 # Operators reachable inside a broadcast, mapped to the expression builder.
@@ -206,16 +206,16 @@ end
 # Which vector became input(), and the operand slots so far.  Matched by object
 # identity, so a vector used twice is loaded once.
 mutable struct _Lowering
-    primary::Union{Nothing,DpuVector}
-    operands::Vector{DpuVector}
+    primary::Union{Nothing,DPUVector}
+    operands::Vector{DPUVector}
     inlined::Vector{Any}    # the lazy values folded into this program
     scalar_slots::IdDict{_DpuScalar,Int}
     scalars::Vector{Int32}  # launch-time values, in slot order
 end
-_Lowering() = _Lowering(nothing, DpuVector[], Any[],
+_Lowering() = _Lowering(nothing, DPUVector[], Any[],
                         IdDict{_DpuScalar,Int}(), Int32[])
 
-function _leaf(v::DpuVector, st::_Lowering)
+function _leaf(v::DPUVector, st::_Lowering)
     if st.primary === nothing
         st.primary = v
         return input()
@@ -230,7 +230,7 @@ function _leaf(v::DpuVector, st::_Lowering)
     return operand(length(st.operands))
 end
 
-_lower(v::DpuVector, st::_Lowering) = _leaf(v, st)
+_lower(v::DPUVector, st::_Lowering) = _leaf(v, st)
 
 # Reusing the same leaf reuses its slot.  This matters for scatter, which lowers
 # a shared index once per update before `_scatter_program` folds the common
@@ -261,13 +261,13 @@ function _lower(bc::Base.Broadcast.Broadcasted, st::_Lowering)
     end
     if length(args) == 1
         haskey(_BCAST_UNARY, f) || throw(ArgumentError(
-            "$f is not supported inside a DpuVector broadcast"))
+            "$f is not supported inside a DPUVector broadcast"))
         return _BCAST_UNARY[f](_lower(args[1], st))
     elseif length(args) == 2
         # ifelse is the broadcast spelling of a per-lane select
         f === ifelse && throw(ArgumentError("ifelse needs three arguments"))
         haskey(_BCAST_BINARY, f) || throw(ArgumentError(
-            "$f is not supported inside a DpuVector broadcast"))
+            "$f is not supported inside a DPUVector broadcast"))
         op = _BCAST_BINARY[f]
         a, b = args
         # A host scalar in a lazy broadcast is a launch parameter by default.
@@ -291,7 +291,7 @@ function _lower(bc::Base.Broadcast.Broadcasted, st::_Lowering)
                       _lower(args[3], st))
     end
     throw(ArgumentError("$f with $(length(args)) arguments is not supported " *
-                        "inside a DpuVector broadcast"))
+                        "inside a DPUVector broadcast"))
 end
 
 # To (program, primary, operands).  Not via Broadcast.flatten: that rewrites the
@@ -299,14 +299,14 @@ end
 # dispatches on.
 #
 # Inlining lets SROA drop `_leaf`'s store to st.primary when a caller discards it
-# and a good broadcast then reports "contains no DpuVector".
+# and a good broadcast then reports "contains no DPUVector".
 @noinline function _lower_tree(bc::Base.Broadcast.Broadcasted;
                                consume::Bool = true)
     bc = _capture_scalars(bc)
     st = _Lowering()
     e = _lower(bc, st)
     st.primary === nothing &&
-        throw(ArgumentError("broadcast contains no DpuVector"))
+        throw(ArgumentError("broadcast contains no DPUVector"))
     # Folded in, so it needs no run of its own -- unless nothing was submitted,
     # i.e. the program is only being inspected.
     consume && for x in st.inlined
@@ -324,13 +324,13 @@ end
 """
     DpuLazy
 
-An expression built but not run. `Array`, `DpuVector`, indexing, `fence` or a
+An expression built but not run. `Array`, `DPUVector`, indexing, `fence` or a
 reduction runs it; using it inside another expression inlines it instead.
 """
 mutable struct DpuLazy
     bc::Base.Broadcast.Broadcasted
     len::Int
-    forced::Any     # the DpuVector once it has been run, so it runs once
+    forced::Any     # the DPUVector once it has been run, so it runs once
     consumed::Bool  # inlined into a submitted program, so it needs no run of its own
     uses::Int       # how many submitted programs folded it in
 end
@@ -348,7 +348,7 @@ end
 Base.copy(bc::Base.Broadcast.Broadcasted{DpuStyle}) = DpuLazy(bc, _bclength(bc))
 
 # The element count is the primary vector's, found without lowering anything.
-_bclength(x::DpuVector) = length(x)
+_bclength(x::DPUVector) = length(x)
 _bclength(x::DpuLazy) = x.len
 _bclength(::Any) = nothing
 function _bclength(bc::Base.Broadcast.Broadcasted)
@@ -377,7 +377,7 @@ function _lower(x::DpuLazy, st::_Lowering)
     x.forced === nothing || return _leaf(x.forced, st)
     if x.uses > 0
         @warn """an unrun expression is being folded into a second program, so it \
-                 is computed once per consumer.  Hoist it with `DpuVector(x)` to \
+                 is computed once per consumer.  Hoist it with `DPUVector(x)` to \
                  compute it once and share the result.""" maxlog = 3
     end
     push!(st.inlined, x)
@@ -385,12 +385,12 @@ function _lower(x::DpuLazy, st::_Lowering)
 end
 
 """
-    DpuVector(x::DpuLazy)
+    DPUVector(x::DpuLazy)
 
 Run `x`, keeping the result on the DPUs. [`fence`](@ref) says the same thing
 without reading as a conversion.
 """
-function DpuVector(x::DpuLazy)
+function DPUVector(x::DpuLazy)
     x.forced === nothing || return x.forced
     # An expression that cannot be lowered is not retried: otherwise it stays
     # in the registry and the next `sync()` raises it again, far from whoever
@@ -406,7 +406,7 @@ function DpuVector(x::DpuLazy)
     return x.forced
 end
 
-Base.Array(x::DpuLazy) = Array(DpuVector(x))
+Base.Array(x::DpuLazy) = Array(DPUVector(x))
 Base.Vector(x::DpuLazy) = Array(x)
 Base.collect(x::DpuLazy) = Array(x)
 Base.getindex(x::DpuLazy, i::Integer) = Array(x)[i]
@@ -414,7 +414,7 @@ Base.getindex(x::DpuLazy, i::Integer) = Array(x)[i]
 """
     fence(x::DpuLazy)
 
-Run `x`, block until it is done, return it. `fence(v::DpuVector)` waits for a
+Run `x`, block until it is done, return it. `fence(v::DPUVector)` waits for a
 vector's queued work; this also submits an expression that has not run.
 
 Only the named value runs. Its intermediates stay unrun -- forcing those would
@@ -424,15 +424,15 @@ cost a kernel and an MRAM buffer each.
     fence(res)           # runs here, so this is where the time is spent
     Array(res)           # already computed
 """
-fence(x::DpuLazy) = (fence(DpuVector(x)); x)
+fence(x::DpuLazy) = (fence(DPUVector(x)); x)
 
-const _Lane = Union{DpuVector,DpuLazy}
+const _Lane = Union{DPUVector,DpuLazy}
 
 # An operand slot needs a real vector; anything else passes through.
 _force(x) = x
-_force(x::DpuLazy) = DpuVector(x)
+_force(x::DpuLazy) = DPUVector(x)
 
-# Operators on an unrun expression keep it unrun.  On a DpuVector they stay
+# Operators on an unrun expression keep it unrun.  On a DPUVector they stay
 # eager: `a + b` is a statically compiled kernel.
 _lazy(bc::Base.Broadcast.Broadcasted) = DpuLazy(bc, _bclength(bc))
 
@@ -440,9 +440,9 @@ Base.:-(x::DpuLazy) = _lazy(Base.broadcasted(-, x))
 Base.abs(x::DpuLazy) = _lazy(Base.broadcasted(abs, x))
 
 for f in (:+, :-, :*, :div, :(>>), :(==), :<, :>, :<=, :>=)
-    @eval Base.$f(x::DpuLazy, y::Union{DpuLazy,DpuVector,Integer}) =
+    @eval Base.$f(x::DpuLazy, y::Union{DpuLazy,DPUVector,Integer}) =
         _lazy(Base.broadcasted($f, x, y))
-    @eval Base.$f(x::Union{DpuVector,Integer}, y::DpuLazy) =
+    @eval Base.$f(x::Union{DPUVector,Integer}, y::DpuLazy) =
         _lazy(Base.broadcasted($f, x, y))
 end
 
@@ -472,10 +472,10 @@ Base.maximum(f, x::DpuLazy) = maximum(Base.broadcasted(f, x))
 Writes through `dest`'s existing buffer, so other handles to it observe the
 result. One kernel pass.
 """
-Base.copyto!(dest::DpuVector, x::DpuLazy) =
+Base.copyto!(dest::DPUVector, x::DpuLazy) =
     (x.consumed = true; copyto!(dest, x.bc))
 
-function Base.copyto!(dest::DpuVector, bc::Base.Broadcast.Broadcasted{DpuStyle})
+function Base.copyto!(dest::DPUVector, bc::Base.Broadcast.Broadcasted{DpuStyle})
     e, primary, operands, scalars = _lower_tree(bc)
     length(dest) == length(primary) || throw(DimensionMismatch(
         "destination has $(length(dest)) elements, expression $(length(primary))"))
@@ -486,12 +486,12 @@ function Base.copyto!(dest::DpuVector, bc::Base.Broadcast.Broadcasted{DpuStyle})
 end
 
 # A scalar fill still goes through the same path.
-Base.copyto!(dest::DpuVector, bc::Base.Broadcast.Broadcasted{Base.Broadcast.DefaultArrayStyle{0}}) =
+Base.copyto!(dest::DPUVector, bc::Base.Broadcast.Broadcasted{Base.Broadcast.DefaultArrayStyle{0}}) =
     copyto!(dest, Base.Broadcast.broadcasted(identity, bc.f(bc.args...)))
 
-Base.similar(v::DpuVector) = DpuVector(length(v))
-Base.similar(v::DpuVector, ::Type{Int32}) = DpuVector(length(v))
-Base.axes(v::DpuVector) = (Base.OneTo(length(v)),)
+Base.similar(v::DPUVector) = DPUVector(length(v))
+Base.similar(v::DPUVector, ::Type{Int32}) = DPUVector(length(v))
+Base.axes(v::DPUVector) = (Base.OneTo(length(v)),)
 
 export select_op
 
@@ -516,7 +516,7 @@ const DpuZip = Base.Iterators.Zip{<:Tuple{_Lane,Vararg{_Lane}}}
 # Any other broadcast over a zip would have Base collect it -- one readback
 # per element.
 Base.broadcastable(::DpuZip) = throw(ArgumentError(
-    "only argmin./argmax. are supported over zip(::DpuVector...); another " *
+    "only argmin./argmax. are supported over zip(::DPUVector...); another " *
     "broadcast would collect the vectors to the host one element at a time"))
 
 function _lane_program(nlanes::Integer, want_max::Bool)
@@ -534,7 +534,7 @@ Base.broadcasted(::typeof(argmin), z::DpuZip) =
 Base.broadcasted(::typeof(argmax), z::DpuZip) =
     Base.broadcasted(DpuStyle(), LaneArg{true}(), z.is...)
 
-function _find_lanes(vs::AbstractVector{DpuVector}, want_max::Bool)
+function _find_lanes(vs::AbstractVector{DPUVector}, want_max::Bool)
     isempty(vs) && throw(ArgumentError("need at least one vector"))
     lanes, label = _lane_program(length(vs), want_max)
     value = _best_expr(lanes, want_max)
@@ -558,8 +558,8 @@ tuples, which a DPU cannot hold, so the columns come back unzipped:
     values, labels = findmin_lanes([v1, v2, v3])
     collect(zip(Array(values), Array(labels))) == findmin.(zip(a1, a2, a3))
 """
-findmin_lanes(vs::AbstractVector{DpuVector}) = _find_lanes(vs, false)
-findmax_lanes(vs::AbstractVector{DpuVector}) = _find_lanes(vs, true)
+findmin_lanes(vs::AbstractVector{DPUVector}) = _find_lanes(vs, false)
+findmax_lanes(vs::AbstractVector{DPUVector}) = _find_lanes(vs, true)
 
 export findmin_lanes, findmax_lanes
 
@@ -582,12 +582,12 @@ holds coordinate `j` of every row. One fused pass over all columns.
 `vectordpu.h` declared a C++ `min_squared_distance` but never defined it, so
 this is built from the expression API instead.
 """
-function min_squared_distance(cols::AbstractVector{DpuVector},
+function min_squared_distance(cols::AbstractVector{DPUVector},
                               query::AbstractVector{<:Integer})
     isempty(cols) && throw(ArgumentError("need at least one column"))
     length(cols) == length(query) || throw(ArgumentError(
         "$(length(cols)) columns but $(length(query)) query coordinates"))
-    rest = DpuVector[cols[j] for j in 2:length(cols)]
+    rest = DPUVector[cols[j] for j in 2:length(cols)]
     return Internal.reduce_expr(cols[1], rest...) do x
         acc = sqr(x[1] - query[1])
         for j in 2:length(x)
@@ -605,26 +605,26 @@ export min_squared_distance
 # through a two-operand RPN program.
 
 for (f, builder) in ((:>, :>), (:>=, :>=), (:<=, :<=))
-    @eval Base.$f(a::DpuVector, b::DpuVector) =
+    @eval Base.$f(a::DPUVector, b::DPUVector) =
         Internal.transform(a, b) do x
             $builder(x[1], x[2])
         end
 end
 
-Base.:(==)(a::DpuVector, b::DpuVector) = Internal.transform(a, b) do x
+Base.:(==)(a::DPUVector, b::DPUVector) = Internal.transform(a, b) do x
     x[1] == x[2]
 end
 
-Base.:>(a::DpuVector, s::Integer) = Internal.transform(a) do x
+Base.:>(a::DPUVector, s::Integer) = Internal.transform(a) do x
     x[1] > s
 end
-Base.:>=(a::DpuVector, s::Integer) = Internal.transform(a) do x
+Base.:>=(a::DPUVector, s::Integer) = Internal.transform(a) do x
     x[1] >= s
 end
-Base.:<=(a::DpuVector, s::Integer) = Internal.transform(a) do x
+Base.:<=(a::DPUVector, s::Integer) = Internal.transform(a) do x
     x[1] <= s
 end
-Base.:<(a::DpuVector, s::Integer) = Internal.transform(a) do x
+Base.:<(a::DPUVector, s::Integer) = Internal.transform(a) do x
     x[1] < s
 end
 
@@ -635,13 +635,13 @@ end
 # `sync()`, flushes them.
 
 """
-    DpuLocalVector(n; reduce_op = :sum)
+    DPULocalVector(n; reduce_op = :sum)
 
 A small per-DPU accumulator array in WRAM. Scatter into it by indexing with a
 lazy expression, and read it with `Array`, which merges every DPU's copy with
 `reduce_op`:
 
-    bins = DpuLocalVector(16)
+    bins = DPULocalVector(16)
     bins[(da .* 16) .>> 10] .+= 1        # queued
     Array(bins)                          # flushed, then merged
 
@@ -649,26 +649,26 @@ lazy expression, and read it with `Array`, which merges every DPU's copy with
 accumulation each update performs, so `.+=` belongs to a `:sum` local and
 `.= min.(...)` to a `:min` one.
 """
-mutable struct DpuLocalVector
+mutable struct DPULocalVector
     handle::Any
     len::Int
     reduce_op::Symbol
 end
 
-function DpuLocalVector(n::Integer; reduce_op::Symbol = :sum)
+function DPULocalVector(n::Integer; reduce_op::Symbol = :sum)
     reduce_op in LOCAL_REDUCE_OPS || throw(ArgumentError(
         "reduce_op must be one of $(LOCAL_REDUCE_OPS)"))
     idx = findfirst(==(reduce_op), LOCAL_REDUCE_OPS) - 1
     handle = retry_on_oom(() -> PolymerPIM.local_alloc(Int32(n), Int32(idx)))
-    return DpuLocalVector(handle, Int(n), reduce_op)
+    return DPULocalVector(handle, Int(n), reduce_op)
 end
 
-Base.length(l::DpuLocalVector) = l.len
+Base.length(l::DPULocalVector) = l.len
 
 # In the order written: one flush, one program, so updates to different locals
 # share a pass.
 struct _PendingUpdate
-    target::DpuLocalVector
+    target::DPULocalVector
     op::UInt8
     index::Any
     value::Any
@@ -678,14 +678,14 @@ const _PENDING_UPDATES = _PendingUpdate[]
 
 # `bins[idx]` on its own is not a value -- only the target of an accumulation.
 struct _LocalSlot
-    target::DpuLocalVector
+    target::DPULocalVector
     index::Any
 end
 
 # `bins[i] .+= v` desugars to `bins[i] .= bins[i] .+ v`: only the assignment
 # target goes through dotview, so the read needs the same slot object.
-Base.dotview(l::DpuLocalVector, index) = _LocalSlot(l, index)
-Base.getindex(l::DpuLocalVector, index) = _LocalSlot(l, index)
+Base.dotview(l::DPULocalVector, index) = _LocalSlot(l, index)
+Base.getindex(l::DPULocalVector, index) = _LocalSlot(l, index)
 
 const _ACCUM_OPS = Dict{Any,UInt8}(
     (+) => Internal.Opcodes.OP_SUM, (*) => Internal.Opcodes.OP_PRODUCT,
@@ -732,7 +732,7 @@ _lower_operand(x::Base.Broadcast.Broadcasted, st::_Lowering) = _lower(x, st)
 function _pending_program(updates::Vector{_PendingUpdate};
                           consume::Bool = true)
     st = _Lowering()
-    locals = DpuLocalVector[]
+    locals = DPULocalVector[]
     reductions = _LocalReduce[]
     for u in updates
         index = _lower_operand(u.index, st)
@@ -749,7 +749,7 @@ function _pending_program(updates::Vector{_PendingUpdate};
         "($MAX_LOCAL_SCRATCH_VECTORS); WRAM has room for no more, and the " *
         "extras would silently read back as zeros"))
     st.primary === nothing && throw(ArgumentError(
-        "a scatter needs a DpuVector in its index or value"))
+        "a scatter needs a DPUVector in its index or value"))
     # Folded in, so `sync()` must not run them a second time.
     consume && for x in st.inlined
         x.consumed = true
@@ -798,7 +798,7 @@ _mark_referenced(::Any, _) = nothing
 # it do not.
 function _run_dangling_lazies()
     for x in _dangling_lazies()
-        DpuVector(x)
+        DPUVector(x)
     end
     return nothing
 end
@@ -824,11 +824,11 @@ function flush_locals!()
     return nothing
 end
 
-function Base.Array(l::DpuLocalVector)
+function Base.Array(l::DPULocalVector)
     flush_locals!()
     out = Vector{Int32}(undef, l.len)
     retry_on_oom(() -> PolymerPIM.var"local_to_cpu!"(l.handle, out))
     return out
 end
 
-export DpuLocalVector, flush_locals!
+export DPULocalVector, flush_locals!

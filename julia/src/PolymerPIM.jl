@@ -109,7 +109,7 @@ end
 
 How many DPUs the runtime is using. Set with the `NR_DPUS` environment variable
 before the first allocation (default 8); DPUs are claimed on the first
-`DpuVector`, and before that this reports the count that will be taken.
+`DPUVector`, and before that this reports the count that will be taken.
 """
 ndpus() = Int(num_dpus())
 
@@ -176,7 +176,7 @@ include("jit.jl")
 include("display.jl")
 include("logging.jl")
 
-export DpuVector, DpuFuture, DpuLazy, fence, sync
+export DPUVector, DpuFuture, DpuLazy, fence, sync
 export MAX_VFUSE_INPUTS, MAX_PIPELINE_SCALARS, MAX_LOCAL_SCRATCH_VECTORS
 export MAX_CHAINS
 export installinfo, configuration, ndpus, ntasklets

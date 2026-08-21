@@ -4,8 +4,8 @@
 @testset "binary vector-vector" begin
     a_data = Int32.(collect(1:N))
     b_data = Int32.(collect(N:-1:1))
-    a = DpuVector(a_data)
-    b = DpuVector(b_data)
+    a = DPUVector(a_data)
+    b = DPUVector(b_data)
 
     @test Array(a + b) == a_data .+ b_data
     @test Array(a - b) == a_data .- b_data
@@ -15,7 +15,7 @@ end
 
 @testset "binary vector-scalar" begin
     a_data = Int32.(collect(2:2:2N))
-    a = DpuVector(a_data)
+    a = DPUVector(a_data)
 
     @test Array(a + 10)    == a_data .+ Int32(10)
     @test Array(10 + a)    == a_data .+ Int32(10)
@@ -28,7 +28,7 @@ end
 
 @testset "unary operations" begin
     a_data = Int32.(vcat(collect(-N÷2:-1), collect(1:N÷2)))
-    a = DpuVector(a_data)
+    a = DPUVector(a_data)
 
     @test Array(-a)    == -a_data
     @test Array(abs(a)) == abs.(a_data)
@@ -37,8 +37,8 @@ end
 @testset "chained operations" begin
     a_data = Int32.(collect(1:N))
     b_data = Int32.(collect(N:-1:1))
-    a = DpuVector(a_data)
-    b = DpuVector(b_data)
+    a = DPUVector(a_data)
+    b = DPUVector(b_data)
 
     result = abs(-((a + b) - a))
     @test Array(result) == abs.(-(((a_data .+ b_data) .- a_data)))
@@ -47,14 +47,14 @@ end
 @testset "comparisons and select" begin
     a_data = Int32.(collect(1:N))
     b_data = Int32.(collect(N:-1:1))
-    a = DpuVector(a_data)
-    b = DpuVector(b_data)
+    a = DPUVector(a_data)
+    b = DPUVector(b_data)
 
     @test Array(a < b) == Int32.(a_data .< b_data)
     @test Array(a == Int32(7)) == Int32.(a_data .== 7)
 
     # select(cond, then, else), elementwise on the mask.
-    cond = DpuVector(Int32.(a_data .< b_data))
+    cond = DPUVector(Int32.(a_data .< b_data))
     picked = select_op(cond, a, b)
     @test Array(picked) == ifelse.(a_data .< b_data, a_data, b_data)
 end

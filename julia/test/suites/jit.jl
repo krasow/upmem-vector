@@ -1,9 +1,9 @@
 # @code_jitted: the generated kernel for an expression, without running it.
 
 @testset "code_jitted describes the lowered program" begin
-    a = DpuVector(Int32.(1:N))
-    b = DpuVector(Int32.(N+1:2N))
-    c = DpuVector(fill(Int32(3), N))
+    a = DPUVector(Int32.(1:N))
+    b = DPUVector(Int32.(N+1:2N))
+    c = DPUVector(fill(Int32(3), N))
 
     code = @code_jitted a .+ b .* c
     @test code isa PolymerPIM.JittedCode
@@ -19,9 +19,9 @@
 end
 
 @testset "code_jitted covers the broadcast forms" begin
-    a = DpuVector(Int32.(1:N))
-    b = DpuVector(Int32.(N+1:2N))
-    d = DpuVector(zeros(Int32, N))
+    a = DPUVector(Int32.(1:N))
+    b = DPUVector(Int32.(N+1:2N))
+    d = DPUVector(zeros(Int32, N))
 
     for code in (@code_jitted(abs.(a .- b) .+ 1),
                  @code_jitted(ifelse.(a .> b, a, b)),
@@ -36,8 +36,8 @@ end
 end
 
 @testset "reductions over a broadcast are one program" begin
-    a = DpuVector(Int32.(1:N))
-    b = DpuVector(Int32.(N+1:2N))
+    a = DPUVector(Int32.(1:N))
+    b = DPUVector(Int32.(N+1:2N))
 
     code = @code_jitted sum(a .+ b)
     @test length(code.ops) == 4          # push, push, add, reduce
@@ -74,8 +74,8 @@ end
 end
 
 @testset "kernels declare only the slots they use" begin
-    a = DpuVector(Int32.(1:N))
-    b = DpuVector(Int32.(N+1:2N))
+    a = DPUVector(Int32.(1:N))
+    b = DPUVector(Int32.(N+1:2N))
     src = (@code_jitted a .+ b).source
 
     # One result, one operand: the placeholders for every other slot the
@@ -89,8 +89,8 @@ end
 end
 
 @testset "code_jitted matches what the JIT compiles" begin
-    a = DpuVector(Int32.(1:N))
-    b = DpuVector(Int32.(N+1:2N))
+    a = DPUVector(Int32.(1:N))
+    b = DPUVector(Int32.(N+1:2N))
 
     code = @code_jitted a .- b .+ 7
     @test !iscompiled(code)              # nothing on disk until it is launched
@@ -106,7 +106,7 @@ end
 # The arg forms launch as they build, so the macro rebuilds their program rather
 # than describing the vector that came back.
 @testset "code_jitted covers the arg forms" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(Int32.(N:-1:1))
 
     # The lane node lowers like any broadcast, so the macro has no special case.
     lanes = @code_jitted argmax.(zip(a, b))

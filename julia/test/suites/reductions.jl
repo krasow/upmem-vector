@@ -2,13 +2,13 @@
 
 @testset "reductions" begin
     n = 4096
-    a = DpuVector(Int32.(collect(1:n)))
+    a = DPUVector(Int32.(collect(1:n)))
 
     @test sum(a)[] == Int64(n) * Int64(n + 1) ÷ 2
     @test minimum(a)[] == 1
     @test maximum(a)[] == n
 
-    b = DpuVector(fill(Int32(1), n))
+    b = DPUVector(fill(Int32(1), n))
     @test sum(b)[] == n
     @test prod(b)[] == 1
     @test minimum(b)[] == 1
@@ -16,8 +16,8 @@
 end
 
 @testset "a reduction is a future" begin
-    a = DpuVector(Int32.(collect(1:N)))
-    b = DpuVector(fill(Int32(2), N))
+    a = DPUVector(Int32.(collect(1:N)))
+    b = DPUVector(fill(Int32(2), N))
 
     fa = sum(a)
     @test fa isa DpuFuture
@@ -30,7 +30,7 @@ end
 
 @testset "reductions fuse into one kernel pass" begin
     # Read none until all are queued.  Eight is inside MAX_HFUSE_CHAINS.
-    vectors = [DpuVector(fill(Int32(i), 1024)) for i in 1:8]
+    vectors = [DPUVector(fill(Int32(i), 1024)) for i in 1:8]
     PolymerPIM.dpu_sync()
 
     before = PolymerPIM.stat_compute_launches()
@@ -46,7 +46,7 @@ end
 # `sum(f, v)` takes f as an argument, so unlike `sum(f.(v))` there is no
 # intermediate to materialise: one program, one pass.
 @testset "mapped reductions are one pass" begin
-    a = DpuVector(Int32.(-N÷2:N÷2-1))
+    a = DPUVector(Int32.(-N÷2:N÷2-1))
     host = Array(a)
 
     @test sum(abs, a)[] == sum(abs, host)
@@ -67,7 +67,7 @@ end
 
 # Two DPU passes, the value then its first index: has to match Base, ties too.
 @testset "index reductions match Base" begin
-    a = DpuVector(Int32.([4, 7, 1, 7, -3, 0]))
+    a = DPUVector(Int32.([4, 7, 1, 7, -3, 0]))
     host = Array(a)
 
     @test findmax(a) == findmax(host)
@@ -79,20 +79,20 @@ end
     @test findmax(a)[1] === maximum(a)[]
     @test findmin(a)[1] === minimum(a)[]
 
-    b = DpuVector(Int32.(1:N))
+    b = DPUVector(Int32.(1:N))
     @test argmax(b) == N
     @test argmin(b) == 1
 
-    @test_throws ArgumentError findmax(DpuVector(0))
-    @test_throws ArgumentError argmin(DpuVector(0))
+    @test_throws ArgumentError findmax(DPUVector(0))
+    @test_throws ArgumentError argmin(DPUVector(0))
 
     # The winner wherever it sits: last shard, first, and mid-way through a
     # length that shards raggedly.
-    up = DpuVector(Int32.(1:1000))
+    up = DPUVector(Int32.(1:1000))
     @test argmax(up) == 1000 && argmin(up) == 1
     ragged = Int32.(vcat(1:500, 9, 501:998))
-    @test argmax(DpuVector(ragged)) == argmax(ragged)
-    @test findmin(DpuVector(ragged)) == (Int64(1), 1)
+    @test argmax(DPUVector(ragged)) == argmax(ragged)
+    @test findmin(DPUVector(ragged)) == (Int64(1), 1)
 
     # A pass for the value and a pass for the index.
     sync(); before = PolymerPIM.stat_compute_launches()
@@ -107,7 +107,7 @@ end
 # An unrun expression reduces in one pass: the terminal joins the program rather
 # than reducing a materialised intermediate.
 @testset "reducing a lazy expression is one pass" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(3), N))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(fill(Int32(3), N))
     av = Array(a); bv = Array(b)
 
     @test (a .+ b) isa DpuLazy
@@ -122,7 +122,7 @@ end
 
     # Forcing without a transfer, then reducing, is two passes.
     sync(); before = PolymerPIM.stat_compute_launches()
-    kept = DpuVector(a .+ b)
+    kept = DPUVector(a .+ b)
     @test sum(kept)[] == total
     sync()
     @test PolymerPIM.stat_compute_launches() - before == 2
@@ -130,13 +130,13 @@ end
 
 # Forcing the same expression twice must not run it twice.
 @testset "forcing is memoised" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(fill(Int32(2), N))
 
     sync(); before = PolymerPIM.stat_compute_launches()
     x = a .+ b
     first = Array(x)
     second = Array(x)
-    kept = DpuVector(x)
+    kept = DPUVector(x)
     sync()
     @test PolymerPIM.stat_compute_launches() - before == 1
     @test first == second
@@ -147,7 +147,7 @@ end
 
 # `fence` on an unrun expression: runs that value, and only that value.
 @testset "fencing an expression" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(fill(Int32(2), N))
 
     sync(); before = PolymerPIM.stat_compute_launches()
     step1 = a .+ b            # an intermediate, never wanted on its own
@@ -168,7 +168,7 @@ end
 # `sync()` runs the values nothing else will, and leaves the steps behind them
 # alone -- so user code needs one barrier, not two.
 @testset "sync runs what nothing else will" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(fill(Int32(2), N))
     av = Array(a); bv = Array(b)
 
     # A kept result runs; reading it afterwards costs nothing.
@@ -190,7 +190,7 @@ end
     @test Array(final) == (av .+ bv) .* 2
 
     # Nor is an index folded into a scatter.
-    bins = DpuLocalVector(8)
+    bins = DPULocalVector(8)
     sync(); before = PolymerPIM.stat_compute_launches()
     bins[a .* Int32(0)] .+= 1
     sync()
@@ -201,7 +201,7 @@ end
 # A reduction over an expression that has already run must reduce the result,
 # not re-derive the program.
 @testset "reducing an already-run expression" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(fill(Int32(2), N))
     av = Array(a); bv = Array(b)
 
     x = a .+ b
