@@ -7,6 +7,7 @@
 // reductions fuse into one kernel pass.
 
 #include <jit.h>
+#include <logger.h>
 #include <stats.h>
 #include <vectordpu.h>
 
@@ -389,6 +390,25 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("dpu_fence", [](Vec& v) { v.add_fence(); });
   mod.method("dpu_sync", []() { dpu_fence(); });
   mod.method("cleanup", []() { DpuRuntime::get().shutdown(); });
+
+  // ---- log capture (@show_log) ----
+  //
+  // Redirects the host logger into a buffer for the duration of a block and,
+  // while it is redirected, can raise the level so that block alone logs in
+  // detail.  LogSink is a process-level stack rather than logger state, so
+  // this is safe before the runtime exists and across a shutdown inside the
+  // captured block.
+
+  mod.method("log_capture_begin",
+             [](int64_t level) { LogSink::get().push((int)level); });
+  mod.method("log_capture_end",
+             []() -> std::string { return LogSink::get().pop(); });
+  mod.method("log_capture_depth",
+             []() -> int64_t { return (int64_t)LogSink::get().depth(); });
+
+  // The level the library was compiled with: call sites above it are #if'd out,
+  // so no runtime level can reach them.
+  mod.method("log_max_level", []() -> int64_t { return ENABLE_DPU_LOGGING; });
 
   // ---- JIT introspection (@code_jitted) ----
   //
