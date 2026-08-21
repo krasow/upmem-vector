@@ -197,6 +197,23 @@ const _BCAST_UNARY = Dict{Any,Function}(
     # abs2 is x*x, and `sqr` loads x once (OP_DUP) where `x .* x` would twice.
     abs2 => sqr,
 )
+const _BCAST_SCALAR_VAR = Dict{Any,Function}(
+    (+) => add_var, (-) => sub_var, (*) => mul_var, div => divide_var,
+    (>>) => shr_var, (==) => eq_var, (<) => lt_var, (>) => gt_var,
+    (<=) => le_var, (>=) => ge_var,
+)
+
+# Julia has already evaluated a scalar argument by the time it builds a
+# Broadcasted tree.  Replace each integer occurrence with an identity-carrying
+# leaf at that boundary: its value is captured now, while its opcode slot is
+# assigned later when the lazy expression is submitted.
+_capture_scalars(x::Integer) = _DpuScalar(Int32(x))
+_capture_scalars(x::Base.RefValue{<:Integer}) = _capture_scalars(x[])
+_capture_scalars(x) = x
+function _capture_scalars(bc::Base.Broadcast.Broadcasted{Style}) where {Style}
+    args = map(_capture_scalars, bc.args)
+    return Base.Broadcast.Broadcasted{Style}(bc.f, args, bc.axes)
+end
 
 # Which vector became input(), and the operand slots so far.  Matched by object
 # identity, so a vector used twice is loaded once.
@@ -204,8 +221,11 @@ mutable struct _Lowering
     primary::Union{Nothing,DpuVector}
     operands::Vector{DpuVector}
     inlined::Vector{Any}    # the lazy values folded into this program
+    scalar_slots::IdDict{_DpuScalar,Int}
+    scalars::Vector{Int32}  # launch-time values, in slot order
 end
-_Lowering() = _Lowering(nothing, DpuVector[], Any[])
+_Lowering() = _Lowering(nothing, DpuVector[], Any[],
+                        IdDict{_DpuScalar,Int}(), Int32[])
 
 function _leaf(v::DpuVector, st::_Lowering)
     if st.primary === nothing
@@ -223,6 +243,23 @@ function _leaf(v::DpuVector, st::_Lowering)
 end
 
 _lower(v::DpuVector, st::_Lowering) = _leaf(v, st)
+
+# Reusing the same leaf reuses its slot.  This matters for scatter, which lowers
+# a shared index once per update before `_scatter_program` folds the common
+# prefix back to one copy.  Independently constructed leaves remain distinct
+# even when their values are equal, so the program depends on expression shape
+# rather than on whether two runtime values happen to coincide.
+function _scalar_slot(p::_DpuScalar, st::_Lowering)
+    slot = get(st.scalar_slots, p, 0)
+    slot != 0 && return slot
+    length(st.scalars) < MAX_PIPELINE_SCALARS || throw(ArgumentError(
+        "more than $MAX_PIPELINE_SCALARS runtime scalars in one program"))
+    push!(st.scalars, p.value)
+    slot = length(st.scalars)
+    st.scalar_slots[p] = slot
+    return slot
+end
+_lower(p::_DpuScalar, st::_Lowering) = scalar_var(_scalar_slot(p, st))
 _lower(x::Integer, st::_Lowering) = constant(x)
 _lower(e::DpuExpr, ::_Lowering) = e
 _lower(x::Base.RefValue, st::_Lowering) = _lower(x[], st)
@@ -245,6 +282,12 @@ function _lower(bc::Base.Broadcast.Broadcasted, st::_Lowering)
             "$f is not supported inside a DpuVector broadcast"))
         op = _BCAST_BINARY[f]
         a, b = args
+        # A host scalar in a lazy broadcast is a launch parameter by default.
+        # Use the compact in-place scalar-var opcode for the common rhs form.
+        if b isa _DpuScalar && !(a isa _DpuScalar)
+            lhs = _lower(a, st)
+            return _BCAST_SCALAR_VAR[f](lhs, _scalar_slot(b, st))
+        end
         # An integer operand becomes an immediate rather than a pushed value.
         if b isa Integer && !(a isa Integer)
             return op(_lower(a, st), b)
@@ -271,6 +314,7 @@ end
 # and a good broadcast then reports "contains no DpuVector".
 @noinline function _lower_tree(bc::Base.Broadcast.Broadcasted;
                                consume::Bool = true)
+    bc = _capture_scalars(bc)
     st = _Lowering()
     e = _lower(bc, st)
     st.primary === nothing &&
@@ -281,7 +325,7 @@ end
         x.consumed = true
         x.uses += 1
     end
-    return e, st.primary, st.operands
+    return e, st.primary, st.operands, st.scalars
 end
 
 # ---- lazy results ----
@@ -308,7 +352,7 @@ end
 const _LAZY_REGISTRY = WeakRef[]
 
 function DpuLazy(bc::Base.Broadcast.Broadcasted, len::Int)
-    x = DpuLazy(bc, len, nothing, false, 0)
+    x = DpuLazy(_capture_scalars(bc), len, nothing, false, 0)
     push!(_LAZY_REGISTRY, WeakRef(x))
     return x
 end
@@ -363,13 +407,13 @@ function DpuVector(x::DpuLazy)
     # An expression that cannot be lowered is not retried: otherwise it stays
     # in the registry and the next `sync()` raises it again, far from whoever
     # wrote it.
-    e, primary, operands = try
+    e, primary, operands, scalars = try
         _lower_tree(x.bc)
     catch
         x.consumed = true
         rethrow()
     end
-    x.forced = dpu_pipeline(primary, e; operands = operands)
+    x.forced = dpu_pipeline(primary, e; operands = operands, scalars = scalars)
     return x.forced
 end
 
@@ -420,10 +464,11 @@ for (f, terminal) in ((:sum, :sum), (:prod, :prod),
     @eval function Base.$f(x::DpuLazy)
         # Already run: reduce that result rather than re-deriving the program.
         x.forced === nothing || return Base.$f(x.forced)
-        e, primary, operands = _lower_tree(x.bc)
+        e, primary, operands, scalars = _lower_tree(x.bc)
         x.consumed = true       # reduced here, so `sync()` must not run it too
         x.uses += 1
-        return dpu_pipeline_reduce(primary, $terminal(e); operands = operands)
+        return dpu_pipeline_reduce(primary, $terminal(e); operands = operands,
+                                   scalars = scalars)
     end
 end
 
@@ -442,12 +487,12 @@ Base.copyto!(dest::DpuVector, x::DpuLazy) =
     (x.consumed = true; copyto!(dest, x.bc))
 
 function Base.copyto!(dest::DpuVector, bc::Base.Broadcast.Broadcasted{DpuStyle})
-    e, primary, operands = _lower_tree(bc)
+    e, primary, operands, scalars = _lower_tree(bc)
     length(dest) == length(primary) || throw(DimensionMismatch(
         "destination has $(length(dest)) elements, expression $(length(primary))"))
     _check_program(e, operands)
     retry_on_oom(() -> PolymerPIM.launch_pipeline_into(
-        dest.handle, primary.handle, e.ops, _veclist(operands), Int32[]))
+        dest.handle, primary.handle, e.ops, _veclist(operands), scalars))
     return dest
 end
 
@@ -800,8 +845,9 @@ function Base.materialize!(dest::_LocalSlot, acc::_LocalAccum)
     acc.op == _local_reduce_opcode(dest.target.reduce_op) || throw(ArgumentError(
         "this accumulation is $(acc.op) but the local vector merges with " *
         ":$(dest.target.reduce_op); they have to agree"))
-    push!(_PENDING_UPDATES, _PendingUpdate(dest.target, acc.op, dest.index,
-                                           acc.value))
+    push!(_PENDING_UPDATES, _PendingUpdate(dest.target, acc.op,
+                                           _capture_scalars(dest.index),
+                                           _capture_scalars(acc.value)))
     return dest.target
 end
 
@@ -841,7 +887,8 @@ function _pending_program(updates::Vector{_PendingUpdate};
         x.consumed = true
         x.uses += 1
     end
-    return _scatter_program(reductions), st.primary, st.operands, locals
+    return _scatter_program(reductions), st.primary, st.operands, st.scalars,
+           locals
 end
 
 # Alive, unrun, and not folded into anything: the values a caller still holds.
@@ -899,13 +946,13 @@ function flush_locals!()
     isempty(_PENDING_UPDATES) && return nothing
     updates = copy(_PENDING_UPDATES)
     empty!(_PENDING_UPDATES)
-    program, primary, operands, locals = _pending_program(updates)
+    program, primary, operands, scalars, locals = _pending_program(updates)
     ll = PolymerPIM.DpuLocalList()
     for l in locals
         PolymerPIM.var"locallist_push!"(ll, l.handle)
     end
     retry_on_oom(() -> PolymerPIM.launch_pipeline_scatter(
-        primary.handle, program.ops, _veclist(operands), Int32[], ll))
+        primary.handle, program.ops, _veclist(operands), scalars, ll))
     return nothing
 end
 

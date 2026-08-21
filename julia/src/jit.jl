@@ -54,7 +54,7 @@ end
 code_jitted(e::DpuExpr; kwargs...) = code_jitted(e.ops; kwargs...)
 
 function code_jitted(bc::Base.Broadcast.Broadcasted)
-    e, primary, operands = _lower_tree(bc; consume = false)
+    e, primary, operands, _ = _lower_tree(bc; consume = false)
     return code_jitted(e; nelements = length(primary), noperands = length(operands))
 end
 
@@ -82,7 +82,7 @@ code_jitted(x) = error("""
 const REDUCERS = (:sum, :prod, :minimum, :maximum)
 
 function _code_jitted_reduce(f, bc::Base.Broadcast.Broadcasted)
-    e, primary, operands = _lower_tree(bc; consume = false)
+    e, primary, operands, _ = _lower_tree(bc; consume = false)
     return code_jitted(f(e); nelements = length(primary),
                        noperands = length(operands))
 end
@@ -113,7 +113,7 @@ function _code_jitted_scatter(statement)
         "that statement queued no local accumulation"))
     queued = _PENDING_UPDATES[(before + 1):end]
     resize!(_PENDING_UPDATES, before)
-    program, primary, operands, _ = _pending_program(queued; consume = false)
+    program, primary, operands, _, _ = _pending_program(queued; consume = false)
     return code_jitted(program; nelements = length(primary),
                        noperands = length(operands))
 end

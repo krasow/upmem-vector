@@ -29,6 +29,54 @@ end
     @test Array(bins) == want
 end
 
+@testset "runtime scalars reach a scatter launch" begin
+    data = Int32[i % 4 for i in 0:255]
+    a = DpuVector(data)
+    offset = 1
+    weight = 2
+
+    # Five int32s need padding to 24 bytes; six already occupy 24.
+    for nlocal in (5, 6)
+        bins = DpuLocalVector(nlocal)
+        bins[a .+ offset] .+= weight
+
+        program, primary, operands, scalars, locals = PolymerPIM._pending_program(
+            PolymerPIM._PENDING_UPDATES; consume = false)
+        @test primary === a
+        @test isempty(operands)
+        @test scalars == Int32[1, 2]
+        @test length(locals) == 1
+        @test !isempty(program.ops)
+
+        want = zeros(Int32, nlocal)
+        for x in data
+            want[x + 2] += 2
+        end
+        @test Array(bins) == want
+    end
+end
+
+@testset "shared scatter indices reuse scalar slots" begin
+    a = DpuVector(Int32[i % 4 for i in 0:255])
+    # Equal values are deliberate: equality must not collapse distinct leaves.
+    params = zeros(Int32, MAX_PIPELINE_SCALARS)
+
+    # Model kmeans' shape: the same parameter-heavy index feeds several local
+    # updates.  Re-lowering it must not multiply the launch scalar count.
+    shared = a
+    for p in params
+        shared = shared .+ p
+    end
+    bins = DpuLocalVector(6)
+    bins[shared] .+= a
+    bins[shared] .+= a
+
+    _, _, _, scalars, _ = PolymerPIM._pending_program(
+        PolymerPIM._PENDING_UPDATES)
+    @test length(scalars) == MAX_PIPELINE_SCALARS
+    empty!(PolymerPIM._PENDING_UPDATES)
+end
+
 @testset "several updates share one pass" begin
     # The kmeans shape: one index expression feeding a count plus a sum per
     # dimension.  The shared prefix is emitted once and re-used with OP_DUP.
@@ -100,20 +148,19 @@ MAX_LOCAL_SCRATCH_VECTORS >= 2 && @testset "two locals in one program" begin
     @test Array(totals) == Int32[s * count(==(s), av) for s in 0:(slots - 1)]
 end
 
-# The old spelling built the program by hand from `input()`.  The lazy index has
-# to compile to exactly that, or the bucket arithmetic has left the kernel.
-@testset "the scatter program is unchanged" begin
+# The lazy spelling builds the same runtime-scalar program by hand.
+@testset "the scatter program matches its expression" begin
     depth, nbins = 10, 16
     da = DpuVector(Int32[i % (1 << depth) for i in 0:255])
 
-    bucket = (input() * Int32(nbins)) >> Int32(depth)
+    bucket = shr_var(mul_var(input(), 1), 2)
     byhand = PolymerPIM._scatter_program(
         [PolymerPIM._LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, bucket,
-                                 constant(Int32(1)))])
+                                 scalar_var(3))])
 
     bins = DpuLocalVector(nbins)
     bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
-    program, primary, operands, locals = PolymerPIM._pending_program(
+    program, primary, operands, scalars, locals = PolymerPIM._pending_program(
         PolymerPIM._PENDING_UPDATES; consume = false)
 
     # The macro shows the same program, and leaves the queue as it found it.
@@ -127,6 +174,7 @@ end
     @test program.ops == byhand.ops
     @test primary === da
     @test isempty(operands)
+    @test scalars == Int32[nbins, depth, 1]
     @test length(locals) == 1
     @test code_jitted(program).hash == code_jitted(byhand).hash
 

@@ -58,6 +58,10 @@ An immediate baked into the program.
 """
 constant(v::Integer) = DpuExpr(vcat(Opcodes.OP_PUSH_SCALAR, _imm32(v)))
 
+mutable struct _DpuScalar
+    value::Int32
+end
+
 """
     scalar_var(i)
 
