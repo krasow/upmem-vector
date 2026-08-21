@@ -195,6 +195,8 @@ end
 end
 
 @testset "fusion search" begin
+    @test BenchmarkRunner.DEFAULT_FUSION_SEARCH["MAX_HFUSE_CHAINS"] ==
+          [1, 2, 4, 6, 8, 10]
     seed = copy(BenchmarkRunner.DEFAULT_FUSION_BUILD)
     search = deepcopy(BenchmarkRunner.DEFAULT_FUSION_SEARCH)
     search["FUSION_LOOKAHEAD"] = [1, 2, 3]

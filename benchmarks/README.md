@@ -13,11 +13,13 @@ Tune first, then run the suite:
 ./run.sh
 ./run.sh elementwise --resume
 ./run.sh elementwise --reset-tune
+./run.sh elementwise --default-params
 ./run.sh elementwise --tune --passes 2 --runner --variant polymerpim,julia
 ```
 
 Arguments before `--tune` or `--runner` apply to both phases. Arguments after a
 marker apply only to that phase. Set `JULIA` to choose the Julia executable.
+`--default-params` skips tuning and ignores saved fusion profiles.
 
 Run either phase directly when needed:
 

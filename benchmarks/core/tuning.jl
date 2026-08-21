@@ -9,7 +9,7 @@ const DEFAULT_FUSION_BUILD = Dict(
 
 const DEFAULT_FUSION_SEARCH = Dict(
     "FUSION_LOOKAHEAD" => [0, 1, 2, 4, 8, 16, 32, 64, 128],
-    "MAX_HFUSE_CHAINS" => collect(1:10),
+    "MAX_HFUSE_CHAINS" => [1, 2, 4, 6, 8, 10],
     "JIT_BATCH_SIZE" => [0, 1, 2, 4, 8, 16, 32],
     "MAX_VFUSE_OPS" => [1, 8, 16, 32, 64, 96, 128, 192],
 )
