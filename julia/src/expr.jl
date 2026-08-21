@@ -90,7 +90,53 @@ end
 # These use the immediate-carrying opcodes rather than push-then-combine, which
 # keeps the generated kernel one value narrower.
 
+# Where the program's last instruction begins.  Walked from the start, since an
+# immediate can hold a byte that reads as an opcode; nothing if the program does
+# not decode cleanly.
+function _last_op_start(ops::Vector{UInt8})
+    i, last, n = 1, nothing, length(ops)
+    while i <= n
+        last = i
+        i += 1 + Int(Opcodes.inline_bytes(ops[i]))
+    end
+    return i == n + 1 ? last : nothing
+end
+
+_imm32_at(ops::Vector{UInt8}, at::Int) = reinterpret(Int32,
+    UInt32(ops[at]) | UInt32(ops[at + 1]) << 8 |
+    UInt32(ops[at + 2]) << 16 | UInt32(ops[at + 3]) << 24)
+
+# Two immediates applied to the same value are one immediate, so `argmin(d) - 1`
+# costs what the bare opcode does.  Both classes are associative under the
+# wraparound the DPU does anyway; division and shifts are not, so they are left
+# alone.  A net identity drops out entirely.
+const _ADDITIVE = (Opcodes.OP_ADD_SCALAR, Opcodes.OP_SUB_SCALAR)
+
+function _fold_immediate(ops::Vector{UInt8}, v::Integer, op::UInt8)
+    (op in _ADDITIVE || op == Opcodes.OP_MUL_SCALAR) || return nothing
+    at = _last_op_start(ops)
+    at === nothing && return nothing
+    prev = ops[at]
+    at + 4 == length(ops) || return nothing        # must be an immediate op
+    head = ops[1:(at - 1)]
+    prev_v = _imm32_at(ops, at + 1)
+    if op in _ADDITIVE && prev in _ADDITIVE
+        net = (prev == Opcodes.OP_SUB_SCALAR ? -prev_v : prev_v) +
+              (op == Opcodes.OP_SUB_SCALAR ? -Int32(v) : Int32(v))
+        net == 0 && return head
+        return net > 0 ? vcat(head, Opcodes.OP_ADD_SCALAR, _imm32(net)) :
+                         vcat(head, Opcodes.OP_SUB_SCALAR, _imm32(-net))
+    elseif op == Opcodes.OP_MUL_SCALAR && prev == Opcodes.OP_MUL_SCALAR
+        net = prev_v * Int32(v)
+        net == 1 && return head
+        return vcat(head, Opcodes.OP_MUL_SCALAR, _imm32(net))
+    end
+    return nothing
+end
+
 function _scalar_op(a::DpuExpr, v::Integer, op::UInt8)
+    folded = _fold_immediate(a.ops, v, op)
+    folded === nothing || return DpuExpr(folded)
     return DpuExpr(vcat(a.ops, op, _imm32(v)))
 end
 
@@ -151,9 +197,9 @@ lane_index() = DpuExpr([Opcodes.OP_PUSH_INDEX])
 """
     global_index()
 
-The element's index in the whole vector: [`lane_index`](@ref) plus the shard's
-base offset, which the host passes in the launch args. This is the one to
-reduce over when the answer is a position, as `argmax` does.
+The element's index in the whole vector: [`lane_index`](@ref) plus the shard
+base the host passes in the launch args. Reduce over this one when the answer
+is a position, as `argmax` does.
 """
 global_index() = DpuExpr([Opcodes.OP_PUSH_GLOBAL_INDEX])
 
@@ -172,20 +218,32 @@ Base.prod(a::DpuExpr) = _append(a, Opcodes.OP_PRODUCT)
 Base.minimum(a::DpuExpr) = _append(a, Opcodes.OP_MIN)
 Base.maximum(a::DpuExpr) = _append(a, Opcodes.OP_MAX)
 
-"""
-    argmin_lanes(lanes) / argmax_lanes(lanes)
-
-Index (0-based, as the kernel produces it) of the winning lane per element.
-"""
 function _arg_k(lanes::AbstractVector{DpuExpr}, op::UInt8)
     isempty(lanes) && throw(ArgumentError("need at least one lane"))
     length(lanes) <= 255 || throw(ArgumentError("too many lanes"))
     ops = vcat((l.ops for l in lanes)...)
-    return DpuExpr(vcat(ops, op, UInt8(length(lanes))))
+    # +1 because the opcode counts lanes from 0 and Julia counts from 1.
+    return DpuExpr(vcat(ops, op, UInt8(length(lanes)))) + 1
 end
 
-argmin_lanes(lanes::AbstractVector{DpuExpr}) = _arg_k(lanes, Opcodes.OP_ARGMIN_K)
-argmax_lanes(lanes::AbstractVector{DpuExpr}) = _arg_k(lanes, Opcodes.OP_ARGMAX_K)
+"""
+    argmin(exprs) / argmax(exprs)
+
+Which of `exprs` is smallest (largest) at each element, 1-based. A `DpuExpr` is
+one value per element, so this is Base's `argmin` over that collection of
+values:
+
+    argmin([d1, d2, d3])          # nearest of three distances, per element
+
+Also spelled `argmin(zip(d1, d2, d3))`. Over `DpuVector`s the broadcast form
+`argmin.(zip(v1, v2, v3))` is the same program.
+"""
+Base.argmin(lanes::AbstractVector{DpuExpr}) = _arg_k(lanes, Opcodes.OP_ARGMIN_K)
+Base.argmax(lanes::AbstractVector{DpuExpr}) = _arg_k(lanes, Opcodes.OP_ARGMAX_K)
+
+const ExprZip = Base.Iterators.Zip{<:Tuple{DpuExpr,Vararg{DpuExpr}}}
+Base.argmin(z::ExprZip) = Base.argmin(DpuExpr[z.is...])
+Base.argmax(z::ExprZip) = Base.argmax(DpuExpr[z.is...])
 
 # ---- chain separation, for building several results in one pass ----
 
@@ -206,7 +264,7 @@ function chain(exprs::DpuExpr...)
 end
 
 export DpuExpr, input, operand, constant, scalar_var, dup, sqr, select,
-       lane_index, global_index, argmin_lanes, argmax_lanes, chain
+       lane_index, global_index, chain
 export add_var, sub_var, mul_var, divide_var, shr_var,
        eq_var, lt_var, gt_var, ge_var, le_var
 

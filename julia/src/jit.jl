@@ -100,20 +100,9 @@ end
 # rebuild the program the launcher submitted.
 const ARG_FORMS = (:argmin, :argmax, :findmin, :findmax)
 
-# `argmin.(zip(a, b, c))`: the per-element winning lane.
-function _code_jitted_lanes(name::Symbol, z::DpuZip)
-    name in (:argmin, :argmax) || throw(ArgumentError(
-        "@code_jitted over zip takes argmin. or argmax., not $name."))
-    _, label = _lane_program(length(z.is), name === :argmax)
-    return code_jitted(label; nelements = length(z.is[1]),
-                       noperands = length(z.is) - 1)
-end
 
-_code_jitted_lanes(name::Symbol, x) = throw(ArgumentError(
-    "@code_jitted $name. expects zip(::DpuVector...), got a $(typeof(x))."))
-
-# Over one vector: pass 1 is the value, a statically compiled reduction with no
-# source, so what there is to show is pass 2, the index of its first occurrence.
+# Pass 1 is a statically compiled reduction with no source, so show pass 2: the
+# index of the value's first occurrence.
 _code_jitted_arg(::Symbol, v::DpuVector) =
     code_jitted(_arg_index_program(); nelements = length(v))
 
@@ -164,12 +153,6 @@ An assignment describes its right-hand side: `@code_jitted g = sum(a .+ b)` is
 """
 macro code_jitted(ex)
     ex = _rhs(ex)
-    if ex isa Expr && ex.head === :. && ex.args[1] in ARG_FORMS &&
-       ex.args[2] isa Expr && ex.args[2].head === :tuple &&
-       length(ex.args[2].args) == 1
-        return :(_code_jitted_lanes($(QuoteNode(ex.args[1])),
-                                    $(esc(ex.args[2].args[1]))))
-    end
     if ex isa Expr && ex.head === :call && ex.args[1] isa Symbol
         if length(ex.args) == 2 && ex.args[1] in ARG_FORMS
             return :(_code_jitted_arg($(QuoteNode(ex.args[1])),

@@ -170,3 +170,41 @@ end
     @test_throws ArgumentError dpu_pipeline_multi(a, DpuExpr[])
     @test_throws ArgumentError dpu_pipeline_multi(a, [input() for _ in 1:(MAX_CHAINS + 1)])
 end
+
+# Adjacent immediates on the same value are one instruction, so the 1-based
+# `argmin` costs what the raw opcode did.
+@testset "immediates fold" begin
+    e = input()
+    @test (e + 1 - 1).ops == e.ops
+    @test (e - 1 + 1).ops == e.ops
+    @test (e + 2 + 3).ops == (e + 5).ops
+    @test (e + 5 - 2).ops == (e + 3).ops
+    @test (e - 2 - 3).ops == (e - 5).ops
+    @test (e * 3 * 4).ops == (e * 12).ops
+    @test (e * 3 * 0).ops == (e * 0).ops
+    @test length((e * 2 * 1).ops) == length((e * 2).ops)
+
+    # Only within a class, and only on the tail.
+    @test length(((e + 1) * 2).ops) == length((e + 1).ops) + 5
+    @test length((div(e, 2) * 2).ops) == length(div(e, 2).ops) + 5
+    @test length((div(div(e, 2), 3)).ops) == length(div(e, 2).ops) + 5
+
+    # An immediate whose bytes contain an opcode value must not be mistaken for
+    # one: 0x03 is OP_ADD, and the walk starts from the front, so it isn't.
+    @test (e + 0x03 + 1).ops == (e + 4).ops
+
+    # The lane label folds back to the bare opcode.
+    lanes = DpuExpr[input(), operand(1)]
+    zeroed = argmin(lanes) - 1
+    @test zeroed.ops[end - 1] == PolymerPIM.Opcodes.OP_ARGMIN_K
+    @test zeroed.ops[end] == 0x02
+
+    # ... and still computes what it did before.
+    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    @test Array(transform(a, b) do x
+        argmin([x[1], x[2]]) - 1
+    end) == argmin.(zip(Array(a), Array(b))) .- 1
+    @test Array(transform(a) do x
+        x[1] + 7 - 7
+    end) == Array(a)
+end

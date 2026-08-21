@@ -89,15 +89,13 @@ const MAPREDUCE_TERMINALS = Dict{Any,Function}(
 
 # ---- Base overloads: which element won ----
 #
-# Two passes, both on the DPUs: the extreme value, then the lowest index holding
-# it.  Needs `global_index`, since a kernel's own index restarts on every shard.
-# The value rides in as a runtime scalar, so one compiled kernel serves every
-# call.  Without these Base falls back to iterating, which asks for `keys`.
+# Two DPU passes: the extreme value, then the lowest index holding it.  Needs
+# `global_index`, since a kernel's own index restarts on every shard.  Without
+# these Base falls back to iterating, which asks for `keys`.
 
-# Non-winners take a sentinel above every index, so the min is the first winning
-# position -- the tie Base picks too.  Both the value and the sentinel are
-# runtime scalars, so the program is the same for every call and every length:
-# one compiled kernel, cached.
+# Non-winners take a sentinel above every index, so the min is the first winner
+# -- Base's tie too.  Value and sentinel are runtime scalars, so every call and
+# every length share one compiled kernel.
 _arg_index_program() =
     minimum(select(eq_var(input(), 1), global_index(), scalar_var(2)))
 
@@ -116,9 +114,8 @@ end
 The extreme value and the first index holding it, as Base's do. The value is an
 `Int64`, the type a DPU reduction returns, not the vector's `Int32`.
 
-Two kernel passes, both on the DPUs, and only scalars come back -- the vector
-stays put. [`maximum`](@ref) and [`minimum`](@ref) are one pass, so prefer them
-when the position is not needed.
+Two DPU passes; only scalars come back, the vector stays put. [`maximum`](@ref)
+is one pass, so prefer it when the position is not needed.
 """
 Base.findmax(v::DpuVector) = _arg_reduce(v, true)
 Base.findmin(v::DpuVector) = _arg_reduce(v, false)
@@ -243,6 +240,10 @@ _lower(x::Base.RefValue, st::_Lowering) = _lower(x[], st)
 function _lower(bc::Base.Broadcast.Broadcasted, st::_Lowering)
     f = bc.f
     args = bc.args
+    if f isa LaneArg   # any number of lanes, each possibly an expression
+        lanes = DpuExpr[_lower(a, st) for a in args]
+        return f isa LaneArg{true} ? argmax(lanes) : argmin(lanes)
+    end
     if length(args) == 1
         haskey(_BCAST_UNARY, f) || throw(ArgumentError(
             "$f is not supported inside a DpuVector broadcast"))
@@ -445,7 +446,7 @@ Run several independent chains over `v` in **one** kernel pass, one result
 vector per chain. The chains see the same `input()`, `operand(i)` and
 `scalar_var(i)`, so shared loads happen once.
 
-    values, labels = dpu_pipeline_multi(a, [best, argmax_lanes(lanes)];
+    values, labels = dpu_pipeline_multi(a, [best, argmax(lanes)];
                                        operands = [b, c])
 
 This is the shape horizontal fusion produces when it merges independent
@@ -473,35 +474,32 @@ export dpu_pipeline, dpu_pipeline_reduce, dpu_pipeline_multi, transform, reduce_
 
 # ---- per-element winner across K vectors ----
 #
-# `argmin(collection)` in Base is the index of the collection's smallest
-# element, so it cannot also mean "the winning lane at each position": that is a
-# broadcast over the zipped lanes, `argmin.(zip(v1, v2, v3))`, and that is the
-# spelling bound here.  Indices are 1-based, as Julia's are over a tuple; the
-# kernel counts lanes from 0, so the program adds one.  (`argmin_lanes` inside
-# an expression stays 0-based -- it is the raw opcode.)
+# `argmin(collection)` is Base's index of the smallest element, so the winning
+# lane per position is `argmin.(zip(v1, v2, v3))` instead.  1-based, as Julia's
+# is over a tuple.
 
 const DpuZip = Base.Iterators.Zip{<:Tuple{DpuVector,Vararg{DpuVector}}}
 
-# Anything else broadcast over a zip would fall back to Base collecting it,
-# which reads every vector back one element at a time.
+# Any other broadcast over a zip would have Base collect it -- one readback
+# per element.
 Base.broadcastable(::DpuZip) = throw(ArgumentError(
     "only argmin./argmax. are supported over zip(::DpuVector...); another " *
     "broadcast would collect the vectors to the host one element at a time"))
 
 function _lane_program(nlanes::Integer, want_max::Bool)
     lanes = DpuExpr[input(); [operand(j) for j in 1:(nlanes - 1)]]
-    label = want_max ? argmax_lanes(lanes) : argmin_lanes(lanes)
-    return lanes, label + 1
+    label = want_max ? argmax(lanes) : argmin(lanes)
+    return lanes, label
 end
 
-function _lane_arg(vs::Tuple, want_max::Bool)
-    isempty(vs) && throw(ArgumentError("need at least one vector"))
-    _, label = _lane_program(length(vs), want_max)
-    return dpu_pipeline(vs[1], label; operands = DpuVector[vs[2:end]...])
-end
+# Lazy like any other broadcast, so `argmin.(zip(a, b)) .* 3` is one program.
+# LaneArg is a marker for the lowering to dispatch on; it is never called.
+struct LaneArg{Max} end
 
-Base.broadcasted(::typeof(argmin), z::DpuZip) = _lane_arg(z.is, false)
-Base.broadcasted(::typeof(argmax), z::DpuZip) = _lane_arg(z.is, true)
+Base.broadcasted(::typeof(argmin), z::DpuZip) =
+    Base.broadcasted(DpuStyle(), LaneArg{false}(), z.is...)
+Base.broadcasted(::typeof(argmax), z::DpuZip) =
+    Base.broadcasted(DpuStyle(), LaneArg{true}(), z.is...)
 
 function _find_lanes(vs::AbstractVector{DpuVector}, want_max::Bool)
     isempty(vs) && throw(ArgumentError("need at least one vector"))
@@ -520,12 +518,9 @@ end
     findmin_lanes(vectors) -> (values, labels)
     findmax_lanes(vectors) -> (values, labels)
 
-Per element, the winning value and the 1-based index of the vector it came from,
-as two `DpuVector`s. One kernel pass (see [`dpu_pipeline_multi`](@ref)), so it
-costs no more than the label alone.
-
-Julia spells this `findmin.(zip(v1, v2, v3))`, one tuple per element. A DPU
-cannot hold a vector of tuples, so the two columns come back unzipped:
+Per element, the winning value and the 1-based index of the vector it came
+from, in one kernel pass. Julia's `findmin.(zip(v1, v2, v3))` is a vector of
+tuples, which a DPU cannot hold, so the columns come back unzipped:
 
     values, labels = findmin_lanes([v1, v2, v3])
     collect(zip(Array(values), Array(labels))) == findmin.(zip(a1, a2, a3))
@@ -535,9 +530,8 @@ findmax_lanes(vs::AbstractVector{DpuVector}) = _find_lanes(vs, true)
 
 export findmin_lanes, findmax_lanes
 
-# The winning value is a comparison/select chain rather than an opcode: there is
-# no min-of-K-vectors op.  Strict comparison, so ties keep the lowest lane and
-# the value agrees with the label.
+# No min-of-K-vectors opcode, so the value is a select chain.  Strict
+# comparison, so ties keep the lowest lane and value and label agree.
 function _best_expr(lanes::AbstractVector{DpuExpr}, want_max::Bool)
     best = lanes[1]
     for j in 2:length(lanes)

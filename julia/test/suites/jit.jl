@@ -108,11 +108,13 @@ end
 @testset "code_jitted covers the arg forms" begin
     a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
 
+    # The lane node lowers like any broadcast, so the macro has no special case.
     lanes = @code_jitted argmax.(zip(a, b))
     @test PolymerPIM.Opcodes.OP_ARGMAX_K in lanes.ops
     @test lanes.noperands == 1
     @test lanes.nelements == N
     @test PolymerPIM.Opcodes.OP_ARGMIN_K in (@code_jitted argmin.(zip(a, b))).ops
+    @test length((@code_jitted argmax.(zip(a, b)) .* 3).ops) > length(lanes.ops)
 
     # The vertical form has a kernel too now: the index pass.
     idx = @code_jitted argmax(a)
@@ -120,5 +122,4 @@ end
     @test idx.ops[end] == PolymerPIM.Opcodes.OP_MIN
     @test (@code_jitted findmin(a)).hash == idx.hash
 
-    @test_throws ArgumentError @code_jitted findmax.(zip(a, b))
 end

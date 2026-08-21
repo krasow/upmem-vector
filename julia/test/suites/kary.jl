@@ -17,12 +17,24 @@
     t = DpuVector(tv)
     @test Array(argmax.(zip(t, t, t))) == argmax.(zip(tv, tv, tv))
 
-    # findmin./findmax. yield a tuple per element; the device returns the two
-    # columns unzipped, so zip them back to compare.
+    # findmin. yields a tuple per element; the device unzips, so zip it back.
     values, labels = findmin_lanes([a, b, c])
     @test collect(zip(Array(values), Array(labels))) == findmin.(zip(av, bv, cv))
     values, labels = findmax_lanes([a, b, c])
     @test collect(zip(Array(values), Array(labels))) == findmax.(zip(av, bv, cv))
+
+    # Lazy like any other broadcast: one program, not a launch then a scale.
+    sync(); before = PolymerPIM.stat_compute_launches()
+    scaled = argmin.(zip(a, b, c)) .* Int32(11) .+ Int32(2)
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test Array(scaled) == argmin.(zip(av, bv, cv)) .* 11 .+ 2
+
+    # And the lanes themselves may be expressions.
+    @test Array(argmax.(zip(a .+ b, c))) == argmax.(zip(av .+ bv, cv))
+
+    # A reduction over one still folds into a single program.
+    @test sum(argmin.(zip(a, b, c))) == sum(argmin.(zip(av, bv, cv)))
 
     # One pass for the pair when the build has room for both chains.
     sync(); before = PolymerPIM.stat_compute_launches()
@@ -39,10 +51,13 @@
     # The vertical form is unaffected: the index of the largest element.
     @test argmax(a) == argmax(av)
 
-    # argmin_lanes inside an expression is the raw opcode, still 0-based.
+    # The same call inside a hand-built program, over the expressions themselves.
     @test Array(transform(a, b) do x
-        argmin_lanes([x[1], x[2]])
-    end) == argmin.(zip(av, bv)) .- 1
+        argmin([x[1], x[2]])
+    end) == argmin.(zip(av, bv))
+    @test Array(transform(a, b) do x
+        argmax(zip(x[1], x[2]))
+    end) == argmax.(zip(av, bv))
 end
 
 @testset "min_squared_distance" begin

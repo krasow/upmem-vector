@@ -337,8 +337,7 @@ void internal_launch_universal_pipeline(
   uint32_t nr_of_dpus = runtime.num_dpus();
   DPU_LAUNCH_ARGS args[nr_of_dpus];
 
-  // Running element offset of each shard.  Sizes can be ragged, so this is
-  // accumulated from the descriptors rather than assumed to be i * stride.
+  // Accumulated, not i * stride: shard sizes can be ragged.
   uint32_t index_base = 0;
 
   for (uint32_t i = 0; i < nr_of_dpus; i++) {

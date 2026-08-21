@@ -65,8 +65,7 @@ end
     @test_throws MethodError sum(sqrt, a)
 end
 
-# Two DPU passes -- the value, then the first index holding it -- so they have to
-# agree with Base, ties and all, and only scalars may come back.
+# Two DPU passes, the value then its first index: has to match Base, ties too.
 @testset "index reductions match Base" begin
     a = DpuVector(Int32.([4, 7, 1, 7, -3, 0]))
     host = Array(a)
@@ -87,8 +86,8 @@ end
     @test_throws ArgumentError findmax(DpuVector(0))
     @test_throws ArgumentError argmin(DpuVector(0))
 
-    # The winner has to be found wherever it sits: on the last shard, the
-    # first, and in the middle of a length that shards raggedly.
+    # The winner wherever it sits: last shard, first, and mid-way through a
+    # length that shards raggedly.
     up = DpuVector(Int32.(1:1000))
     @test argmax(up) == 1000 && argmin(up) == 1
     ragged = Int32.(vcat(1:500, 9, 501:998))
@@ -100,8 +99,7 @@ end
     argmax(a); sync()
     @test PolymerPIM.stat_compute_launches() - before == 2
 
-    # Value and sentinel are runtime scalars, so length does not change the
-    # program: every argmax in the process shares one compiled kernel.
+    # Runtime scalars, so length does not change the program: one kernel.
     @test (@code_jitted argmax(a)).hash == (@code_jitted argmax(up)).hash
     @test PolymerPIM.Opcodes.OP_PUSH_GLOBAL_INDEX in (@code_jitted argmax(a)).ops
 end

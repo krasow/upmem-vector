@@ -218,9 +218,8 @@ pipeline_ops = [
     ('apply_indirect', 'APPLY_INDIRECT'),
     ('push_scalar', 'PUSH_SCALAR'),
     ('push_scalar_var', 'PUSH_SCALAR_VAR'),
-    # push_index is shard-local; this one adds the shard's base element offset,
-    # which the host puts in args.pipeline.index_base.  Appended, so existing
-    # opcode numbers -- and the JIT cache keys built from them -- do not move.
+    # push_index plus the shard base in args.pipeline.index_base.  Appended so
+    # existing opcode numbers, and the JIT cache keys over them, do not move.
     ('push_global_index', 'PUSH_GLOBAL_INDEX'),
 ]
 

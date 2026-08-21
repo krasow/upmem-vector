@@ -178,7 +178,7 @@ get(dot)
 
 Available: the operators above plus `sqr dup select`, the leaves `input()`,
 `operand(i)`, `constant(v)`, `scalar_var(i)`, `lane_index()`, the terminals
-`sum prod minimum maximum`, and `argmin_lanes` / `argmax_lanes`.
+`sum prod minimum maximum`, and `argmin` / `argmax` over a list of expressions.
 
 `scalar_var(i)` reads `scalars[i]` at launch rather than baking it into the
 program, so changing it reuses the same compiled kernel:
