@@ -1496,16 +1496,22 @@ vector<T> dpu_local_vector<T>::to_cpu() {
     return std::vector<T>(size_, detail::local_reduce_identity<T>(reduce_op_));
   }
 
-  std::vector<T> all_data(size_ * nr_dpus);
-  char* cpu_buffer = reinterpret_cast<char*>(all_data.data());
-  auto bound_cb = std::bind(detail::vec_xfer_from_dpu, cpu_buffer, data_);
+  // DPU transfers use the aligned shard stride, not the logical payload size.
+  // Stage the padding and merge only logical elements.
+  const detail::ShardLayout layout = detail::shard_layout(*data_);
+  const size_t stride = layout.stride;
+  std::vector<char> all_data(layout.padded_bytes());
+  char* cpu_buffer = all_data.data();
+  auto bound_cb = [cpu_buffer, data = data_, stride]() {
+    detail::vec_xfer_from_dpu_strided(cpu_buffer, data, stride);
+  };
   auto& event_queue = runtime.get_event_queue();
 
   std::shared_ptr<Event> e =
       std::make_shared<Event>(Event::OperationType::HOST_TRANSFER, bound_cb);
   e->inputs = {data_};
   e->host_ptr = cpu_buffer;
-  e->transfer_size = all_data.size() * sizeof(T);
+  e->transfer_size = all_data.size();
 
   event_queue.submit(e);
 #if ENABLE_DPU_LOGGING >= 2
@@ -1523,9 +1529,12 @@ vector<T> dpu_local_vector<T>::to_cpu() {
 
   std::vector<T> merged(size_, detail::local_reduce_identity<T>(reduce_op_));
   for (uint32_t d = 0; d < nr_dpus; d++) {
-    const uint32_t base = d * size_;
     for (uint32_t i = 0; i < size_; i++) {
-      detail::local_reduce_apply(merged[i], all_data[base + i], reduce_op_);
+      T value;
+      std::memcpy(&value,
+                  all_data.data() + (size_t)d * stride + (size_t)i * sizeof(T),
+                  sizeof(T));
+      detail::local_reduce_apply(merged[i], value, reduce_op_);
     }
   }
   return merged;
