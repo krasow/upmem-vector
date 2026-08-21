@@ -93,7 +93,7 @@ end
         c .= a .* b
         sum(c)
     end
-    @test total == sum(Int64.(collect(1:N)) .* 5)
+    @test total[] == sum(Int64.(collect(1:N)) .* 5)
 
     @test (@show_log level=1 fence=false c .= a .+ b) === c
 

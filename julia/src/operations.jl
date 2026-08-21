@@ -23,16 +23,10 @@ function unary_op(a::DpuVector, op::UInt8)
     return DpuVector(handle)
 end
 
-function reduce_op(a::DpuVector, op::UInt8)
-    return retry_on_oom(() -> PolymerPIM.launch_reduction(a.handle, op))
-end
-
 """
     reduce_lazy(v, op) -> DpuFuture
 
-Queue a reduction without reading it.  Independent reductions left unread are
-merged into a single DPU kernel pass, so prefer this (or [`sums`](@ref)) when
-reducing several vectors.
+Queue a reduction without reading it -- what `sum` and friends are built on.
 """
 function reduce_lazy(a::DpuVector, op::UInt8)
     handle = retry_on_oom(() -> PolymerPIM.launch_reduction_lazy(a.handle, op))
@@ -70,10 +64,11 @@ Base.abs(a::DpuVector) = unary_op(a, Opcodes.OP_ABS)
 
 # ---- Base overloads: reductions ----
 
-Base.sum(v::DpuVector)     = reduce_op(v, Opcodes.OP_SUM)
-Base.prod(v::DpuVector)    = reduce_op(v, Opcodes.OP_PRODUCT)
-Base.minimum(v::DpuVector) = reduce_op(v, Opcodes.OP_MIN)
-Base.maximum(v::DpuVector) = reduce_op(v, Opcodes.OP_MAX)
+# Futures, not numbers: left unread, independent reductions share a kernel.
+Base.sum(v::DpuVector)     = reduce_lazy(v, Opcodes.OP_SUM)
+Base.prod(v::DpuVector)    = reduce_lazy(v, Opcodes.OP_PRODUCT)
+Base.minimum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MIN)
+Base.maximum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MAX)
 
 # `sum(f, v)` is the one-pass spelling: f arrives as a function, so there is no
 # intermediate to materialise the way `sum(f.(v))` has.  f is traced once over a
@@ -81,7 +76,7 @@ Base.maximum(v::DpuVector) = reduce_op(v, Opcodes.OP_MAX)
 for (f, terminal) in ((:sum, :sum), (:prod, :prod),
                       (:minimum, :minimum), (:maximum, :maximum))
     @eval Base.$f(f, v::DpuVector) =
-        get(dpu_pipeline_reduce(v, $terminal(_trace(f))))
+        dpu_pipeline_reduce(v, $terminal(_trace(f)))
 end
 
 const MAPREDUCE_TERMINALS = Dict{Any,Function}(
@@ -101,7 +96,7 @@ _arg_index_program() =
 
 function _arg_reduce(v::DpuVector, want_max::Bool)
     length(v) > 0 || throw(ArgumentError("collection must be non-empty"))
-    best = want_max ? maximum(v) : minimum(v)
+    best = (want_max ? maximum(v) : minimum(v))[]
     index = get(dpu_pipeline_reduce(v, _arg_index_program();
                                     scalars = Int32[best, length(v)]))
     return best, Int(index) + 1   # the kernel counts from 0
@@ -323,25 +318,7 @@ Base.similar(v::DpuVector) = DpuVector(length(v))
 Base.similar(v::DpuVector, ::Type{Int32}) = DpuVector(length(v))
 Base.axes(v::DpuVector) = (Base.OneTo(length(v)),)
 
-# ---- lazy reductions ----
-
-"""
-    sums(vectors) -> Vector{Int64}
-
-Sum several vectors in one pass.  Queues every reduction before reading any of
-them, which is what allows them to be fused into a single kernel.
-"""
-function sums(vs::AbstractVector{DpuVector})
-    futures = [reduce_lazy(v, Opcodes.OP_SUM) for v in vs]
-    return [get(f) for f in futures]
-end
-
-lazy_sum(v::DpuVector)     = reduce_lazy(v, Opcodes.OP_SUM)
-lazy_prod(v::DpuVector)    = reduce_lazy(v, Opcodes.OP_PRODUCT)
-lazy_minimum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MIN)
-lazy_maximum(v::DpuVector) = reduce_lazy(v, Opcodes.OP_MAX)
-
-export select_op, sums, lazy_sum, lazy_prod, lazy_minimum, lazy_maximum
+export select_op
 
 # ---- RPN pipelines ----
 #

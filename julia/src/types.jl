@@ -110,9 +110,8 @@ export release!
 """
     DpuFuture
 
-The result of a reduction that has been queued but not read.  Leaving several
-futures unread lets the runtime merge their reductions into one kernel pass;
-calling [`get`](@ref) forces them all to complete.
+A queued reduction, unread.  Leave several unread and they merge into one
+kernel pass; `f[]`, `get(f)` or `fetch(f)` forces them.
 """
 mutable struct DpuFuture
     handle::PolymerPIM.DpuFutureInt32
@@ -124,5 +123,9 @@ end
 Read a queued reduction, blocking until the DPUs have produced it.
 """
 Base.get(f::DpuFuture) = retry_on_oom(() -> PolymerPIM.cpp_get(f.handle))
+
+# `f[]` as for any value holder; `fetch` is the Julia future spelling.
+Base.getindex(f::DpuFuture) = get(f)
+Base.fetch(f::DpuFuture) = get(f)
 
 export DpuFuture

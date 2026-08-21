@@ -127,17 +127,19 @@ source.
 
 ## Reductions
 
-Reading a reduction immediately forces it. Leave several unread and they share
-one kernel pass:
+A reduction returns a future, not a number. Reading one forces it; leave several
+unread and they share one kernel pass:
 
 ```julia
-totals = sums(vectors)          # 8 vectors: 1 pass instead of 8
+f = sum(a); g = sum(b)          # queued, nothing read
+f[], g[]                        # one pass for both
 
-f = lazy_sum(a); g = lazy_sum(b)
-get(f), get(g)
+totals = [sum(v) for v in vectors]   # 8 vectors, 1 pass
+[t[] for t in totals]
 ```
 
-`lazy_prod`, `lazy_minimum`, `lazy_maximum` too.
+`f[]`, `get(f)` and `fetch(f)` are the same read; `prod`, `minimum` and
+`maximum` behave the same.
 
 Reducing an expression is one pass if the function arrives as an argument:
 

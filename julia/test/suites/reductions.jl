@@ -1,41 +1,41 @@
-# Reductions, and the lazy form that lets independent ones share a pass.
+# Reductions return futures, so independent ones share a pass by default.
 
 @testset "reductions" begin
     n = 4096
     a = DpuVector(Int32.(collect(1:n)))
 
-    @test sum(a) == Int64(n) * Int64(n + 1) ÷ 2
-    @test minimum(a) == 1
-    @test maximum(a) == n
+    @test sum(a)[] == Int64(n) * Int64(n + 1) ÷ 2
+    @test minimum(a)[] == 1
+    @test maximum(a)[] == n
 
     b = DpuVector(fill(Int32(1), n))
-    @test sum(b) == n
-    @test prod(b) == 1
-    @test minimum(b) == 1
-    @test maximum(b) == 1
+    @test sum(b)[] == n
+    @test prod(b)[] == 1
+    @test minimum(b)[] == 1
+    @test maximum(b)[] == 1
 end
 
-@testset "lazy reductions" begin
+@testset "a reduction is a future" begin
     a = DpuVector(Int32.(collect(1:N)))
     b = DpuVector(fill(Int32(2), N))
 
-    fa = lazy_sum(a)
-    fb = lazy_sum(b)
-    @test get(fa) == Int64(N) * Int64(N + 1) ÷ 2
-    @test get(fb) == 2 * N
-
-    @test lazy_minimum(a) isa DpuFuture
-    @test get(lazy_maximum(a)) == N
+    fa = sum(a)
+    @test fa isa DpuFuture
+    @test fa[] == Int64(N) * Int64(N + 1) ÷ 2
+    # Three spellings of the same read.
+    @test get(sum(b)) == 2 * N
+    @test fetch(sum(b)) == 2 * N
+    @test sum(b)[] == 2 * N
 end
 
 @testset "reductions fuse into one kernel pass" begin
-    # The point of the lazy API: queue several reductions, read none, and
-    # they share a kernel.  Eight vectors is inside MAX_HFUSE_CHAINS.
+    # Read none until all are queued.  Eight is inside MAX_HFUSE_CHAINS.
     vectors = [DpuVector(fill(Int32(i), 1024)) for i in 1:8]
     PolymerPIM.dpu_sync()
 
     before = PolymerPIM.stat_compute_launches()
-    totals = sums(vectors)
+    futures = [sum(v) for v in vectors]     # queued, none read
+    totals = [f[] for f in futures]
     after = PolymerPIM.stat_compute_launches()
 
     @test totals == [1024 * i for i in 1:8]
@@ -49,12 +49,12 @@ end
     a = DpuVector(Int32.(-N÷2:N÷2-1))
     host = Array(a)
 
-    @test sum(abs, a) == sum(abs, host)
-    @test sum(x -> x * 2, a) == sum(x -> x * 2, host)
-    @test maximum(abs, a) == maximum(abs, host)
-    @test minimum(x -> -abs(x), a) == minimum(x -> -abs(x), host)
-    @test mapreduce(abs, +, a) == mapreduce(abs, +, host)
-    @test mapreduce(abs, max, a) == mapreduce(abs, max, host)
+    @test sum(abs, a)[] == sum(abs, host)
+    @test sum(x -> x * 2, a)[] == sum(x -> x * 2, host)
+    @test maximum(abs, a)[] == maximum(abs, host)
+    @test minimum(x -> -abs(x), a)[] == minimum(x -> -abs(x), host)
+    @test mapreduce(abs, +, a)[] == mapreduce(abs, +, host)
+    @test mapreduce(abs, max, a)[] == mapreduce(abs, max, host)
 
     before = PolymerPIM.stat_compute_launches()
     sum(abs, a)
@@ -76,8 +76,8 @@ end
     @test argmin(a) == argmin(host) == 5
 
     # Same number, same type, whichever spelling asked for it.
-    @test findmax(a)[1] === maximum(a)
-    @test findmin(a)[1] === minimum(a)
+    @test findmax(a)[1] === maximum(a)[]
+    @test findmin(a)[1] === minimum(a)[]
 
     b = DpuVector(Int32.(1:N))
     @test argmax(b) == N
