@@ -93,5 +93,38 @@ end
 @testset "broadcast rejects what it cannot lower" begin
     a = DpuVector(Int32.(collect(1:64)))
     @test_throws ArgumentError Array(sqrt.(a))
+    # Lazily built, so it raises at first use -- and only once: a failed
+    # expression must not be retried by a later, unrelated sync().
+    bad = sqrt.(a)
+    @test_throws ArgumentError Array(bad)
+    @test sync() === nothing
     @test_throws ArgumentError Array(sin.(a))
+end
+
+# abs2 lowers to `sqr`, which is OP_DUP + OP_MUL, so its argument is computed
+# once.  Spelled `x .* x` the lowering has no CSE and computes it twice -- which
+# is why knn uses abs2.
+@testset "abs2 loads its argument once" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    O = PolymerPIM.Opcodes
+
+    sq = @code_jitted abs2.(a .- b)
+    @test O.OP_DUP in sq.ops
+    @test count(==(O.OP_SUB), sq.ops) == 1
+
+    naive = @code_jitted (a .- b) .* (a .- b)
+    @test count(==(O.OP_SUB), naive.ops) == 2
+    @test !(O.OP_DUP in naive.ops)
+    @test length(sq.ops) < length(naive.ops)
+
+    # The same program as the hand-built RPN it replaces.
+    xs = DpuExpr[input(), operand(1)]
+    byhand = code_jitted(sqr(xs[1] - xs[2]); nelements = length(a), noperands = 1)
+    @test sq.ops == byhand.ops
+    @test sq.hash == byhand.hash
+
+    # No abs2 opcode exists: it is those two.
+    @test !isdefined(O, :OP_ABS2)
+
+    @test Array(abs2.(a .- b)) == (Array(a) .- Array(b)) .^ 2
 end

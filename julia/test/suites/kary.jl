@@ -25,10 +25,10 @@
 
     # Lazy like any other broadcast: one program, not a launch then a scale.
     sync(); before = PolymerPIM.stat_compute_launches()
-    scaled = argmin.(zip(a, b, c)) .* Int32(11) .+ Int32(2)
+    scaled = Array(argmin.(zip(a, b, c)) .* Int32(11) .+ Int32(2))
     sync()
     @test PolymerPIM.stat_compute_launches() - before == 1
-    @test Array(scaled) == argmin.(zip(av, bv, cv)) .* 11 .+ 2
+    @test scaled == argmin.(zip(av, bv, cv)) .* 11 .+ 2
 
     # And the lanes themselves may be expressions.
     @test Array(argmax.(zip(a .+ b, c))) == argmax.(zip(av .+ bv, cv))
@@ -38,10 +38,10 @@
 
     # One pass for the pair when the build has room for both chains.
     sync(); before = PolymerPIM.stat_compute_launches()
-    findmax_lanes([a, b, c]); sync()
+    v, l = findmax_lanes([a, b, c]); Array(v); Array(l); sync()
     @test PolymerPIM.stat_compute_launches() - before == (MAX_CHAINS >= 2 ? 1 : 2)
     sync(); before = PolymerPIM.stat_compute_launches()
-    argmax.(zip(a, b, c)); sync()
+    Array(argmax.(zip(a, b, c))); sync()
     @test PolymerPIM.stat_compute_launches() - before == 1
 
     @test_throws ArgumentError findmin_lanes(DpuVector[])

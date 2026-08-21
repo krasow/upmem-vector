@@ -270,15 +270,14 @@ export add_var, sub_var, mul_var, divide_var, shr_var,
 
 # ---- local (WRAM) scatter accumulators ----
 #
-# A scatter program is a list of (index, value) pairs written into small per-DPU
-# arrays.  The op stream mirrors dpu_pipeline_context::materialize_ops: the
-# reductions' shared index prefix is emitted once and re-used with OP_DUP, then
-# each reduction contributes its own tail, its value, and OP_APPLY_INDIRECT with
-# the target's slot and reduce opcode.
+# (index, value) pairs written into small per-DPU arrays, as
+# dpu_pipeline_context::materialize_ops does it: the shared index prefix once,
+# re-used with OP_DUP, then each value and OP_APPLY_INDIRECT with its slot and
+# reduce opcode.  Built by `flush_locals!`, never by hand.
 
 const LOCAL_REDUCE_OPS = (:sum, :product, :min, :max)
 
-struct LocalReduce
+struct _LocalReduce
     slot::Int          # 0-based index into the locals list
     reduce_op::UInt8
     index::DpuExpr
@@ -295,7 +294,7 @@ _local_reduce_opcode(op::Symbol) =
 # Length of the longest opcode-aligned prefix common to every index program.
 # Splitting mid-opcode would emit a truncated instruction, so the boundary is
 # walked with inline_bytes rather than compared byte-for-byte.
-function _common_index_prefix(rs::Vector{LocalReduce})
+function _common_index_prefix(rs::Vector{_LocalReduce})
     isempty(rs) && return 0
     first_ops = rs[1].index.ops
     raw = length(first_ops)
@@ -318,7 +317,7 @@ function _common_index_prefix(rs::Vector{LocalReduce})
     return common
 end
 
-function scatter_program(rs::Vector{LocalReduce})
+function _scatter_program(rs::Vector{_LocalReduce})
     isempty(rs) && return DpuExpr()
     out = UInt8[]
     common = _common_index_prefix(rs)
@@ -338,4 +337,4 @@ function scatter_program(rs::Vector{LocalReduce})
     return DpuExpr(out)
 end
 
-export LocalReduce, scatter_program, LOCAL_REDUCE_OPS
+export LOCAL_REDUCE_OPS
