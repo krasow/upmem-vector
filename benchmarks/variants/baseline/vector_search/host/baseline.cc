@@ -132,7 +132,7 @@ int main() {
 
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
-  Timer timer;
+  BenchTimer timer;
   for (uint32_t w = 0; w < warmup_iterations; ++w) {
     bench_start(&timer, 0);
     (void)run_query(w, warm_stages);

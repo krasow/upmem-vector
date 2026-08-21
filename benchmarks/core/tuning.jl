@@ -335,14 +335,22 @@ function load_checkpoint(config::RunnerConfig, spec::BenchmarkSpec,
         raw = TOML.parsefile(path)
         get(raw, "version", 0) == 1 || error("unsupported tuning checkpoint $path")
         raw["benchmark"] == spec.name || error("wrong benchmark in $path")
-        raw["signature"] == signature || error(
-            "tuning options do not match $path; use --reset to retune")
+        saved_trials = get(raw, "trials", Dict{String,Any}[])
         complete = Bool(get(raw, "complete", false))
-        append!(trials, get(raw, "trials", Dict{String,Any}[]))
-        for trial in trials
-            build = Dict(knob => Int(trial["build"][knob]) for knob in FUSION_BUILD_KNOBS)
-            result = trial_result(trial)
-            result.status == "ok" && (cache[config_key(build)] = result)
+        if raw["signature"] != signature
+            if complete || !isempty(saved_trials)
+                error("tuning options do not match $path; use --reset to retune")
+            end
+            loaded = false
+            println("[fusion] refreshing empty checkpoint $(spec.name)")
+        else
+            append!(trials, saved_trials)
+            for trial in trials
+                build = Dict(knob => Int(trial["build"][knob])
+                             for knob in FUSION_BUILD_KNOBS)
+                result = trial_result(trial)
+                result.status == "ok" && (cache[config_key(build)] = result)
+            end
         end
     end
     checkpoint = TuneCheckpoint(path, spec.name, signature, trials, cache,
@@ -387,10 +395,11 @@ function save_checkpoint(checkpoint::TuneCheckpoint)
     mkpath(dirname(checkpoint.path))
     temporary = checkpoint.path * ".tmp"
     open(temporary, "w") do io
-        TOML.print(io, Dict("version" => 1, "benchmark" => checkpoint.benchmark,
+        write_toml(io, Dict("version" => 1,
+                            "benchmark" => checkpoint.benchmark,
                             "complete" => checkpoint.complete,
                             "signature" => checkpoint.signature,
-                            "trials" => checkpoint.trials); sorted = true)
+                            "trials" => checkpoint.trials))
     end
     mv(temporary, checkpoint.path; force = true)
     save_checkpoint_csv(checkpoint)
@@ -442,7 +451,7 @@ function write_profile(path, config, spec, build, initial, best, options, verifi
     mkpath(dirname(path))
     temporary = path * ".tmp"
     open(temporary, "w") do io
-        TOML.print(io, document; sorted = true)
+        write_toml(io, document)
     end
     mv(temporary, path; force = true)
 end

@@ -7,48 +7,29 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#ifndef BENCHMARK_TIMER_DEFINED
-#define BENCHMARK_TIMER_DEFINED
-
 typedef struct {
   struct timeval startTime[6];
   struct timeval stopTime[6];
   double time[6];
-} Timer;
-
-// Old API (kept for call-site compatibility).
-static inline void start(Timer *t, int i, int rep) {
-  if (rep == 0) t->time[i] = 0.0;
-  gettimeofday(&t->startTime[i], NULL);
-}
-static inline void stop(Timer *t, int i) {
-  gettimeofday(&t->stopTime[i], NULL);
-  t->time[i] += (t->stopTime[i].tv_sec - t->startTime[i].tv_sec) * 1000000.0 +
-                (t->stopTime[i].tv_usec - t->startTime[i].tv_usec);
-}
-static inline void print(Timer *t, int i, int REP) {
-  printf("%f\t", t->time[i] / (1000.0 * REP));
-}
-
-#endif  // BENCHMARK_TIMER_DEFINED
+} BenchTimer;
 
 // New API —————————————————————————————————————————————————————————————
 
 // Reset accumulator and start timing slot i.
-static inline void bench_start(Timer *t, int i) {
+static inline void bench_start(BenchTimer *t, int i) {
   t->time[i] = 0.0;
   gettimeofday(&t->startTime[i], NULL);
 }
 
 // Stop and accumulate into slot i.
-static inline void bench_stop(Timer *t, int i) {
+static inline void bench_stop(BenchTimer *t, int i) {
   gettimeofday(&t->stopTime[i], NULL);
   t->time[i] += (t->stopTime[i].tv_sec - t->startTime[i].tv_sec) * 1000000.0 +
                 (t->stopTime[i].tv_usec - t->startTime[i].tv_usec);
 }
 
 // Always prints per-iteration time: total_us / (1000 * iterations).
-static inline void bench_print(const char *label, Timer *t, int i,
+static inline void bench_print(const char *label, BenchTimer *t, int i,
                                int iterations) {
   printf("%s (ms): %f\n", label, t->time[i] / (1000.0 * iterations));
 }

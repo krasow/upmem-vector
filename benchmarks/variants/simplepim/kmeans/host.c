@@ -86,7 +86,7 @@ void run() {
   // (PolymerPIM pays its JIT inside the first warmup iteration); time it into
   // warm_stages KERNEL and fold it into the first warmup sample so warmup_ms
   // and kernel_cold_ms agree.
-  Timer ch_timer;
+  BenchTimer ch_timer;
   bench_start(&ch_timer, 0);
   bench_stage_begin(&warm_stages, BENCH_STAGE_KERNEL);
   handle_t* va_handle = create_handle("kmeans_funcs", REDUCE);
@@ -106,7 +106,7 @@ void run() {
   // real run.
   T* centroids_saved = (T*)calloc(k * dim, sizeof(T));
   for (int i = 0; i < k * dim; i++) centroids_saved[i] = centroids[i];
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (uint32_t w = 0; w < warmup_iterations; w++) {
@@ -134,7 +134,7 @@ void run() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   for (int m = 0; m < iter; m++) {
     bench_start(&timer, 0);
     bench_stage_begin(&stages, BENCH_STAGE_WRITE);

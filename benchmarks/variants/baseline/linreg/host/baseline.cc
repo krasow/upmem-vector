@@ -96,7 +96,7 @@ int main() {
   bench_stage_end(&stages);
 
   // Warmup (timed separately: the first launch includes any cold kernel load)
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (int i = 0; i < warmup_iterations; i++) {
@@ -119,7 +119,7 @@ int main() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
 
   bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
   RED_T *final_grads_accum = (RED_T *)calloc(dim, sizeof(RED_T));

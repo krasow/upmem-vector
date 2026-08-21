@@ -115,7 +115,7 @@ int main(void) {
   uint32_t state_offset = lookup_table("state", management)->start;
   bench_stage_end(&stages);
 
-  Timer handle_timer;
+  BenchTimer handle_timer;
   bench_start(&handle_timer, 0);
   bench_stage_begin(&warm_stages, BENCH_STAGE_KERNEL);
   handle_t* handle = create_handle("multitask_classifier_funcs", REDUCE);
@@ -127,7 +127,7 @@ int main(void) {
   int64_t* gradients = (int64_t*)calloc(CLASSES * FEATURES, sizeof(int64_t));
   svm_metrics_t metrics = {0, 0};
 
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (uint32_t i = 0; i < warmup_iterations; i++) {
@@ -145,7 +145,7 @@ int main(void) {
   memset(weights, 0, CLASSES * FEATURES * sizeof(T));
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   for (uint32_t i = 0; i < iterations; i++) {
     bench_start(&timer, 0);
     run_epoch(&stages, management, handle, state_offset, state, weights,

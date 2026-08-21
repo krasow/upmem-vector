@@ -4,11 +4,21 @@ struct ManifestHandle
     index::Int
 end
 
+function write_toml(io::IO, document)
+    buffer = IOBuffer()
+    TOML.print(buffer, document; sorted = true)
+    seekstart(buffer)
+    for line in eachline(buffer; keep = true)
+        stripped = lstrip(line)
+        write(io, startswith(stripped, '[') ? stripped : line)
+    end
+end
+
 function save_manifest(handle::ManifestHandle)
     mkpath(dirname(handle.path))
     temporary = handle.path * ".tmp"
     open(temporary, "w") do io
-        TOML.print(io, handle.document; sorted = true)
+        write_toml(io, handle.document)
     end
     mv(temporary, handle.path; force = true)
 end

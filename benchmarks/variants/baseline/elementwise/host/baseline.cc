@@ -145,7 +145,7 @@ int main() {
     bench_stage_end(&stages);
   };
 
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (int i = 0; i < warmup_iterations; i++) {
@@ -165,7 +165,7 @@ int main() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
 
   for (int i = 0; i < iterations; i++) {
 #if FRESH_RESULT_BUFFER

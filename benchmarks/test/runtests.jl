@@ -70,7 +70,12 @@ end
         @test length(lines) == 2
         @test startswith(lines[1], "timestamp,invocation,benchmark,variant,phase,status")
         @test occursin("polymerpim,run,complete,success,0", lines[2])
-        @test occursin("FUSION_LOOKAHEAD=128", lines[2])
+        @test occursin(",FUSION_LOOKAHEAD,MAX_HFUSE_CHAINS,JIT_BATCH_SIZE,", lines[1])
+        @test occursin(",128,10,16,128,11,4,", lines[2])
+        sections = readlines(joinpath(directory, "runs.sections.csv"))
+        @test length(sections) == 5
+        @test occursin(",alloc,measured,1.5", sections[2])
+        @test any(line -> occursin(",kernel,cold,9.75", line), sections)
     end
 
     unchecked = BenchmarkRunner.RunCase(
@@ -258,6 +263,9 @@ end
         @test resumed.cache[BenchmarkRunner.config_key(build)].objective == 4.5
         @test isfile(joinpath(directory, "elementwise.csv"))
         @test length(BenchmarkRunner.tuning_source_fingerprint(config, spec)) == 64
+        checkpoint_text = read(checkpoint.path, String)
+        @test occursin("\n[signature.search]\n", checkpoint_text)
+        @test !occursin(r"(?m)^[ \t]+\[", checkpoint_text)
 
         mismatched = BenchmarkRunner.TuneOptions(
             dpus = [4], elements_per_dpu = [64], warmup = 0, iterations = 1,
@@ -280,6 +288,23 @@ end
         resumed = BenchmarkRunner.load_checkpoint(config, spec, options)
         @test isempty(resumed.cache)
         @test length(resumed.trials) == 1
+    end
+
+    mktempdir() do directory
+        path = joinpath(directory, "elementwise.toml")
+        open(path, "w") do io
+            TOML.print(io, Dict(
+                "version" => 1, "benchmark" => "elementwise",
+                "complete" => false, "trials" => [],
+                "signature" => Dict("stale" => true)))
+        end
+        options = BenchmarkRunner.TuneOptions(
+            dpus = [2], elements_per_dpu = [64], warmup = 0, iterations = 1,
+            checkpoints = directory)
+        refreshed = BenchmarkRunner.load_checkpoint(config, spec, options)
+        @test isempty(refreshed.trials)
+        @test refreshed.signature ==
+              BenchmarkRunner.checkpoint_signature(config, spec, options)
     end
 
     mktempdir() do directory
@@ -333,6 +358,7 @@ end
         @test document["invocations"][2]["error"] == "boom"
         @test haskey(document["invocations"][1], "started_at")
         @test haskey(document["invocations"][1], "finished_at")
+        @test !occursin(r"(?m)^[ \t]+\[", read(path, String))
     end
 
     config = load_config()

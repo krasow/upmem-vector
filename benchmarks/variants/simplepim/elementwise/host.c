@@ -92,7 +92,7 @@ void run() {
   // (PolymerPIM pays its JIT inside the first warmup iteration); time it into
   // warm_stages KERNEL and fold it into the first warmup sample so warmup_ms
   // and kernel_cold_ms agree.
-  Timer ch_timer;
+  BenchTimer ch_timer;
   bench_start(&ch_timer, 0);
   bench_stage_begin(&warm_stages, BENCH_STAGE_KERNEL);
   handle_t* add_handle = create_handle("daxby_funcs", MAP);
@@ -109,7 +109,7 @@ void run() {
 
   T* res = NULL;
 
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (int i = 0; i < warmup_iterations; i++) {
@@ -141,7 +141,7 @@ void run() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   for (int i = 0; i < iterations; i++) {
     if (res) free(res);
     bench_start(&timer, 0);

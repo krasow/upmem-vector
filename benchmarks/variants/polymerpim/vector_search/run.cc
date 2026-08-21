@@ -159,7 +159,7 @@ int main() {
 
     BenchStats warmup_stats;
     bench_stats_init(&warmup_stats);
-    Timer timer;
+    BenchTimer timer;
     vector_search_result_t result;
     vector_search_result_init(&result);
     if (warmup_iterations) {

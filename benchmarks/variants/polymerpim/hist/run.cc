@@ -105,7 +105,7 @@ int main() {
       };
 
       std::cout << "Starting warmup..." << std::endl;
-      Timer warmup_timer;
+      BenchTimer warmup_timer;
       BenchStats warmup_stats;
       bench_stats_init(&warmup_stats);
       for (uint32_t i = 0; i < warmup_iterations; i++) {
@@ -121,7 +121,7 @@ int main() {
                 << std::endl;
       BenchStats stats;
       bench_stats_init(&stats);
-      Timer timer;
+      BenchTimer timer;
       for (uint32_t i = 0; i < iterations; i++) {
         bench_start(&timer, 0);
         run_round_trip(result_hist, stages);

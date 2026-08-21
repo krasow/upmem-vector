@@ -96,7 +96,7 @@ int main() {
                       DPU_XFER_DEFAULT));
   bench_stage_end(&stages);
 
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (uint32_t w = 0; w < warmup_iterations; w++) {
@@ -115,7 +115,7 @@ int main() {
       (RED_T *)calloc(nr_dpus * NR_TASKLETS * 2, sizeof(RED_T));
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   RED_T result = INT32_MAX;
 
   for (uint32_t it = 0; it < iterations; it++) {

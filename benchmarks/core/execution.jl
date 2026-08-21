@@ -189,7 +189,7 @@ function save_state(state::RunState)
     mkpath(dirname(state.path))
     temporary = state.path * ".tmp"
     open(temporary, "w") do io
-        TOML.print(io, Dict("version" => 1,
+        write_toml(io, Dict("version" => 1,
                             "completed" => sort(collect(state.completed))))
     end
     mv(temporary, state.path; force = true)

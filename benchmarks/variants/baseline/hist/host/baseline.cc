@@ -107,7 +107,7 @@ int main() {
   };
 
   // Warmup
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (uint32_t w = 0; w < warmup_iterations; w++) {
@@ -121,7 +121,7 @@ int main() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
 
   for (uint32_t it = 0; it < iterations; it++) {
     bench_start(&timer, 0);

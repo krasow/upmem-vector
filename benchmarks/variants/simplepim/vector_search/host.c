@@ -78,7 +78,7 @@ int main(void) {
   const uint32_t query_offset = lookup_table("query", mgmt)->start;
   bench_stage_end(&stages);
 
-  Timer create_timer;
+  BenchTimer create_timer;
   bench_start(&create_timer, 0);
   bench_stage_begin(&warm_stages, BENCH_STAGE_KERNEL);
   handle_t *handle = create_handle("vector_search_funcs", REDUCE);
@@ -114,7 +114,7 @@ int main(void) {
 
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
-  Timer timer;
+  BenchTimer timer;
   for (uint32_t w = 0; w < warmup_iterations; ++w) {
     bench_start(&timer, 0);
     RUN_QUERY(warm_stages, last_result);

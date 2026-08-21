@@ -158,7 +158,7 @@ int main() {
     bench_stage_end(&stages);
   };
 
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (uint32_t w = 0; w < warmup_iterations; w++) {
@@ -174,7 +174,7 @@ int main() {
   for (uint32_t i = 0; i < K * DIM; i++) centroids[i] = centroids_init[i];
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   for (uint32_t it = 0; it < iterations; it++) {
     bench_start(&timer, 0);
     run_kmeans_iter(stages);

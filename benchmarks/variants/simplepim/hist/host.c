@@ -98,7 +98,7 @@ void run() {
   // (PolymerPIM pays its JIT inside the first warmup iteration); time it into
   // warm_stages KERNEL and fold it into the first warmup sample so warmup_ms
   // and kernel_cold_ms agree.
-  Timer ch_timer;
+  BenchTimer ch_timer;
   bench_start(&ch_timer, 0);
   bench_stage_begin(&warm_stages, BENCH_STAGE_KERNEL);
   handle_t* va_handle = create_handle("hist_funcs", REDUCE);
@@ -111,7 +111,7 @@ void run() {
   // Time the full round trip (host-to-DPU re-upload + reduction kernel +
   // result gather) to match the polymerpim and baseline histogram
   // measurements, which both include the host-to-DPU data transfer.
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (uint32_t i = 0; i < warmup_iterations; i++) {
@@ -133,7 +133,7 @@ void run() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   for (uint32_t i = 0; i < iterations; i++) {
     if (res) free(res);
     bench_start(&timer, 0);

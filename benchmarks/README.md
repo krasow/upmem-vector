@@ -37,7 +37,8 @@ by default; use `--no-profile` to disable them.
 
 - `fusion/<benchmark>.toml`: best fusion parameters
 - `results/Manifest.toml`: expanded invocations and status
-- `results/runs.csv`: runtime and printed timing sections for every run
+- `results/runs.csv`: run status, parameters, and total timings
+- `results/runs.sections.csv`: printed stage timings in long form
 - `results/fusion/`: tuning manifest, measurements, trials, and resume state
 
 Benchmark commands run under `/usr/bin/time`. Generated parameters, binaries,

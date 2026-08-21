@@ -131,7 +131,7 @@ int main() {
       std::vector<T> dw_scalar(DIM, 0);
       std::vector<int64_t> grads(DIM);
 
-      Timer warmup_timer;
+      BenchTimer warmup_timer;
       BenchStats warmup_stats;
       bench_stats_init(&warmup_stats);
       for (uint32_t i = 0; i < warmup_iterations; i++) {
@@ -145,7 +145,7 @@ int main() {
 
       BenchStats stats;
       bench_stats_init(&stats);
-      Timer timer;
+      BenchTimer timer;
       for (uint32_t i = 0; i < iterations; i++) {
         bench_start(&timer, 0);
         run_iter(dy, dx_cols, dw_scalar, grads, stages);

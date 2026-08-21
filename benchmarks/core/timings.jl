@@ -5,15 +5,17 @@ const STAGE_NAMES = ("alloc", "load", "transpose", "init", "write", "kernel",
 const MEASURE_COLUMNS = [
     "time", "stddev", "min", "max", "warmup_ms",
     "real_s", "user_s", "sys_s", "max_rss_kb",
-    ("$(stage)_ms" for stage in STAGE_NAMES)...,
-    ("$(stage)_cold_ms" for stage in STAGE_NAMES)...,
 ]
 const RUN_COLUMNS = [
     "timestamp", "invocation", "benchmark", "variant", "phase", "status",
     "command_status", "exit_code", "elapsed_s", "detail",
     "elements_per_dpu", "total_elements", "dpus", "warmup", "iterations",
-    "check", "seed", "operation", "parameters", "fusion_flags",
+    "check", "seed", "operation", "parameters", FUSION_BUILD_KNOBS...,
     MEASURE_COLUMNS...,
+]
+const SECTION_COLUMNS = [
+    "timestamp", "invocation", "benchmark", "variant", "section", "kind",
+    "time_ms",
 ]
 
 struct CommandResult
@@ -151,13 +153,54 @@ csv_cell(value) = occursin(r"[\",\n]", string(value)) ?
 
 results_csv(options::Options) = something(
     options.csv, joinpath(dirname(options.state), "runs.csv"))
+sections_csv(path::AbstractString) = splitext(path)[1] * ".sections.csv"
+
+function append_csv(path::AbstractString, columns, row)
+    mkpath(dirname(path))
+    exists = isfile(path)
+    if exists && readline(path) != join(columns, ',')
+        legacy = path * ".legacy"
+        index = 1
+        while ispath(legacy)
+            index += 1
+            legacy = path * ".legacy.$index"
+        end
+        mv(path, legacy)
+        println("Archived incompatible CSV: $legacy")
+        exists = false
+    end
+    open(path, "a") do io
+        exists || println(io, join(columns, ','))
+        println(io, join((csv_cell(get(row, column, "")) for column in columns), ','))
+    end
+end
+
+function record_sections(path::AbstractString, case::RunCase,
+                         variant::AbstractString, timing;
+                         invocation::Int, timestamp::AbstractString)
+    for stage in STAGE_NAMES, (kind, key) in (
+            ("measured", "$(stage)_ms"), ("cold", "$(stage)_cold_ms"))
+        value = get(timing, key, "")
+        value isa Number || continue
+        append_csv(sections_csv(path), SECTION_COLUMNS, Dict{String,Any}(
+            "timestamp" => timestamp,
+            "invocation" => invocation,
+            "benchmark" => case.benchmark,
+            "variant" => variant,
+            "section" => stage,
+            "kind" => kind,
+            "time_ms" => value,
+        ))
+    end
+end
 
 function record_timing(path::AbstractString, case::RunCase, variant::AbstractString,
                        result::VariantResult; invocation::Int = 0,
                        build = nothing)
     timing = result.timing
+    timestamp = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
     row = Dict{String,Any}(
-        "timestamp" => Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ"),
+        "timestamp" => timestamp,
         "invocation" => invocation,
         "benchmark" => case.benchmark,
         "variant" => variant,
@@ -176,19 +219,12 @@ function record_timing(path::AbstractString, case::RunCase, variant::AbstractStr
         "seed" => case.seed,
         "operation" => something(case.operation, ""),
         "parameters" => repr(sort(collect(case.parameters); by = first)),
-        "fusion_flags" => build === nothing ? "" :
-                          join(("$knob=$(build[knob])" for knob in
-                                FUSION_BUILD_KNOBS), " "),
     )
+    for knob in FUSION_BUILD_KNOBS
+        row[knob] = build === nothing ? "" : build[knob]
+    end
     merge!(row, timing)
-    mkpath(dirname(path))
-    exists = isfile(path)
-    if exists
-        readline(path) == join(RUN_COLUMNS, ',') || error("unexpected CSV schema in $path")
-    end
-    open(path, "a") do io
-        exists || println(io, join(RUN_COLUMNS, ','))
-        println(io, join((csv_cell(get(row, column, "")) for column in RUN_COLUMNS), ','))
-    end
+    append_csv(path, RUN_COLUMNS, row)
+    record_sections(path, case, variant, timing; invocation, timestamp)
     return timing
 end

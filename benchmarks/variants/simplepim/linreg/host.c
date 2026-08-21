@@ -73,7 +73,7 @@ int main() {
   // (PolymerPIM pays its JIT inside the first warmup iteration); time it into
   // warm_stages KERNEL and fold it into the first warmup sample so warmup_ms
   // and kernel_cold_ms agree.
-  Timer ch_timer;
+  BenchTimer ch_timer;
   bench_start(&ch_timer, 0);
   bench_stage_begin(&warm_stages, BENCH_STAGE_KERNEL);
   handle_t* va_handle = create_handle("lin_reg_funcs", REDUCE);
@@ -82,7 +82,7 @@ int main() {
   double create_handle_us = ch_timer.time[0];
 
   // Warmup (timed separately: first map-reduce includes any cold/lazy init)
-  Timer warmup_timer;
+  BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (int l = 0; l < warmup_iterations; l++) {
@@ -104,7 +104,7 @@ int main() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   RED_T* final_res = NULL;
   for (int l = 0; l < iterations; l++) {
     if (final_res) free(final_res);

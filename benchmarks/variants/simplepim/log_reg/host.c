@@ -78,7 +78,7 @@ void run() {
 
   BenchStats stats;
   bench_stats_init(&stats);
-  Timer timer;
+  BenchTimer timer;
   bench_start(&timer, 0);
   T* res = table_gen_red("t1", "t3", dim * sizeof(T), 1, va_handle,
                          table_management, data_offset);
