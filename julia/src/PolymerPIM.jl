@@ -127,6 +127,8 @@ Synchronize all DPUs: blocks until all pending operations on all vectors
 complete.
 """
 function sync()
+    flush_locals!()          # queued scatter updates first, so they inline
+    _run_dangling_lazies()   # then values nothing else will run
     PolymerPIM.dpu_sync()
 end
 
@@ -169,7 +171,7 @@ include("jit.jl")
 include("display.jl")
 include("logging.jl")
 
-export DpuVector, DpuFuture, fence, sync
+export DpuVector, DpuFuture, DpuLazy, fence, sync
 export MAX_VFUSE_INPUTS, MAX_PIPELINE_SCALARS, MAX_LOCAL_SCRATCH_VECTORS
 export MAX_CHAINS
 export installinfo, configuration, ndpus, ntasklets

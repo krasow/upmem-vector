@@ -209,8 +209,9 @@ const _BCAST_UNARY = Dict{Any,Function}(
 mutable struct _Lowering
     primary::Union{Nothing,DpuVector}
     operands::Vector{DpuVector}
+    inlined::Vector{Any}    # the lazy values folded into this program
 end
-_Lowering() = _Lowering(nothing, DpuVector[])
+_Lowering() = _Lowering(nothing, DpuVector[], Any[])
 
 function _leaf(v::DpuVector, st::_Lowering)
     if st.primary === nothing
@@ -275,24 +276,144 @@ end
 # @noinline is load-bearing on Julia 1.11.3: when a caller discards `primary`,
 # inlining this lets SROA drop `_leaf`'s store to st.primary while keeping the
 # check below, so a perfectly good broadcast reports "contains no DpuVector".
-@noinline function _lower_tree(bc::Base.Broadcast.Broadcasted)
+@noinline function _lower_tree(bc::Base.Broadcast.Broadcasted;
+                               consume::Bool = true)
     st = _Lowering()
     e = _lower(bc, st)
     st.primary === nothing &&
         throw(ArgumentError("broadcast contains no DpuVector"))
+    # Whatever was folded in needs no run of its own.  Not marked when the
+    # program is only being inspected, since nothing is submitted.
+    consume && for x in st.inlined
+        x.consumed = true
+    end
     return e, st.primary, st.operands
 end
 
-"""
-    materialize(bc)
+# ---- lazy results ----
+#
+# `a .+ b` is the program, not the vector.  Inlined where it is used, so a chain
+# of statements is still one pass and a reduction over one has no intermediate.
 
-`a .+ b .* c` and friends: the whole expression becomes one RPN program and one
-kernel pass, with no host-side intermediates.
 """
-function Base.copy(bc::Base.Broadcast.Broadcasted{DpuStyle})
-    e, primary, operands = _lower_tree(bc)
-    return dpu_pipeline(primary, e; operands = operands)
+    DpuLazy
+
+An expression built but not run. `Array`, `DpuVector`, indexing, `fence` or a
+reduction runs it; using it inside another expression inlines it instead.
+"""
+mutable struct DpuLazy
+    bc::Base.Broadcast.Broadcasted
+    len::Int
+    forced::Any     # the DpuVector once it has been run, so it runs once
+    consumed::Bool  # inlined into a submitted program, so it needs no run of its own
 end
+
+# Registered weakly so `sync()` can run what nothing else will: a value the
+# caller kept, as opposed to a step on the way to one.
+const _LAZY_REGISTRY = WeakRef[]
+
+function DpuLazy(bc::Base.Broadcast.Broadcasted, len::Int)
+    x = DpuLazy(bc, len, nothing, false)
+    push!(_LAZY_REGISTRY, WeakRef(x))
+    return x
+end
+
+Base.copy(bc::Base.Broadcast.Broadcasted{DpuStyle}) = DpuLazy(bc, _bclength(bc))
+
+# The element count is the primary vector's, found without lowering anything.
+_bclength(x::DpuVector) = length(x)
+_bclength(x::DpuLazy) = x.len
+_bclength(::Any) = nothing
+function _bclength(bc::Base.Broadcast.Broadcasted)
+    for a in bc.args
+        n = _bclength(a)
+        n === nothing || return n
+    end
+    return nothing
+end
+
+Base.length(x::DpuLazy) = x.len
+Base.size(x::DpuLazy) = (x.len,)
+Base.eltype(::DpuLazy) = Int32
+Base.axes(x::DpuLazy) = (Base.OneTo(x.len),)
+Base.broadcastable(x::DpuLazy) = x
+Base.BroadcastStyle(::Type{DpuLazy}) = DpuStyle()
+
+# Inlined where it is used, unless already run -- then that result is cheaper.
+function _lower(x::DpuLazy, st::_Lowering)
+    x.forced === nothing || return _leaf(x.forced, st)
+    push!(st.inlined, x)
+    return _lower(x.bc, st)
+end
+
+"""
+    DpuVector(x::DpuLazy)
+
+Run `x`, keeping the result on the DPUs. [`fence`](@ref) says the same thing
+without reading as a conversion.
+"""
+function DpuVector(x::DpuLazy)
+    x.forced === nothing || return x.forced
+    e, primary, operands = _lower_tree(x.bc)
+    x.forced = dpu_pipeline(primary, e; operands = operands)
+    return x.forced
+end
+
+Base.Array(x::DpuLazy) = Array(DpuVector(x))
+Base.Vector(x::DpuLazy) = Array(x)
+Base.collect(x::DpuLazy) = Array(x)
+Base.getindex(x::DpuLazy, i::Integer) = Array(x)[i]
+
+"""
+    fence(x::DpuLazy)
+
+Run `x`, block until it is done, return it. `fence(v::DpuVector)` waits for a
+vector's queued work; this also submits an expression that has not run.
+
+Only the named value runs. Its intermediates stay unrun -- forcing those would
+cost a kernel and an MRAM buffer each.
+
+    res = op(da, db)     # nothing has run
+    fence(res)           # runs here, so this is where the time is spent
+    Array(res)           # already computed
+"""
+fence(x::DpuLazy) = (fence(DpuVector(x)); x)
+
+const _Lane = Union{DpuVector,DpuLazy}
+
+# An operand slot needs a real vector; anything else passes through.
+_force(x) = x
+_force(x::DpuLazy) = DpuVector(x)
+
+# Operators on an unrun expression keep it unrun.  On a DpuVector they stay
+# eager: `a + b` is a statically compiled kernel.
+_lazy(bc::Base.Broadcast.Broadcasted) = DpuLazy(bc, _bclength(bc))
+
+Base.:-(x::DpuLazy) = _lazy(Base.broadcasted(-, x))
+Base.abs(x::DpuLazy) = _lazy(Base.broadcasted(abs, x))
+
+for f in (:+, :-, :*, :div, :(>>), :(==), :<, :>, :<=, :>=)
+    @eval Base.$f(x::DpuLazy, y::Union{DpuLazy,DpuVector,Integer}) =
+        _lazy(Base.broadcasted($f, x, y))
+    @eval Base.$f(x::Union{DpuVector,Integer}, y::DpuLazy) =
+        _lazy(Base.broadcasted($f, x, y))
+end
+
+# A reduction over an unrun expression is one pass: the terminal is appended to
+# the program instead of reducing a materialised intermediate.
+for (f, terminal) in ((:sum, :sum), (:prod, :prod),
+                      (:minimum, :minimum), (:maximum, :maximum))
+    @eval function Base.$f(x::DpuLazy)
+        e, primary, operands = _lower_tree(x.bc)
+        x.consumed = true       # reduced here, so `sync()` must not run it too
+        return dpu_pipeline_reduce(primary, $terminal(e); operands = operands)
+    end
+end
+
+Base.sum(f, x::DpuLazy) = sum(Base.broadcasted(f, x))
+Base.prod(f, x::DpuLazy) = prod(Base.broadcasted(f, x))
+Base.minimum(f, x::DpuLazy) = minimum(Base.broadcasted(f, x))
+Base.maximum(f, x::DpuLazy) = maximum(Base.broadcasted(f, x))
 
 """
     dest .= expr
@@ -300,6 +421,9 @@ end
 Writes through `dest`'s existing buffer, so other handles to it observe the
 result. One kernel pass.
 """
+Base.copyto!(dest::DpuVector, x::DpuLazy) =
+    (x.consumed = true; copyto!(dest, x.bc))
+
 function Base.copyto!(dest::DpuVector, bc::Base.Broadcast.Broadcasted{DpuStyle})
     e, primary, operands = _lower_tree(bc)
     length(dest) == length(primary) || throw(DimensionMismatch(
@@ -328,6 +452,7 @@ export select_op
 # same way and also works when the library was built with JIT=0.
 
 function _veclist(vs)
+    vs = map(_force, vs)
     l = PolymerPIM.DpuVecList()
     for v in vs
         PolymerPIM.var"veclist_push!"(l, v.handle)
@@ -348,13 +473,13 @@ Run the RPN program `e` over `v`, returning the elementwise result.
 `input()` refers to `v`, `operand(i)` to `operands[i]`, `scalar_var(i)` to
 `scalars[i]`.
 """
-function dpu_pipeline(v::DpuVector, e::DpuExpr;
+function dpu_pipeline(v::_Lane, e::DpuExpr;
                   operands::AbstractVector{DpuVector} = DpuVector[],
                   scalars::AbstractVector{<:Integer} = Int32[])
     _check_program(e, operands)
     sc = Int32.(collect(scalars))
     handle = retry_on_oom(() -> PolymerPIM.launch_pipeline(
-        v.handle, e.ops, _veclist(operands), sc))
+        _force(v).handle, e.ops, _veclist(operands), sc))
     return DpuVector(handle)
 end
 
@@ -364,7 +489,7 @@ end
 As [`dpu_pipeline`](@ref), but `e` must end in a reduction terminal (`sum`, `prod`,
 `minimum`, `maximum`). Returns a future so independent reductions still fuse.
 """
-function dpu_pipeline_reduce(v::DpuVector, e::DpuExpr;
+function dpu_pipeline_reduce(v::_Lane, e::DpuExpr;
                           operands::AbstractVector{DpuVector} = DpuVector[],
                           scalars::AbstractVector{<:Integer} = Int32[])
     _check_program(e, operands)
@@ -373,7 +498,7 @@ function dpu_pipeline_reduce(v::DpuVector, e::DpuExpr;
         "program must end in a reduction terminal (sum/prod/minimum/maximum)"))
     sc = Int32.(collect(scalars))
     handle = retry_on_oom(() -> PolymerPIM.launch_pipeline_reduce(
-        v.handle, e.ops, _veclist(operands), sc))
+        _force(v).handle, e.ops, _veclist(operands), sc))
     return DpuFuture(handle)
 end
 
@@ -387,13 +512,15 @@ Build an elementwise expression and run it in one fused kernel. `f` receives a
         abs(x[1] - x[2])
     end
 """
-function transform(f, v::DpuVector, operands::DpuVector...;
+function transform(f, v::_Lane, operands::_Lane...;
                    scalars::AbstractVector{<:Integer} = Int32[])
     exprs = DpuExpr[input()]
     for i in 1:length(operands)
         push!(exprs, operand(i))
     end
-    return dpu_pipeline(v, f(exprs); operands = DpuVector[operands...], scalars = scalars)
+    return dpu_pipeline(_force(v), f(exprs);
+                        operands = DpuVector[map(_force, operands)...],
+                        scalars = scalars)
 end
 
 """
@@ -406,14 +533,15 @@ these fuse into a single kernel pass.
         sum(x[1] * x[2])          # dot product
     end
 """
-function reduce_expr(f, v::DpuVector, operands::DpuVector...;
+function reduce_expr(f, v::_Lane, operands::_Lane...;
                      scalars::AbstractVector{<:Integer} = Int32[])
     exprs = DpuExpr[input()]
     for i in 1:length(operands)
         push!(exprs, operand(i))
     end
-    return dpu_pipeline_reduce(v, f(exprs); operands = DpuVector[operands...],
-                           scalars = scalars)
+    return dpu_pipeline_reduce(_force(v), f(exprs);
+                               operands = DpuVector[map(_force, operands)...],
+                               scalars = scalars)
 end
 
 """
@@ -455,7 +583,7 @@ export dpu_pipeline, dpu_pipeline_reduce, dpu_pipeline_multi, transform, reduce_
 # lane per position is `argmin.(zip(v1, v2, v3))` instead.  1-based, as Julia's
 # is over a tuple.
 
-const DpuZip = Base.Iterators.Zip{<:Tuple{DpuVector,Vararg{DpuVector}}}
+const DpuZip = Base.Iterators.Zip{<:Tuple{_Lane,Vararg{_Lane}}}
 
 # Any other broadcast over a zip would have Base collect it -- one readback
 # per element.
@@ -572,13 +700,26 @@ Base.:<(a::DpuVector, s::Integer) = transform(a) do x
     x[1] < s
 end
 
-# ---- local scatter accumulators ----
+# ---- local (WRAM) scatter accumulators ----
+#
+# `bins[idx] .+= v` records an accumulation; nothing launches.  Index and value
+# stay lazy, so several updates lower into one program.  Reading a local, or
+# `sync()`, flushes them.
 
 """
     DpuLocalVector(n; reduce_op = :sum)
 
-A small per-DPU accumulator array in WRAM, the target of a scatter program.
-`Array(l)` gathers every DPU's copy and merges them with `reduce_op`.
+A small per-DPU accumulator array in WRAM. Scatter into it by indexing with a
+lazy expression, and read it with `Array`, which merges every DPU's copy with
+`reduce_op`:
+
+    bins = DpuLocalVector(16)
+    bins[(da .* 16) .>> 10] .+= 1        # queued
+    Array(bins)                          # flushed, then merged
+
+`reduce_op` is one of `:sum`, `:product`, `:min`, `:max`, and is also the
+accumulation each update performs, so `.+=` belongs to a `:sum` local and
+`.= min.(...)` to a `:min` one.
 """
 mutable struct DpuLocalVector
     handle::Any
@@ -596,37 +737,169 @@ end
 
 Base.length(l::DpuLocalVector) = l.len
 
+# Queued updates, in the order written: one flush emits one program, so updates
+# to different locals still share a pass.
+struct _PendingUpdate
+    target::DpuLocalVector
+    op::UInt8
+    index::Any
+    value::Any
+end
+
+const _PENDING_UPDATES = _PendingUpdate[]
+
+# `bins[idx]` on its own is not a value -- only the target of an accumulation.
+struct _LocalSlot
+    target::DpuLocalVector
+    index::Any
+end
+
+# `bins[i] .+= v` desugars to `bins[i] .= bins[i] .+ v`: only the assignment
+# target goes through dotview, so the read needs the same slot object.
+Base.dotview(l::DpuLocalVector, index) = _LocalSlot(l, index)
+Base.getindex(l::DpuLocalVector, index) = _LocalSlot(l, index)
+
+const _ACCUM_OPS = Dict{Any,UInt8}(
+    (+) => Opcodes.OP_SUM, (*) => Opcodes.OP_PRODUCT,
+    min => Opcodes.OP_MIN, max => Opcodes.OP_MAX,
+)
+
+struct _LocalAccum
+    slot::_LocalSlot
+    op::UInt8
+    value::Any
+end
+
+function Base.broadcasted(f, slot::_LocalSlot, value)
+    op = get(_ACCUM_OPS, f, nothing)
+    op === nothing && throw(ArgumentError(
+        "a local accumulator supports .+=, .*=, min and max, not $f"))
+    return _LocalAccum(slot, op, value)
+end
+
+Base.broadcasted(f, value, slot::_LocalSlot) = Base.broadcasted(f, slot, value)
+
+function Base.materialize!(dest::_LocalSlot, acc::_LocalAccum)
+    acc.slot.target === dest.target || throw(ArgumentError(
+        "a local accumulation reads and writes the same local vector"))
+    acc.op == _local_reduce_opcode(dest.target.reduce_op) || throw(ArgumentError(
+        "this accumulation is $(acc.op) but the local vector merges with " *
+        ":$(dest.target.reduce_op); they have to agree"))
+    push!(_PENDING_UPDATES, _PendingUpdate(dest.target, acc.op, dest.index,
+                                           acc.value))
+    return dest.target
+end
+
+_no_accum() = throw(ArgumentError(
+    "a local vector can only be accumulated into: bins[i] .+= v"))
+Base.materialize!(::_LocalSlot, ::Any) = _no_accum()
+Base.materialize!(::_LocalSlot, ::Base.Broadcast.Broadcasted) = _no_accum()
+
+_lower_operand(x, st::_Lowering) = _lower(x, st)
+_lower_operand(x::Base.Broadcast.Broadcasted, st::_Lowering) = _lower(x, st)
+
+# The queued updates as one program, without launching it: what flush_locals!
+# submits, and what `@code_jitted` shows.
+function _pending_program(updates::Vector{_PendingUpdate};
+                          consume::Bool = true)
+    st = _Lowering()
+    locals = DpuLocalVector[]
+    reductions = _LocalReduce[]
+    for u in updates
+        index = _lower_operand(u.index, st)
+        value = _lower_operand(u.value, st)
+        slot = findfirst(l -> l === u.target, locals)
+        if slot === nothing
+            push!(locals, u.target)
+            slot = length(locals)
+        end
+        push!(reductions, _LocalReduce(slot - 1, u.op, index, value))
+    end
+    length(locals) <= MAX_LOCAL_SCRATCH_VECTORS || throw(ArgumentError(
+        "$(length(locals)) local vectors exceeds MAX_LOCAL_SCRATCH_VECTORS " *
+        "($MAX_LOCAL_SCRATCH_VECTORS); WRAM has room for no more, and the " *
+        "extras would silently read back as zeros"))
+    st.primary === nothing && throw(ArgumentError(
+        "a scatter needs a DpuVector in its index or value"))
+    # Folded in, so `sync()` must not run them a second time.
+    consume && for x in st.inlined
+        x.consumed = true
+    end
+    return _scatter_program(reductions), st.primary, st.operands, locals
+end
+
+# Everything alive, unrun and not folded into something else: the values a
+# caller is still holding.  A step in a larger expression is referenced by its
+# consumer, so it is not one of these.
+function _dangling_lazies()
+    live, keep = DpuLazy[], WeakRef[]
+    for wr in _LAZY_REGISTRY
+        x = wr.value
+        x === nothing && continue
+        push!(keep, wr)
+        (x.forced === nothing && !x.consumed) && push!(live, x)
+    end
+    resize!(_LAZY_REGISTRY, 0)
+    append!(_LAZY_REGISTRY, keep)
+    isempty(live) && return DpuLazy[]
+
+    referenced = Base.IdSet{DpuLazy}()
+    for x in live
+        _mark_referenced(x.bc, referenced)
+    end
+    return [x for x in live if !(x in referenced)]
+end
+
+function _mark_referenced(bc::Base.Broadcast.Broadcasted, seen)
+    for a in bc.args
+        _mark_referenced(a, seen)
+    end
+    return nothing
+end
+function _mark_referenced(x::DpuLazy, seen)
+    x in seen && return nothing
+    push!(seen, x)
+    _mark_referenced(x.bc, seen)
+    return nothing
+end
+_mark_referenced(::Any, _) = nothing
+
+# Run the values nothing else is going to run.  `sync()`'s half of the bargain:
+# a caller who kept a result gets it computed, without the steps behind it
+# being materialised.
+function _run_dangling_lazies()
+    for x in _dangling_lazies()
+        DpuVector(x)
+    end
+    return nothing
+end
+
+"""
+    flush_locals!()
+
+Launch the scatter program the queued updates describe, if any. Called by
+[`sync`](@ref) and by reading a local vector, so it rarely needs calling
+directly.
+"""
+function flush_locals!()
+    isempty(_PENDING_UPDATES) && return nothing
+    updates = copy(_PENDING_UPDATES)
+    empty!(_PENDING_UPDATES)
+    program, primary, operands, locals = _pending_program(updates)
+    ll = PolymerPIM.DpuLocalList()
+    for l in locals
+        PolymerPIM.var"locallist_push!"(ll, l.handle)
+    end
+    retry_on_oom(() -> PolymerPIM.launch_pipeline_scatter(
+        primary.handle, program.ops, _veclist(operands), Int32[], ll))
+    return nothing
+end
+
 function Base.Array(l::DpuLocalVector)
+    flush_locals!()
     out = Vector{Int32}(undef, l.len)
     retry_on_oom(() -> PolymerPIM.var"local_to_cpu!"(l.handle, out))
     return out
 end
 
-"""
-    scatter!(locals, v, program; operands, scalars)
-
-Run a scatter `program` (see [`scatter_program`](@ref)) over `v`, accumulating
-into `locals`. Slot numbers in the program's `LocalReduce` entries are 0-based
-indices into `locals`.
-"""
-function scatter!(locals::AbstractVector{DpuLocalVector}, v::DpuVector,
-                  program::DpuExpr;
-                  operands::AbstractVector{DpuVector} = DpuVector[],
-                  scalars::AbstractVector{<:Integer} = Int32[])
-    isempty(program.ops) && return locals
-    length(locals) <= MAX_LOCAL_SCRATCH_VECTORS || throw(ArgumentError(
-        "$(length(locals)) local vectors exceeds MAX_LOCAL_SCRATCH_VECTORS " *
-        "($MAX_LOCAL_SCRATCH_VECTORS); WRAM has room for no more, and the " *
-        "extras would silently read back as zeros"))
-    _check_program(program, operands)
-    ll = PolymerPIM.DpuLocalList()
-    for l in locals
-        PolymerPIM.var"locallist_push!"(ll, l.handle)
-    end
-    sc = Int32.(collect(scalars))
-    retry_on_oom(() -> PolymerPIM.launch_pipeline_scatter(
-        v.handle, program.ops, _veclist(operands), sc, ll))
-    return locals
-end
-
-export DpuLocalVector, scatter!
+export DpuLocalVector, flush_locals!

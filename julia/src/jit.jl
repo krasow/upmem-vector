@@ -54,7 +54,7 @@ end
 code_jitted(e::DpuExpr; kwargs...) = code_jitted(e.ops; kwargs...)
 
 function code_jitted(bc::Base.Broadcast.Broadcasted)
-    e, primary, operands = _lower_tree(bc)
+    e, primary, operands = _lower_tree(bc; consume = false)
     return code_jitted(e; nelements = length(primary), noperands = length(operands))
 end
 
@@ -78,7 +78,7 @@ code_jitted(x) = error("""
 const REDUCERS = (:sum, :prod, :minimum, :maximum)
 
 function _code_jitted_reduce(f, bc::Base.Broadcast.Broadcasted)
-    e, primary, operands = _lower_tree(bc)
+    e, primary, operands = _lower_tree(bc; consume = false)
     return code_jitted(f(e); nelements = length(primary),
                        noperands = length(operands))
 end
@@ -100,6 +100,18 @@ end
 # rebuild the program the launcher submitted.
 const ARG_FORMS = (:argmin, :argmax, :findmin, :findmax)
 
+
+function _code_jitted_scatter(statement)
+    before = length(_PENDING_UPDATES)
+    statement()
+    length(_PENDING_UPDATES) > before || throw(ArgumentError(
+        "that statement queued no local accumulation"))
+    queued = _PENDING_UPDATES[(before + 1):end]
+    resize!(_PENDING_UPDATES, before)
+    program, primary, operands, _ = _pending_program(queued; consume = false)
+    return code_jitted(program; nelements = length(primary),
+                       noperands = length(operands))
+end
 
 # Pass 1 is a statically compiled reduction with no source, so show pass 2: the
 # index of the value's first occurrence.
@@ -152,6 +164,11 @@ An assignment describes its right-hand side: `@code_jitted g = sum(a .+ b)` is
 `@code_jitted sum(a .+ b)`.
 """
 macro code_jitted(ex)
+    # A scatter is a statement: queue it, take it back off, show the program.
+    if ex isa Expr && ex.head in (:.=, :(.+=), :(.*=)) && ex.args[1] isa Expr &&
+       ex.args[1].head === :ref
+        return :(_code_jitted_scatter(() -> $(esc(ex))))
+    end
     ex = _rhs(ex)
     if ex isa Expr && ex.head === :call && ex.args[1] isa Symbol
         if length(ex.args) == 2 && ex.args[1] in ARG_FORMS

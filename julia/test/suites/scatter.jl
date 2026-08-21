@@ -1,6 +1,6 @@
-# Local (WRAM) scatter accumulators: an RPN program indexes into a small
-# per-DPU array and accumulates, rather than producing a value per lane.  This
-# is what backs histogram- and kmeans-style workloads.
+# Local (WRAM) scatter accumulators: indexing a local vector with a lazy
+# expression accumulates into a small per-DPU array instead of producing a value
+# per element.  This is what backs histogram- and kmeans-style workloads.
 
 @testset "histogram into one accumulator" begin
     n = 512
@@ -9,9 +9,7 @@
 
     bins = DpuLocalVector(8)
     @test length(bins) == 8
-    scatter!([bins], a,
-             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_SUM,
-                                          input(), constant(Int32(1)))]))
+    bins[a] .+= 1
     @test Array(bins) == Int32[count(==(b), data) for b in 0:7]
 end
 
@@ -22,10 +20,7 @@ end
     a = DpuVector(data)
 
     bins = DpuLocalVector(nbins)
-    bucket = (input() * Int32(nbins)) >> Int32(depth)
-    scatter!([bins], a,
-             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_SUM,
-                                          bucket, constant(Int32(1)))]))
+    bins[(a .* Int32(nbins)) .>> Int32(depth)] .+= 1
 
     want = zeros(Int32, nbins)
     for v in data
@@ -34,10 +29,9 @@ end
     @test Array(bins) == want
 end
 
-@testset "several reductions sharing an index prefix" begin
+@testset "several updates share one pass" begin
     # The kmeans shape: one index expression feeding a count plus a sum per
-    # dimension.  The shared prefix is emitted once and re-used with OP_DUP, so
-    # this is the case that exercises _common_index_prefix.
+    # dimension.  The shared prefix is emitted once and re-used with OP_DUP.
     n = 256
     slots = 4
     stride = 3                     # [count, sum(a), sum(b)] per slot
@@ -46,13 +40,13 @@ end
     a = DpuVector(av); b = DpuVector(bv)
 
     acc = DpuLocalVector(slots * stride)
-    base = input() * Int32(stride)
-    prog = scatter_program([
-        LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, base, constant(Int32(1))),
-        LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, base + Int32(1), input()),
-        LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, base + Int32(2), operand(1)),
-    ])
-    scatter!([acc], a, prog; operands = [b])
+    base = a .* Int32(stride)
+    sync(); before = PolymerPIM.stat_compute_launches()
+    acc[base] .+= 1
+    acc[base .+ Int32(1)] .+= a
+    acc[base .+ Int32(2)] .+= b
+    sync()                         # queued until here
+    @test PolymerPIM.stat_compute_launches() - before == 1
 
     want = zeros(Int64, slots * stride)
     for i in 1:n
@@ -65,7 +59,6 @@ end
 end
 
 @testset "min and max accumulators" begin
-    # One local per program: WRAM fits MAX_LOCAL_SCRATCH_VECTORS of them.
     n = 256
     slots = 4
     av = Int32[i % slots for i in 0:(n - 1)]
@@ -81,32 +74,87 @@ end
     end
 
     lo = DpuLocalVector(slots; reduce_op = :min)
-    scatter!([lo], a,
-             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_MIN,
-                                         input(), operand(1))]);
-             operands = [b])
+    lo[a] .= min.(lo[a], b)
     @test Array(lo) == want_lo
 
     hi = DpuLocalVector(slots; reduce_op = :max)
-    scatter!([hi], a,
-             scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_MAX,
-                                         input(), operand(1))]);
-             operands = [b])
+    hi[a] .= max.(hi[a], b)
     @test Array(hi) == want_hi
+end
+
+# WRAM fits MAX_LOCAL_SCRATCH_VECTORS locals, which is 1 on some builds.
+MAX_LOCAL_SCRATCH_VECTORS >= 2 && @testset "two locals in one program" begin
+    n = 128
+    slots = 4
+    av = Int32[i % slots for i in 0:(n - 1)]
+    a = DpuVector(av)
+
+    counts = DpuLocalVector(slots)
+    totals = DpuLocalVector(slots)
+    sync(); before = PolymerPIM.stat_compute_launches()
+    counts[a] .+= 1
+    totals[a] .+= a
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test Array(counts) == Int32[count(==(s), av) for s in 0:(slots - 1)]
+    @test Array(totals) == Int32[s * count(==(s), av) for s in 0:(slots - 1)]
+end
+
+# The old spelling built the program by hand from `input()`.  The lazy index has
+# to compile to exactly that, or the bucket arithmetic has left the kernel.
+@testset "the scatter program is unchanged" begin
+    depth, nbins = 10, 16
+    da = DpuVector(Int32[i % (1 << depth) for i in 0:255])
+
+    bucket = (input() * Int32(nbins)) >> Int32(depth)
+    byhand = PolymerPIM._scatter_program(
+        [PolymerPIM._LocalReduce(0, PolymerPIM.Opcodes.OP_SUM, bucket,
+                                 constant(Int32(1)))])
+
+    bins = DpuLocalVector(nbins)
+    bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
+    program, primary, operands, locals = PolymerPIM._pending_program(
+        PolymerPIM._PENDING_UPDATES; consume = false)
+
+    # The macro shows the same program, and leaves the queue as it found it.
+    queued = length(PolymerPIM._PENDING_UPDATES)
+    shown = @code_jitted bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
+    @test length(PolymerPIM._PENDING_UPDATES) == queued
+    @test shown.ops == byhand.ops
+    @test shown.nelements == length(da)
+    @test occursin("local_accum_0[", shown.source)
+
+    @test program.ops == byhand.ops
+    @test primary === da
+    @test isempty(operands)
+    @test length(locals) == 1
+    @test code_jitted(program).hash == code_jitted(byhand).hash
+
+    sync()                     # leave nothing queued for the next testset
 end
 
 @testset "scatter argument validation" begin
     @test_throws ArgumentError DpuLocalVector(8; reduce_op = :median)
     @test_throws Exception DpuLocalVector(0)
-    # An empty program is a no-op rather than an error.
+
     a = DpuVector(Int32[1, 2, 3, 4])
+    # Nothing queued: flushing is a no-op rather than an error.
+    sync()
+    @test flush_locals!() === nothing
+
+    # The accumulation has to match how the local merges.
+    lo = DpuLocalVector(4; reduce_op = :min)
+    @test_throws ArgumentError lo[a] .+= 1
     bins = DpuLocalVector(4)
-    @test scatter!([bins], a, DpuExpr())[1] === bins
+    @test_throws ArgumentError bins[a] .= a
+    @test_throws ArgumentError bins[a] .= div.(bins[a], 2)
 
     # WRAM fits only MAX_LOCAL_SCRATCH_VECTORS locals, and the extras used to
     # read back as zeros rather than failing.
-    prog = scatter_program([LocalReduce(0, PolymerPIM.Opcodes.OP_SUM,
-                                       input(), constant(Int32(1)))])
     too_many = [DpuLocalVector(4) for _ in 1:(MAX_LOCAL_SCRATCH_VECTORS + 1)]
-    @test_throws ArgumentError scatter!(too_many, a, prog)
+    for l in too_many
+        l[a] .+= 1
+    end
+    @test_throws ArgumentError sync()
+    empty!(PolymerPIM._PENDING_UPDATES)
 end

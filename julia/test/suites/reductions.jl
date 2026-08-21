@@ -103,3 +103,97 @@ end
     @test (@code_jitted argmax(a)).hash == (@code_jitted argmax(up)).hash
     @test PolymerPIM.Opcodes.OP_PUSH_GLOBAL_INDEX in (@code_jitted argmax(a)).ops
 end
+
+# An unrun expression reduces in one pass: the terminal joins the program rather
+# than reducing a materialised intermediate.
+@testset "reducing a lazy expression is one pass" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(3), N))
+    av = Array(a); bv = Array(b)
+
+    @test (a .+ b) isa DpuLazy
+    sync(); before = PolymerPIM.stat_compute_launches()
+    total = sum(a .+ b)[]
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test total == sum(Int64.(av) .+ Int64.(bv))
+
+    @test maximum(a .* b)[] == maximum(Int64.(av) .* Int64.(bv))
+    @test minimum(-(a .+ b))[] == -maximum(Int64.(av) .+ Int64.(bv))
+
+    # Forcing without a transfer, then reducing, is two passes.
+    sync(); before = PolymerPIM.stat_compute_launches()
+    kept = DpuVector(a .+ b)
+    @test sum(kept)[] == total
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 2
+end
+
+# Forcing the same expression twice must not run it twice.
+@testset "forcing is memoised" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+
+    sync(); before = PolymerPIM.stat_compute_launches()
+    x = a .+ b
+    first = Array(x)
+    second = Array(x)
+    kept = DpuVector(x)
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test first == second
+    @test Array(kept) == first
+    # Once run, it is that vector wherever it appears.
+    @test sum(x .* 0 .+ 1)[] == N
+end
+
+# `fence` on an unrun expression: runs that value, and only that value.
+@testset "fencing an expression" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+
+    sync(); before = PolymerPIM.stat_compute_launches()
+    step1 = a .+ b            # an intermediate, never wanted on its own
+    res = step1 .* Int32(3)
+    fence(res)
+    sync()
+    # One kernel: the intermediate was inlined, not materialised.
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test res isa DpuLazy
+    @test Array(res) == (Array(a) .+ Array(b)) .* 3
+
+    # Already run, so reading it launches nothing more.
+    before = PolymerPIM.stat_compute_launches()
+    Array(res); sync()
+    @test PolymerPIM.stat_compute_launches() - before == 0
+end
+
+# `sync()` runs the values nothing else will, and leaves the steps behind them
+# alone -- so user code needs one barrier, not two.
+@testset "sync runs what nothing else will" begin
+    a = DpuVector(Int32.(1:N)); b = DpuVector(fill(Int32(2), N))
+    av = Array(a); bv = Array(b)
+
+    # A kept result runs; reading it afterwards costs nothing.
+    sync(); before = PolymerPIM.stat_compute_launches()
+    res = a .+ b .* Int32(3)
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    before = PolymerPIM.stat_compute_launches()
+    @test Array(res) == av .+ bv .* 3
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 0
+
+    # Steps consumed by a later expression are not run on their own.
+    sync(); before = PolymerPIM.stat_compute_launches()
+    step = a .+ b
+    final = step .* Int32(2)
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test Array(final) == (av .+ bv) .* 2
+
+    # Nor is an index folded into a scatter.
+    bins = DpuLocalVector(8)
+    sync(); before = PolymerPIM.stat_compute_launches()
+    bins[a .* Int32(0)] .+= 1
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+    @test Array(bins)[1] == N
+end
