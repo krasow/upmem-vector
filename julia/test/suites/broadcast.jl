@@ -41,6 +41,34 @@ end
     @test Array(ifelse.(a .> b, a, b)) == max.(av, bv)
 end
 
+@testset "launch-time scalar leaves" begin
+    av = Int32.(collect(1:256))
+    a = DpuVector(av)
+
+    @test Array(abs2.(a .- 7)) == abs2.(av .- Int32(7))
+
+    # A captured subtree keeps one launch slot when reused. Separately captured
+    # equal-valued occurrences remain structurally distinct.
+    leaf = PolymerPIM._capture_scalars(Base.broadcasted(-, a, 7))
+    shared = Base.broadcasted(+, leaf, leaf)
+    _, primary, operands, scalars = PolymerPIM._lower_tree(
+        shared; consume = false)
+    @test primary === a
+    @test isempty(operands)
+    @test scalars == Int32[7]
+
+    separate = Base.broadcasted(+, Base.broadcasted(-, a, 7),
+                                 Base.broadcasted(-, a, 7))
+    _, _, _, scalars = PolymerPIM._lower_tree(separate; consume = false)
+    @test scalars == Int32[7, 7]
+
+    # Runtime values never enter the opcode stream or its JIT cache key.
+    same = @code_jitted (a .- 7) .+ (a .- 7)
+    different = @code_jitted (a .- 7) .+ (a .- 8)
+    @test same.ops == different.ops
+    @test same.hash == different.hash
+end
+
 @testset "a whole expression is one kernel pass" begin
     n = 512
     vs = [DpuVector(Int32.(collect(1:n) .+ k)) for k in 1:8]

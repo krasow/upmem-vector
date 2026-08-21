@@ -161,6 +161,17 @@ sees anything, and no `sum(::Broadcasted)` method can intercept it. Use
 `sum.(a .+ b)` is not a reduction at all -- `sum.` broadcasts `sum` over each
 element, which is identity on integers -- so it raises rather than lowering.
 
+Integer scalars in a lazy broadcast are launch parameters automatically. Their
+values are captured when the expression is written but stay out of the opcode
+stream, so changing a scalar reuses the compiled kernel:
+
+```julia
+distance = abs2.(col .- centroid)   # no wrapper required
+```
+
+In the hand-built RPN API below, `constant(v)` explicitly bakes a value into the
+program and `scalar_var(i)` names a launch parameter slot.
+
 ## Expressions
 
 For anything beyond a single operator, build an RPN program. `transform` returns

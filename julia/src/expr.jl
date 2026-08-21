@@ -58,24 +58,9 @@ An immediate baked into the program.
 """
 constant(v::Integer) = DpuExpr(vcat(Opcodes.OP_PUSH_SCALAR, _imm32(v)))
 
-"""
-    scalar(v)
-
-A value that rides along at launch, so changing it reuses the compiled kernel.
-Unlike a bare integer (or [`constant`](@ref)), which is baked into the program
-and so compiles a new kernel for every value:
-
-    abs2.(col .- scalar(centroid))     # one kernel for every centroid
-    abs2.(col .- centroid)            # a kernel per centroid
-
-The lowering assigns a slot per occurrence, so the program depends on the shape
-of the expression and never on the values.
-"""
-struct DpuScalar
+mutable struct _DpuScalar
     value::Int32
 end
-
-scalar(v::Integer) = DpuScalar(Int32(v))
 
 """
     scalar_var(i)
@@ -282,7 +267,7 @@ function chain(exprs::DpuExpr...)
     return DpuExpr(out)
 end
 
-export DpuExpr, input, operand, constant, scalar_var, scalar, dup, sqr, select,
+export DpuExpr, input, operand, constant, scalar_var, dup, sqr, select,
        lane_index, global_index, chain
 export add_var, sub_var, mul_var, divide_var, shr_var,
        eq_var, lt_var, gt_var, ge_var, le_var
