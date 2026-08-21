@@ -113,7 +113,7 @@ end
 
     bins = DpuLocalVector(nbins)
     bins[(da .* Int32(nbins)) .>> Int32(depth)] .+= 1
-    program, primary, operands, locals = PolymerPIM._pending_program(
+    program, primary, operands, _, locals = PolymerPIM._pending_program(
         PolymerPIM._PENDING_UPDATES; consume = false)
 
     # The macro shows the same program, and leaves the queue as it found it.
