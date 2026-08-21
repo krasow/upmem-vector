@@ -81,6 +81,20 @@ function __init__()
                 make -C julia clean build
               """)
     end
+    # `@show_log` is part of the package's surface rather than a build option:
+    # a library compiled with LOGGING=0 has no log to capture.  Costs nothing
+    # when no capture is open -- an int compare per call site.
+    if PolymerPIM.log_max_level() < 1
+        error("""
+              PolymerPIM.jl requires libvectordpu built with LOGGING >= 1 \
+              (found ENABLE_DPU_LOGGING=$(Int(PolymerPIM.log_max_level()))); \
+              @show_log has nothing to capture without it.
+
+              Rebuild and reinstall the C++ library, then rebuild the wrapper:
+                make LOGGING=3 PIPELINE=1 JIT=1 BACKEND=hw install
+                make -C julia clean build
+              """)
+    end
     atexit() do
         try
             GC.gc(true) # we need to ensure all vectors are destructed before cleanup is called
@@ -152,10 +166,12 @@ include("expr.jl")
 include("operations.jl")
 include("jit.jl")
 include("display.jl")
+include("logging.jl")
 
 export DpuVector, DpuFuture, fence, sync
 export MAX_VFUSE_INPUTS, MAX_PIPELINE_SCALARS, MAX_LOCAL_SCRATCH_VECTORS
 export installinfo, configuration, ndpus, ntasklets
 export code_jitted, @code_jitted, iscompiled
+export withlog, @show_log
 
 end # module PolymerPIM
