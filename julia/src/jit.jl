@@ -16,8 +16,8 @@ struct JittedCode
     noperands::Int
 end
 
-# The includes and externs every kernel repeats verbatim; `source` keeps them so
-# it stays byte-identical to the compiled file, printing skips to the function.
+# `source` keeps the shared preamble, so it matches the compiled file byte for
+# byte; printing skips to the function.
 function _body(c::JittedCode)
     at = findfirst("int k_" * c.hash, c.source)
     return at === nothing ? (c.source, false) : (c.source[first(at):end], true)
@@ -28,8 +28,7 @@ function Base.show(io::IO, ::MIME"text/plain", c::JittedCode)
             c.noperands, " operand", c.noperands == 1 ? "" : "s",
             c.nelements > 0 ? ", $(c.nelements) elements" : "")
     body, elided = _body(c)
-    # Checked here rather than at construction: the kernel gets written the
-    # first time something launches this program, which may be after this call.
+    # Checked here, not at construction: the kernel is written on first launch.
     println(io, "  ", c.path, iscompiled(c) ? " (compiled)" : " (not compiled yet)",
             elided ? "; preamble elided, full text in .source" : "")
     println(io)
@@ -67,19 +66,15 @@ time a program with this `hash` is launched, and is reused from then on.
 """
 iscompiled(c::JittedCode) = isfile(c.path)
 
-# Whatever came out was already materialised, so it ran on a statically compiled
-# kernel (`a + b`, `sum(a)`) rather than a generated one.
+# Already materialised: it ran a statically compiled kernel (`a + b`, `sum(a)`).
 code_jitted(x) = error("""
-    a $(typeof(x)) is already materialised, so it came from a statically compiled
-    kernel rather than a generated one. @code_jitted describes broadcasts,
-    reductions over them, and explicit RPN programs:
+    a $(typeof(x)) is materialised, so it came from a statically compiled kernel.
+    @code_jitted takes broadcasts, reductions over them, and RPN programs:
         @code_jitted a .+ b
         @code_jitted sum(a .+ b)""")
 
-# `sum(a .+ b)`: the broadcast's chain with a reduction terminal appended, which
-# is the kernel the reduction runs.  Julia materialises the broadcast before sum
-# sees it, so evaluating it also costs a pass for the intermediate -- use
-# reduce_expr for the single-pass form.
+# `sum(a .+ b)`: the chain with a reduction terminal appended.  Julia materialises
+# the broadcast first, so evaluating it costs an extra pass; reduce_expr does not.
 const REDUCERS = (:sum, :prod, :minimum, :maximum)
 
 function _code_jitted_reduce(f, bc::Base.Broadcast.Broadcasted)
@@ -101,15 +96,26 @@ function _code_jitted_mapreduce(f, op, v::DpuVector)
     return _code_jitted_map(terminal, f, v)
 end
 
-# `g = sum(a .+ b)` and `c .= a .+ b` describe the program on the right; the
-# destination is not written, since nothing is launched.  Stripped before the
-# macro looks at the expression so a reduction stays visible under one.
+# The arg forms launch as they build, so their result is already materialised;
+# rebuild the program the launcher submitted.
+const ARG_FORMS = (:argmin, :argmax, :findmin, :findmax)
+
+
+# Pass 1 is a statically compiled reduction with no source, so show pass 2: the
+# index of the value's first occurrence.
+_code_jitted_arg(::Symbol, v::DpuVector) =
+    code_jitted(_arg_index_program(); nelements = length(v))
+
+_code_jitted_arg(name::Symbol, x) = error(
+    "@code_jitted $name takes a DpuVector or a list of them, got a $(typeof(x))")
+
+# Assignments describe their right-hand side.  Stripped before dispatch, so a
+# reduction under one stays visible; nothing is launched, so nothing is assigned.
 _rhs(x) = x
 _rhs(ex::Expr) = (ex.head === :(=) || ex.head === :.=) ? _rhs(ex.args[2]) : ex
 
-# `a .+ b` parses as a call to `.+`, and `f.(x)` as Expr(:., f, tuple); both
-# lower to materialize(broadcasted(...)).  Rewriting them to `broadcasted`
-# keeps the tree lazy -- materialising it would launch the kernel.
+# `a .+ b` parses as a call to `.+`, `f.(x)` as Expr(:., f, tuple); both lower to
+# materialize(broadcasted(...)).  `broadcasted` keeps the tree lazy instead.
 _bcify(x) = x
 function _bcify(ex::Expr)
     if ex.head === :call && ex.args[1] isa Symbol &&
@@ -131,22 +137,27 @@ The C kernel `expr` would be JIT compiled to, without launching it:
 
     julia> @code_jitted a .+ b .* c
 
-Broadcasts stay lazy, so the whole expression shows as the one kernel it
-becomes -- including a reduction over one, `@code_jitted sum(a .+ b)`, which
-folds the terminal into the same program. `sum(abs, a)` and
-`mapreduce(abs, +, a)` work the same way. The reduction has to be written by
-name; being a macro, this cannot see through a variable holding `sum`.
+Broadcasts stay lazy, so the whole expression shows as the one kernel it becomes
+-- including a reduction over one, `@code_jitted sum(a .+ b)`, which folds the
+terminal into the same program. `sum(abs, a)` and `mapreduce(abs, +, a)` work the
+same way. The reduction must be written by name: a macro cannot see through a
+variable holding `sum`.
 
 `a + b` and `sum(a)` use statically compiled kernels and have no generated
-source.
+source. `argmin` / `argmax` / `findmin` / `findmax` over a single vector show
+their index pass; the value pass is a statically compiled reduction.
+`argmin.(zip(a, b))` shows the per-element lane kernel.
 
-An assignment describes its right-hand side -- `@code_jitted g = sum(a .+ b)` is
-`@code_jitted sum(a .+ b)`. Nothing is launched, so nothing is assigned.
+An assignment describes its right-hand side: `@code_jitted g = sum(a .+ b)` is
+`@code_jitted sum(a .+ b)`.
 """
 macro code_jitted(ex)
     ex = _rhs(ex)
     if ex isa Expr && ex.head === :call && ex.args[1] isa Symbol
-        if length(ex.args) == 2 && ex.args[1] in REDUCERS
+        if length(ex.args) == 2 && ex.args[1] in ARG_FORMS
+            return :(_code_jitted_arg($(QuoteNode(ex.args[1])),
+                                      $(esc(ex.args[2]))))
+        elseif length(ex.args) == 2 && ex.args[1] in REDUCERS
             return :(_code_jitted_reduce($(esc(ex.args[1])),
                                          $(esc(_bcify(ex.args[2])))))
         elseif length(ex.args) == 3 && ex.args[1] in REDUCERS

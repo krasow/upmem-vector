@@ -237,6 +237,7 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("limit_scalars", []() -> int64_t { return MAX_PIPELINE_SCALARS; });
   mod.method("limit_locals",
              []() -> int64_t { return MAX_LOCAL_SCRATCH_VECTORS; });
+  mod.method("limit_chains", []() -> int64_t { return MAX_HFUSE_CHAINS; });
 
   // Checked at module load: a stale wrapper built against a different
   // configuration should fail with a sentence, not a missing symbol.
@@ -359,6 +360,36 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
                detail::launch_universal_pipeline(
                    dest.data_desc_ref(), input.data_desc_ref(), rpn,
                    operand_refs, OpInfo<int32_t>::universal_pipeline, sc);
+             });
+
+  // Several chains, several outputs, one pass.  `dests[0]` takes chain 0 and
+  // each later dest the chain after the next OP_NEXT_CHAIN -- the order the
+  // kernel fills res_ptrs in.  launch_universal_pipeline already accepts this
+  // shape; horizontal fusion is just the runtime building it by itself.
+  //
+  // Writes through the dests' own buffers, like launch_pipeline_into and for
+  // the same reason: the caller already holds them.  So the outputs are not
+  // marked absorbed_rpn and will not vertically fuse into a later consumer.
+  mod.method("launch_pipeline_multi",
+             [](VecList& dests, Vec& input, jlcxx::ArrayRef<uint8_t> ops,
+                VecList& operands, jlcxx::ArrayRef<int32_t> scalars) {
+               std::vector<uint8_t> rpn(ops.data(), ops.data() + ops.size());
+               std::vector<detail::VectorDescRef> operand_refs;
+               operand_refs.reserve(operands.items.size());
+               for (auto& o : operands.items)
+                 operand_refs.push_back(o.data_desc_ref());
+               std::vector<detail::VectorDescRef> extra;
+               extra.reserve(dests.items.size() - 1);
+               for (size_t i = 1; i < dests.items.size(); ++i)
+                 extra.push_back(dests.items[i].data_desc_ref());
+               std::vector<uint32_t> sc;
+               sc.reserve(scalars.size());
+               for (size_t i = 0; i < scalars.size(); ++i)
+                 sc.push_back((uint32_t)scalars[i]);
+               detail::launch_universal_pipeline(
+                   dests.items[0].data_desc_ref(), input.data_desc_ref(), rpn,
+                   operand_refs, OpInfo<int32_t>::universal_pipeline, sc, {},
+                   extra);
              });
 
   mod.method("launch_pipeline_reduce",

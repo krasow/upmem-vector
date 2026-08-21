@@ -64,3 +64,42 @@ end
     @test_throws ArgumentError mapreduce(abs, -, a)
     @test_throws MethodError sum(sqrt, a)
 end
+
+# Two DPU passes, the value then its first index: has to match Base, ties too.
+@testset "index reductions match Base" begin
+    a = DpuVector(Int32.([4, 7, 1, 7, -3, 0]))
+    host = Array(a)
+
+    @test findmax(a) == findmax(host)
+    @test findmin(a) == findmin(host)
+    @test argmax(a) == argmax(host) == 2   # first of the two 7s
+    @test argmin(a) == argmin(host) == 5
+
+    # Same number, same type, whichever spelling asked for it.
+    @test findmax(a)[1] === maximum(a)
+    @test findmin(a)[1] === minimum(a)
+
+    b = DpuVector(Int32.(1:N))
+    @test argmax(b) == N
+    @test argmin(b) == 1
+
+    @test_throws ArgumentError findmax(DpuVector(0))
+    @test_throws ArgumentError argmin(DpuVector(0))
+
+    # The winner wherever it sits: last shard, first, and mid-way through a
+    # length that shards raggedly.
+    up = DpuVector(Int32.(1:1000))
+    @test argmax(up) == 1000 && argmin(up) == 1
+    ragged = Int32.(vcat(1:500, 9, 501:998))
+    @test argmax(DpuVector(ragged)) == argmax(ragged)
+    @test findmin(DpuVector(ragged)) == (Int64(1), 1)
+
+    # A pass for the value and a pass for the index.
+    sync(); before = PolymerPIM.stat_compute_launches()
+    argmax(a); sync()
+    @test PolymerPIM.stat_compute_launches() - before == 2
+
+    # Runtime scalars, so length does not change the program: one kernel.
+    @test (@code_jitted argmax(a)).hash == (@code_jitted argmax(up)).hash
+    @test PolymerPIM.Opcodes.OP_PUSH_GLOBAL_INDEX in (@code_jitted argmax(a)).ops
+end

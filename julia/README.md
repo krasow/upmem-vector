@@ -178,7 +178,7 @@ get(dot)
 
 Available: the operators above plus `sqr dup select`, the leaves `input()`,
 `operand(i)`, `constant(v)`, `scalar_var(i)`, `lane_index()`, the terminals
-`sum prod minimum maximum`, and `argmin_lanes` / `argmax_lanes`.
+`sum prod minimum maximum`, and `argmin` / `argmax` over a list of expressions.
 
 `scalar_var(i)` reads `scalars[i]` at launch rather than baking it into the
 program, so changing it reuses the same compiled kernel:
@@ -194,9 +194,14 @@ end
 
 ## K-ary
 
-`argmin_of(vectors)` / `argmax_of(vectors)` give the 0-based winning vector per
-element, in one pass. `min_squared_distance(cols, query)` is the minimum over
-rows of the squared distance to `query`.
+`argmin.(zip(v1, v2, v3))` / `argmax.(...)` give the winning vector per element,
+1-based as Julia's are, in one pass. `findmin_lanes(vectors)` /
+`findmax_lanes(vectors)` add the winning value in the same pass, returning the
+two columns unzipped -- Julia's `findmin.(zip(...))` would be a vector of tuples,
+which a DPU cannot hold. `argmax(v::DpuVector)` is the other axis, over one
+vector's elements: two passes, both on the DPUs, and only scalars come back.
+`min_squared_distance(cols, query)` is the minimum over rows of the squared
+distance to `query`.
 
 ## Tests
 

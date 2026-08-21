@@ -136,3 +136,75 @@ end
     @test Array(dpu_pipeline(a, -input())) == .-av
     @test get(dpu_pipeline_reduce(a, sum(input()))) == sum(Int64.(av))
 end
+
+# Independent chains, one program, one pass -- the shape horizontal fusion
+# builds by itself, submitted directly.
+@testset "dpu_pipeline_multi" begin
+    av = Int32.(1:N); bv = Int32.(N:-1:1)
+    a = DpuVector(av); b = DpuVector(bv)
+
+    # MAX_HFUSE_CHAINS is a swept build parameter, so how many chains fit is
+    # whatever this library was compiled with.
+    programs = [input() + operand(1), input() - operand(1), sqr(input())]
+    expected = [av .+ bv, av .- bv, av .* av]
+    k = min(MAX_CHAINS, length(programs))
+
+    before = PolymerPIM.stat_compute_launches()
+    outs = dpu_pipeline_multi(a, programs[1:k]; operands = [b])
+    sync()
+    @test PolymerPIM.stat_compute_launches() - before == 1
+
+    @test length(outs) == k
+    for j in 1:k
+        @test Array(outs[j]) == expected[j]
+    end
+
+    # Scalars and operands are shared by every chain.
+    if MAX_CHAINS >= 2
+        outs = dpu_pipeline_multi(a, [add_var(input(), 1), mul_var(input(), 1)];
+                                  scalars = Int32[7])
+        @test Array(outs[1]) == av .+ 7
+        @test Array(outs[2]) == av .* 7
+    end
+
+    @test_throws ArgumentError dpu_pipeline_multi(a, DpuExpr[])
+    @test_throws ArgumentError dpu_pipeline_multi(a, [input() for _ in 1:(MAX_CHAINS + 1)])
+end
+
+# Adjacent immediates on the same value are one instruction, so the 1-based
+# `argmin` costs what the raw opcode did.
+@testset "immediates fold" begin
+    e = input()
+    @test (e + 1 - 1).ops == e.ops
+    @test (e - 1 + 1).ops == e.ops
+    @test (e + 2 + 3).ops == (e + 5).ops
+    @test (e + 5 - 2).ops == (e + 3).ops
+    @test (e - 2 - 3).ops == (e - 5).ops
+    @test (e * 3 * 4).ops == (e * 12).ops
+    @test (e * 3 * 0).ops == (e * 0).ops
+    @test length((e * 2 * 1).ops) == length((e * 2).ops)
+
+    # Only within a class, and only on the tail.
+    @test length(((e + 1) * 2).ops) == length((e + 1).ops) + 5
+    @test length((div(e, 2) * 2).ops) == length(div(e, 2).ops) + 5
+    @test length((div(div(e, 2), 3)).ops) == length(div(e, 2).ops) + 5
+
+    # An immediate whose bytes contain an opcode value must not be mistaken for
+    # one: 0x03 is OP_ADD, and the walk starts from the front, so it isn't.
+    @test (e + 0x03 + 1).ops == (e + 4).ops
+
+    # The lane label folds back to the bare opcode.
+    lanes = DpuExpr[input(), operand(1)]
+    zeroed = argmin(lanes) - 1
+    @test zeroed.ops[end - 1] == PolymerPIM.Opcodes.OP_ARGMIN_K
+    @test zeroed.ops[end] == 0x02
+
+    # ... and still computes what it did before.
+    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    @test Array(transform(a, b) do x
+        argmin([x[1], x[2]]) - 1
+    end) == argmin.(zip(Array(a), Array(b))) .- 1
+    @test Array(transform(a) do x
+        x[1] + 7 - 7
+    end) == Array(a)
+end
