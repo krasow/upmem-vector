@@ -35,22 +35,25 @@ end
     offset = 1
     weight = 2
 
-    bins = DpuLocalVector(6)
-    bins[a .+ offset] .+= weight
+    # Five int32s need padding to 24 bytes; six already occupy 24.
+    for nlocal in (5, 6)
+        bins = DpuLocalVector(nlocal)
+        bins[a .+ offset] .+= weight
 
-    program, primary, operands, scalars, locals = PolymerPIM._pending_program(
-        PolymerPIM._PENDING_UPDATES; consume = false)
-    @test primary === a
-    @test isempty(operands)
-    @test scalars == Int32[1, 2]
-    @test length(locals) == 1
-    @test !isempty(program.ops)
+        program, primary, operands, scalars, locals = PolymerPIM._pending_program(
+            PolymerPIM._PENDING_UPDATES; consume = false)
+        @test primary === a
+        @test isempty(operands)
+        @test scalars == Int32[1, 2]
+        @test length(locals) == 1
+        @test !isempty(program.ops)
 
-    want = zeros(Int32, 6)
-    for x in data
-        want[x + 2] += 2
+        want = zeros(Int32, nlocal)
+        for x in data
+            want[x + 2] += 2
+        end
+        @test Array(bins) == want
     end
-    @test Array(bins) == want
 end
 
 @testset "shared scatter indices reuse scalar slots" begin
