@@ -91,10 +91,10 @@ _code_jitted_reduce(f, x::DpuLazy) = _code_jitted_reduce(f, x.bc)
 _code_jitted_reduce(f, x) = code_jitted(x)
 
 # `sum(abs, a)` / `mapreduce(abs, +, a)`: trace the function, append the terminal.
-_code_jitted_map(terminal, f, v::DpuVector) =
+_code_jitted_map(terminal, f, v::DPUVector) =
     code_jitted(terminal(_trace(f)); nelements = length(v))
 
-function _code_jitted_mapreduce(f, op, v::DpuVector)
+function _code_jitted_mapreduce(f, op, v::DPUVector)
     terminal = get(MAPREDUCE_TERMINALS, op, nothing)
     terminal === nothing && throw(ArgumentError("op must be +, *, min or max"))
     return _code_jitted_map(terminal, f, v)
@@ -119,11 +119,11 @@ end
 
 # Pass 1 is a statically compiled reduction with no source, so show pass 2: the
 # index of the value's first occurrence.
-_code_jitted_arg(::Symbol, v::DpuVector) =
+_code_jitted_arg(::Symbol, v::DPUVector) =
     code_jitted(_arg_index_program(); nelements = length(v))
 
 _code_jitted_arg(name::Symbol, x) = error(
-    "@code_jitted $name takes a DpuVector or a list of them, got a $(typeof(x))")
+    "@code_jitted $name takes a DPUVector or a list of them, got a $(typeof(x))")
 
 # Assignments describe their right-hand side.  Stripped before dispatch, so a
 # reduction under one stays visible; nothing is launched, so nothing is assigned.

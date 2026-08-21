@@ -1,13 +1,13 @@
-# REPL display for DpuVector
+# REPL display for DPUVector
 
 const _MAX_DISPLAY_ELEMENTS = 10
 
-function Base.show(io::IO, v::DpuVector)
-    print(io, "DpuVector{Int32}(", v.len, ")")
+function Base.show(io::IO, v::DPUVector)
+    print(io, "DPUVector{Int32}(", v.len, ")")
 end
 
-function Base.show(io::IO, ::MIME"text/plain", v::DpuVector)
-    println(io, v.len, "-element DpuVector{Int32}:")
+function Base.show(io::IO, ::MIME"text/plain", v::DPUVector)
+    println(io, v.len, "-element DPUVector{Int32}:")
     if v.len == 0
         return
     end

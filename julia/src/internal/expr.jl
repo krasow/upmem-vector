@@ -233,7 +233,7 @@ values:
 
     argmin([d1, d2, d3])          # nearest of three distances, per element
 
-Also spelled `argmin(zip(d1, d2, d3))`. Over `DpuVector`s the broadcast form
+Also spelled `argmin(zip(d1, d2, d3))`. Over `DPUVector`s the broadcast form
 `argmin.(zip(v1, v2, v3))` is the same program.
 """
 Base.argmin(lanes::AbstractVector{DpuExpr}) = _arg_k(lanes, Opcodes.OP_ARGMIN_K)

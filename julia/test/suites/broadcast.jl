@@ -4,8 +4,8 @@
 @testset "single operator broadcasts" begin
     a_data = Int32.(collect(1:N))
     b_data = fill(Int32(3), N)
-    a = DpuVector(a_data)
-    b = DpuVector(b_data)
+    a = DPUVector(a_data)
+    b = DPUVector(b_data)
 
     @test Array(a .+ b)   == a_data .+ b_data
     @test Array(a .- b)   == a_data .- b_data
@@ -22,7 +22,7 @@ end
     n = 512
     av = Int32.(collect(1:n)); bv = Int32.(collect(n:-1:1))
     cv = fill(Int32(3), n)
-    a = DpuVector(av); b = DpuVector(bv); c = DpuVector(cv)
+    a = DPUVector(av); b = DPUVector(bv); c = DPUVector(cv)
 
     @test Array(a .+ b .* c) == av .+ bv .* cv
     @test Array(abs.(a .- b) .+ 1) == abs.(av .- bv) .+ 1
@@ -43,7 +43,7 @@ end
 
 @testset "launch-time scalar leaves" begin
     av = Int32.(collect(1:256))
-    a = DpuVector(av)
+    a = DPUVector(av)
 
     @test Array(abs2.(a .- 7)) == abs2.(av .- Int32(7))
 
@@ -71,7 +71,7 @@ end
 
 @testset "a whole expression is one kernel pass" begin
     n = 512
-    vs = [DpuVector(Int32.(collect(1:n) .+ k)) for k in 1:8]
+    vs = [DPUVector(Int32.(collect(1:n) .+ k)) for k in 1:8]
     want = sum(Int32.(collect(1:n) .+ k) for k in 1:8)
 
     PolymerPIM.sync()
@@ -91,35 +91,35 @@ end
 @testset "in-place broadcast writes through" begin
     n = 512
     av = Int32.(collect(1:n)); bv = Int32.(collect(n:-1:1))
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
-    d = DpuVector(n)
+    d = DPUVector(n)
     PolymerPIM.sync()
     before = PolymerPIM.stat_compute_launches()
     d .= a .+ b .* 2
     @test Array(d) == av .+ bv .* 2
     @test PolymerPIM.stat_compute_launches() - before == 1
 
-    # DpuVector is a handle type, so `.=` must update the buffer rather than
+    # DPUVector is a handle type, so `.=` must update the buffer rather than
     # rebind -- an alias has to observe the write.
     alias = d
     d .= a .* 3
     @test Array(alias) == av .* 3
 
     # the destination may appear in its own expression
-    c = DpuVector(copy(av))
+    c = DPUVector(copy(av))
     c .= c .+ 100
     @test Array(c) == av .+ 100
 
-    e = DpuVector(copy(av))
+    e = DPUVector(copy(av))
     e .= e .* e
     @test Array(e) == av .* av
 
-    @test_throws DimensionMismatch (DpuVector(8) .= a .+ b)
+    @test_throws DimensionMismatch (DPUVector(8) .= a .+ b)
 end
 
 @testset "broadcast rejects what it cannot lower" begin
-    a = DpuVector(Int32.(collect(1:64)))
+    a = DPUVector(Int32.(collect(1:64)))
     @test_throws ArgumentError Array(sqrt.(a))
     # Lazily built, so it raises at first use -- and only once: a failed
     # expression must not be retried by a later, unrelated sync().
@@ -133,7 +133,7 @@ end
 # once.  Spelled `x .* x` the lowering has no CSE and computes it twice -- which
 # is why knn uses abs2.
 @testset "abs2 loads its argument once" begin
-    a = DpuVector(Int32.(1:N)); b = DpuVector(Int32.(N:-1:1))
+    a = DPUVector(Int32.(1:N)); b = DPUVector(Int32.(N:-1:1))
     O = PolymerPIM.Internal.Opcodes
 
     sq = @code_jitted abs2.(a .- b)

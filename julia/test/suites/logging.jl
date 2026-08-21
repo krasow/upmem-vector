@@ -1,9 +1,9 @@
 # @show_log / withlog: the host runtime's log, scoped to a block.
 
 @testset "capture window" begin
-    a = DpuVector(Int32.(collect(1:N)))
-    b = DpuVector(fill(Int32(2), N))
-    c = DpuVector(zeros(Int32, N))
+    a = DPUVector(Int32.(collect(1:N)))
+    b = DPUVector(fill(Int32(2), N))
+    c = DPUVector(zeros(Int32, N))
 
     val, log = withlog(level = 1) do
         c .= a .+ b
@@ -23,9 +23,9 @@
 end
 
 @testset "level raises detail for the block alone" begin
-    a = DpuVector(Int32.(collect(1:N)))
-    b = DpuVector(fill(Int32(3), N))
-    c = DpuVector(zeros(Int32, N))
+    a = DPUVector(Int32.(collect(1:N)))
+    b = DPUVector(fill(Int32(3), N))
+    c = DPUVector(zeros(Int32, N))
 
     _, terse = withlog(level = 1) do
         c .= a .* b
@@ -58,9 +58,9 @@ end
 end
 
 @testset "captures nest and unwind" begin
-    a = DpuVector(Int32.(collect(1:N)))
-    b = DpuVector(fill(Int32(4), N))
-    c = DpuVector(zeros(Int32, N))
+    a = DPUVector(Int32.(collect(1:N)))
+    b = DPUVector(fill(Int32(4), N))
+    c = DPUVector(zeros(Int32, N))
 
     inner_log = ""
     _, outer = withlog(level = 1) do
@@ -81,9 +81,9 @@ end
 end
 
 @testset "macro form" begin
-    a = DpuVector(Int32.(collect(1:N)))
-    b = DpuVector(fill(Int32(5), N))
-    c = DpuVector(zeros(Int32, N))
+    a = DPUVector(Int32.(collect(1:N)))
+    b = DPUVector(fill(Int32(5), N))
+    c = DPUVector(zeros(Int32, N))
 
     # Prints the log; the value is the block's.
     @test (@show_log level=1 c .= a .+ b) === c

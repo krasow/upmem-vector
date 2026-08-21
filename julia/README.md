@@ -62,8 +62,8 @@ NR_DPUS=32 julia --project=. yourscript.jl
 ```julia
 using PolymerPIM
 
-a = DpuVector(Int32[1, 2, 3, 4])
-b = DpuVector(fill(Int32(10), 4))
+a = DPUVector(Int32[1, 2, 3, 4])
+b = DPUVector(fill(Int32(10), 4))
 
 Array(a + b)          # elementwise; also - * div, and vector/scalar forms
 Array(a >> 1)         # arithmetic shift by a scalar
@@ -169,7 +169,7 @@ implementation details rather than part of the supported Julia API.
 1-based as Julia's are, in one pass. `findmin_lanes(vectors)` /
 `findmax_lanes(vectors)` add the winning value in the same pass, returning the
 two columns unzipped -- Julia's `findmin.(zip(...))` would be a vector of tuples,
-which a DPU cannot hold. `argmax(v::DpuVector)` is the other axis, over one
+which a DPU cannot hold. `argmax(v::DPUVector)` is the other axis, over one
 vector's elements: two passes, both on the DPUs, and only scalars come back.
 `min_squared_distance(cols, query)` is the minimum over rows of the squared
 distance to `query`.

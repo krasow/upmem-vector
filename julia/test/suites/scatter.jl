@@ -5,7 +5,7 @@
 @testset "histogram into one accumulator" begin
     n = 512
     data = Int32[i % 8 for i in 0:(n - 1)]
-    a = DpuVector(data)
+    a = DPUVector(data)
 
     bins = DpuLocalVector(8)
     @test length(bins) == 8
@@ -17,7 +17,7 @@ end
     n = 1024
     depth, nbins = 10, 16
     data = Int32[i % (1 << depth) for i in 0:(n - 1)]
-    a = DpuVector(data)
+    a = DPUVector(data)
 
     bins = DpuLocalVector(nbins)
     bins[(a .* Int32(nbins)) .>> Int32(depth)] .+= 1
@@ -31,7 +31,7 @@ end
 
 @testset "runtime scalars reach a scatter launch" begin
     data = Int32[i % 4 for i in 0:255]
-    a = DpuVector(data)
+    a = DPUVector(data)
     offset = 1
     weight = 2
 
@@ -57,7 +57,7 @@ end
 end
 
 @testset "shared scatter indices reuse scalar slots" begin
-    a = DpuVector(Int32[i % 4 for i in 0:255])
+    a = DPUVector(Int32[i % 4 for i in 0:255])
     # Equal values are deliberate: equality must not collapse distinct leaves.
     params = zeros(Int32, MAX_PIPELINE_SCALARS)
 
@@ -85,7 +85,7 @@ end
     stride = 3                     # [count, sum(a), sum(b)] per slot
     av = Int32[i % slots for i in 0:(n - 1)]
     bv = Int32[i for i in 0:(n - 1)]
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
     acc = DpuLocalVector(slots * stride)
     base = a .* Int32(stride)
@@ -111,7 +111,7 @@ end
     slots = 4
     av = Int32[i % slots for i in 0:(n - 1)]
     bv = Int32[(i * 37) % 1000 for i in 0:(n - 1)]
-    a = DpuVector(av); b = DpuVector(bv)
+    a = DPUVector(av); b = DPUVector(bv)
 
     want_lo = fill(typemax(Int32), slots)
     want_hi = fill(typemin(Int32), slots)
@@ -135,7 +135,7 @@ MAX_LOCAL_SCRATCH_VECTORS >= 2 && @testset "two locals in one program" begin
     n = 128
     slots = 4
     av = Int32[i % slots for i in 0:(n - 1)]
-    a = DpuVector(av)
+    a = DPUVector(av)
 
     counts = DpuLocalVector(slots)
     totals = DpuLocalVector(slots)
@@ -152,7 +152,7 @@ end
     @test_throws ArgumentError DpuLocalVector(8; reduce_op = :median)
     @test_throws Exception DpuLocalVector(0)
 
-    a = DpuVector(Int32[1, 2, 3, 4])
+    a = DPUVector(Int32[1, 2, 3, 4])
     # Nothing queued: flushing is a no-op rather than an error.
     sync()
     @test flush_locals!() === nothing

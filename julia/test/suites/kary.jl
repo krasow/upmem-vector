@@ -4,7 +4,7 @@
     av = Int32[3, 1, 4, 1, 5, 9, 2, 6]
     bv = Int32[2, 7, 1, 8, 2, 8, 1, 8]
     cv = fill(Int32(5), 8)
-    a = DpuVector(av); b = DpuVector(bv); c = DpuVector(cv)
+    a = DPUVector(av); b = DPUVector(bv); c = DPUVector(cv)
 
     # The same call Julia would make on the host arrays, element for element.
     @test Array(argmin.(zip(a, b, c))) == argmin.(zip(av, bv, cv))
@@ -14,7 +14,7 @@
 
     # Ties: Julia keeps the first, and cv ties with av at position 5.
     tv = fill(Int32(5), 8)
-    t = DpuVector(tv)
+    t = DPUVector(tv)
     @test Array(argmax.(zip(t, t, t))) == argmax.(zip(tv, tv, tv))
 
     # findmin. yields a tuple per element; the device unzips, so zip it back.
@@ -44,7 +44,7 @@
     Array(argmax.(zip(a, b, c))); sync()
     @test PolymerPIM.stat_compute_launches() - before == 1
 
-    @test_throws ArgumentError findmin_lanes(DpuVector[])
+    @test_throws ArgumentError findmin_lanes(DPUVector[])
     # Any other broadcast over a zip would collect the vectors element by element.
     @test_throws ArgumentError sum.(zip(a, b))
 
@@ -56,10 +56,10 @@ end
 @testset "min_squared_distance" begin
     c1 = Int32[1, 5, 9, 2]; c2 = Int32[2, 6, 1, 7]
     q = Int32[4, 4]
-    cols = [DpuVector(c1), DpuVector(c2)]
+    cols = [DPUVector(c1), DPUVector(c2)]
     want = minimum([(c1[i] - q[1])^2 + (c2[i] - q[2])^2 for i in 1:4])
     @test get(min_squared_distance(cols, q)) == want
 
     @test_throws ArgumentError min_squared_distance(cols, Int32[1])
-    @test_throws ArgumentError min_squared_distance(DpuVector[], Int32[])
+    @test_throws ArgumentError min_squared_distance(DPUVector[], Int32[])
 end
