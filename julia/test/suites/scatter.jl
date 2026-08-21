@@ -35,7 +35,7 @@ end
     offset = 1
     weight = 2
 
-    bins = DpuLocalVector(5)
+    bins = DpuLocalVector(6)
     bins[a .+ offset] .+= weight
 
     program, primary, operands, scalars, locals = PolymerPIM._pending_program(
@@ -46,7 +46,7 @@ end
     @test length(locals) == 1
     @test !isempty(program.ops)
 
-    want = zeros(Int32, 5)
+    want = zeros(Int32, 6)
     for x in data
         want[x + 2] += 2
     end
@@ -64,7 +64,7 @@ end
     for p in params
         shared = shared .+ p
     end
-    bins = DpuLocalVector(5)
+    bins = DpuLocalVector(6)
     bins[shared] .+= a
     bins[shared] .+= a
 
