@@ -18,7 +18,7 @@ common_options=(-h --help --dpus --elements-per-dpu --warmup --iterations
 tune_options=(--passes --lookahead --hfuse-chains --jit-batch --vfuse-ops
               --workspace --checkpoints)
 runner_options=(--list --variant --ntrials --skip-setup --generate-only
-                --dry-run --keep-going --state --csv --no-profile)
+                --dry-run --keep-going --state --csv --no-profile --help-all)
 
 contains() {
     local needle="$1"

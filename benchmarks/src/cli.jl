@@ -1,31 +1,36 @@
-function usage(io::IO = stdout)
+function usage(io::IO = stdout; advanced::Bool = false)
     println(io, """
     Usage: julia runner.jl [options] [benchmark ...]
 
     Options:
       --list                       List configured benchmarks and variants
+      --config PATH                Select a benchmark suite
       --variant NAME[,NAME...]     Select variants (repeatable)
       --dpus N[,N...]              Override configured DPU counts
       --elements-per-dpu N[,N...] Override configured problem sizes
+      --check                      Generate CPU references and verify results
+      --resume                     Skip completed runs
+      --reset                      Discard selected benchmarks' saved runs
+      --verbose                    Print subprocess output
+      --help-all                   Show advanced options
+      -h, --help                   Show this help
+    """)
+    advanced || return
+    println(io, """
+    Advanced options:
       --warmup N                   Override warmup iterations
       --iterations N               Override measured iterations
       --ntrials N                  Launch each benchmark process N times
       --timeout N                  Runtime timeout in seconds (default: 1800)
       --build-timeout N            Build timeout in seconds
-      --check                      Generate CPU references and verify results
-      --skip-setup                 Skip the shared setup commands
-      --generate-only              Write parameters without building or running
-      --dry-run                    Print actions without writing or running
-      --keep-going                 Continue after a failed command
-      --verbose                    Print build and benchmark subprocess output
-      --resume                     Skip cases completed in --state
-      --state PATH                 Runner checkpoint path
-      --csv PATH                   Append per-run timings here
-      --config PATH                Read another benchmark TOML file
-      --profiles PATH              Read per-benchmark fusion profiles here
+      --skip-setup                 Skip setup commands
+      --generate-only              Only write generated parameters
+      --dry-run                    Print actions without running them
+      --keep-going                 Continue after failures
+      --state PATH                 Override the checkpoint path
+      --csv PATH                   Override the timing CSV path
+      --profiles PATH              Override the fusion profile directory
       --no-profile                 Ignore fusion profiles
-      --reset                      Discard selected benchmarks' saved runs
-      -h, --help                   Show this help
     """)
 end
 
@@ -48,6 +53,8 @@ function parse_args(args)
         arg = args[index]
         if arg in ("-h", "--help")
             options.action = :help
+        elseif arg == "--help-all"
+            options.action = :help_all
         elseif arg == "--list"
             options.action = :list
         elseif arg in ("--check", "--skip-setup", "--generate-only",
@@ -154,8 +161,8 @@ end
 
 function run_cli(args = ARGS)
     options = parse_args(args)
-    if options.action == :help
-        usage()
+    if options.action in (:help, :help_all)
+        usage(; advanced = options.action == :help_all)
         return nothing
     end
 
