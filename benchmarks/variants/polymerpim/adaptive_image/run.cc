@@ -85,11 +85,13 @@ int main() {
     bench_stage_end(&stages);
 
 #if JIT_PIPELINE_FALLBACK
-    size_t jit_pipeline_fallbacks =
-        (RuntimeStats::get().snapshot() - runtime_before)
-            .jit_pipeline_fallbacks;
+    StatsSnapshot fallback_stats =
+        RuntimeStats::get().snapshot() - runtime_before;
+    size_t jit_pipeline_fallbacks = fallback_stats.jit_pipeline_fallbacks;
+    size_t jit_eager_fallbacks = fallback_stats.jit_eager_fallbacks;
 #else
     size_t jit_pipeline_fallbacks = 0;
+    size_t jit_eager_fallbacks = 0;
 #endif
     bench_stats_print("polymerpim", &stats);
     bench_stages_report("polymerpim", &stages);
@@ -98,7 +100,7 @@ int main() {
               << " fine_iterations=" << fine_iterations
               << " final_error=" << last_error
               << " jit_pipeline_fallbacks=" << jit_pipeline_fallbacks
-              << std::endl;
+              << " jit_eager_fallbacks=" << jit_eager_fallbacks << std::endl;
 
     if (check_correctness) {
       std::vector<T> expected(N, 0);

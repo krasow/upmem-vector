@@ -55,10 +55,13 @@ inline bool splice_mapped_chain(const std::shared_ptr<Event>& last,
   if (last_scalars.size() + chain_scalars.size() > MAX_PIPELINE_SCALARS)
     return false;
 
-  last->rpn_ops = last_rpn;
-  last->rpn_ops.insert(last->rpn_ops.end(), mapped.rpn.begin(),
-                       mapped.rpn.end());
-  last->rpn_ops = normalize_associative_rpn(last->rpn_ops);
+  std::vector<uint8_t> fused_rpn = last_rpn;
+  fused_rpn.insert(fused_rpn.end(), mapped.rpn.begin(), mapped.rpn.end());
+  fused_rpn = normalize_associative_rpn(fused_rpn);
+#if JIT_PIPELINE_FALLBACK
+  if (!pipeline_can_interpret(fused_rpn)) return false;
+#endif
+  last->rpn_ops = std::move(fused_rpn);
   last->scalars = last_scalars;
   last->scalars.insert(last->scalars.end(), chain_scalars.begin(),
                        chain_scalars.end());

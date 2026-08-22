@@ -51,6 +51,7 @@ class Event : public std::enable_shared_from_this<Event> {
   bool is_locked_for_jit = false;
 #if JIT_PIPELINE_FALLBACK
   bool jit_pipeline_fallback = false;
+  bool jit_eager_fallback = false;
 #endif
   // This event's output was inlined into a later consumer, so it may not need
   // to run.  Whether it does is decided later, once the vector's last handle

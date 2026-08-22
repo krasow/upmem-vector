@@ -11,7 +11,7 @@ LOGGING ?= 3
 PIPELINE ?= 0
 # this option enables JIT compilation of pipeline kernels
 JIT ?= 0
-# execute the interpreter until an asynchronously compiled kernel is ready
+# use interpreter/eager kernels until an async JIT kernel is ready
 JIT_PIPELINE_FALLBACK ?= 0
 # how many unique kernels to batch before triggering a JIT compile
 JIT_BATCH_SIZE ?= 16

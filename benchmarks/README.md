@@ -35,8 +35,8 @@ the CSV. `--default-params` keeps the comparison on Makefile defaults.
 
 [`dynamic.toml`](dynamic.toml) is the cold-start suite. Its adaptive image loop
 has no warmup and changes expression shape after the error crosses a tolerance.
-It compares blocking JIT, asynchronous JIT with pipeline fallback, interpreted
-pipeline, and eager execution.
+It compares blocking JIT, asynchronous JIT with pipeline/eager fallback,
+interpreted pipeline, and eager execution.
 
 `ntrials` in `benchmark.toml` launches each benchmark process independently;
 `iterations` remains the workload's in-process loop count. Override trials with

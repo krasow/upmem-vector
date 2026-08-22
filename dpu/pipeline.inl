@@ -56,6 +56,10 @@
         oi += 2; /* Opcode + 1 byte scalar index */                            \
         continue;                                                              \
       }                                                                        \
+      if (op == OP_PUSH_SCALAR) {                                              \
+        oi += 5; /* Opcode + 4 bytes scalar */                                 \
+        continue;                                                              \
+      }                                                                        \
       if (op == OP_PUSH_SCALAR_VAR) {                                          \
         oi += 2; /* Opcode + 1 byte scalar index */                            \
         continue;                                                              \

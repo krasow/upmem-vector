@@ -18,8 +18,9 @@
 // of instructions per event, which is noise next to a DPU launch.
 
 #if JIT_PIPELINE_FALLBACK
-#define VECTORDPU_HYBRID_STAT(X) \
-  X(jit_pipeline_fallbacks, "interpreter launches while JIT is compiling")
+#define VECTORDPU_HYBRID_STAT(X)                                           \
+  X(jit_pipeline_fallbacks, "interpreter launches while JIT is compiling") \
+  X(jit_eager_fallbacks, "eager launches while JIT is compiling")
 #else
 #define VECTORDPU_HYBRID_STAT(X)
 #endif

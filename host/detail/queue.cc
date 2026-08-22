@@ -130,6 +130,8 @@ void name_event(const std::shared_ptr<Event>& e) {
 #if JIT_PIPELINE_FALLBACK
   else if (e->jit_pipeline_fallback)
     e->slice_name += " (pipeline while JIT compiles)";
+  else if (e->jit_eager_fallback)
+    e->slice_name += " (eager while JIT compiles)";
 #endif
 }
 
@@ -163,6 +165,12 @@ void compile_kernel_if_unbatched(const std::shared_ptr<Event>& e) {
 
 void launch_compute(const std::shared_ptr<Event>& e) {
 #if PIPELINE
+#if JIT_PIPELINE_FALLBACK
+  if (e->jit_eager_fallback) {
+    e->cb();
+    return;
+  }
+#endif
   if (e->rpn_ops.empty() && !e->is_locked_for_jit) {
     if (e->cb) e->cb();
     return;
@@ -190,43 +198,6 @@ void launch_compute(const std::shared_ptr<Event>& e) {
   if (e->cb) e->cb();
 #endif
 }
-
-#if JIT_PIPELINE_FALLBACK
-bool pipeline_can_interpret(const std::vector<uint8_t>& rpn) {
-  if (rpn.size() > MAX_VFUSE_OPS) return false;
-  size_t depth = 0;
-  for (size_t i = 0; i < rpn.size(); ++i) {
-    uint8_t op = rpn[i];
-    if (op == OP_NEXT_CHAIN) {
-      if (depth != 1) return false;
-      depth = 0;
-      continue;
-    }
-    if (IS_OP_STACK(op) || op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR ||
-        op == OP_PUSH_INDEX || op == OP_PUSH_GLOBAL_INDEX) {
-      ++depth;
-    } else if (op == OP_DUP) {
-      if (depth == 0) return false;
-      ++depth;
-    } else if (IS_OP_UNARY(op) || IS_OP_SCALAR(op) || IS_OP_SCALAR_VAR(op) ||
-               IS_OP_REDUCTION(op)) {
-      if (depth == 0) return false;
-    } else if (IS_OP_BINARY(op)) {
-      if (depth < 2) return false;
-      --depth;
-    } else if (IS_OP_TERNARY(op)) {
-      if (depth < 3) return false;
-      depth -= 2;
-    } else {
-      return false;
-    }
-    if (depth > MAX_PIPELINE_STACK_DEPTH) return false;
-    i += OP_INLINE_BYTES(op);
-    if (i >= rpn.size() && OP_INLINE_BYTES(op) != 0) return false;
-  }
-  return depth == 1;
-}
-#endif
 
 // Logging wrappers, so the stages above read as control flow.  Each compiles
 // away when its level is not enabled.
@@ -532,12 +503,18 @@ void EventQueue::await_jit_binary(const std::shared_ptr<Event>& e) {
 #if JIT
   if (e->op != Event::OperationType::COMPUTE || !e->jit_future.valid()) return;
 #if JIT_PIPELINE_FALLBACK
-  if (pipeline_can_interpret(e->rpn_ops) &&
-      e->jit_future.wait_for(std::chrono::seconds(0)) !=
-          std::future_status::ready) {
-    e->jit_pipeline_fallback = true;
-    VECTORDPU_NOTE(jit_pipeline_fallbacks);
-    return;
+  if (e->jit_future.wait_for(std::chrono::seconds(0)) !=
+      std::future_status::ready) {
+    if (detail::pipeline_can_interpret(e->rpn_ops)) {
+      e->jit_pipeline_fallback = true;
+      VECTORDPU_NOTE(jit_pipeline_fallbacks);
+      return;
+    }
+    if (e->cb) {
+      e->jit_eager_fallback = true;
+      VECTORDPU_NOTE(jit_eager_fallbacks);
+      return;
+    }
   }
 #endif
   log_jit_wait(e);

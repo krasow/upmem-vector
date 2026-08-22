@@ -4,6 +4,9 @@
 // separation.
 
 #include "framework.h"
+#if JIT_PIPELINE_FALLBACK
+#include <detail/rpn.h>
+#endif
 
 namespace {
 
@@ -317,6 +320,18 @@ TEST(jit, cached_kernel_returns_same_values) {
 }
 
 #if JIT_PIPELINE_FALLBACK
+TEST(jit, pipeline_fallback_validates_interpreter_contract) {
+  CHECK(detail::pipeline_can_interpret(
+      {OP_PUSH_INPUT, OP_PUSH_OPERAND_0, OP_ADD}));
+  CHECK(detail::pipeline_can_interpret({OP_PUSH_INPUT, OP_MAX}));
+  CHECK(detail::pipeline_can_interpret(
+      {OP_PUSH_INPUT, OP_PUSH_OPERAND_0, OP_ARGMIN_K, 2}));
+
+  CHECK(!detail::pipeline_can_interpret({OP_PUSH_INDEX}));
+  CHECK(!detail::pipeline_can_interpret({OP_PUSH_INPUT, OP_MAX, OP_ABS}));
+  CHECK(!detail::pipeline_can_interpret({OP_PUSH_INPUT, OP_ADD_SCALAR, 1}));
+}
+
 TEST(jit, pipeline_runs_while_kernel_compiles) {
   const size_t n = 1024;
   std::vector<T> input = tf::constant_vector<T>(n, 9);
@@ -325,10 +340,39 @@ TEST(jit, pipeline_runs_while_kernel_compiles) {
 
   StatsSnapshot before = RuntimeStats::get().snapshot();
   std::vector<T> actual = (-((values + (T)91) * (T)3)).to_cpu();
+  T maximum_error = max(abs(values - (T)2)).get();
   StatsSnapshot delta = RuntimeStats::get().snapshot() - before;
 
   CHECK_VEC_EQ(actual, tf::constant_vector<T>(n, -300));
+  CHECK_EQ(maximum_error, 7);
   CHECK_GT(delta.jit_pipeline_fallbacks, 0u);
+}
+
+TEST(jit, eager_runs_when_interpreter_cannot) {
+  const size_t n = 1024;
+  std::vector<T> host_input = tf::constant_vector<T>(n, 9);
+  dpu_vector<T> input = dpu_vector<T>::from_cpu(host_input);
+  dpu_vector<T> output(n, 0, true);
+  output.data_desc_ref()->type_name = typeid(T).name();
+  tf::drain();
+
+  auto event = std::make_shared<Event>(
+      Event::OperationType::COMPUTE,
+      std::bind(detail::internal_launch_unary, output.data_desc_ref(),
+                input.data_desc_ref(), OpInfo<T>::negate));
+  event->inputs = {input.data_desc_ref()};
+  event->output = output.data_desc_ref();
+  event->rpn_ops = {OP_PUSH_INDEX};
+  event->kid = OpInfo<T>::negate;
+  event->pipeline_kid = OpInfo<T>::universal_pipeline;
+
+  StatsSnapshot before = RuntimeStats::get().snapshot();
+  DpuRuntime::get().get_event_queue().submit(event);
+  std::vector<T> actual = output.to_cpu();
+  StatsSnapshot delta = RuntimeStats::get().snapshot() - before;
+
+  CHECK_VEC_EQ(actual, tf::constant_vector<T>(n, -9));
+  CHECK_GT(delta.jit_eager_fallbacks, 0u);
 }
 #endif
 

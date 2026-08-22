@@ -31,6 +31,64 @@ inline bool is_rpn_push_plumbing(uint8_t op) {
          op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR;
 }
 
+#if JIT_PIPELINE_FALLBACK
+inline bool pipeline_can_interpret(const std::vector<uint8_t>& rpn) {
+  if (rpn.empty() || rpn.size() > MAX_VFUSE_OPS) return false;
+
+  size_t depth = 0;
+  size_t chains = 1;
+  bool reduced = false;
+  auto chain_complete = [&]() { return reduced ? depth == 0 : depth == 1; };
+
+  for (size_t i = 0; i < rpn.size(); ++i) {
+    uint8_t op = rpn[i];
+    if (op == OP_NEXT_CHAIN) {
+      if (!chain_complete() || ++chains > MAX_HFUSE_CHAINS) return false;
+      depth = 0;
+      reduced = false;
+      continue;
+    }
+    if (reduced) return false;
+
+    size_t inline_bytes = OP_INLINE_BYTES(op);
+    if (inline_bytes > rpn.size() - i - 1) return false;
+
+    if (IS_OP_STACK(op) || op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR) {
+      if (op == OP_PUSH_SCALAR_VAR && rpn[i + 1] >= MAX_PIPELINE_SCALARS)
+        return false;
+      ++depth;
+    } else if (op == OP_DUP) {
+      if (depth == 0) return false;
+      ++depth;
+    } else if (IS_OP_UNARY(op) || IS_OP_SCALAR(op) || IS_OP_SCALAR_VAR(op)) {
+      if (depth == 0) return false;
+      if (IS_OP_SCALAR_VAR(op) && rpn[i + 1] >= MAX_PIPELINE_SCALARS)
+        return false;
+    } else if (IS_OP_BINARY(op)) {
+      if (depth < 2) return false;
+      --depth;
+    } else if (IS_OP_TERNARY(op)) {
+      if (depth < 3) return false;
+      depth -= 2;
+    } else if (IS_OP_ARG_K(op)) {
+      uint8_t k = rpn[i + 1];
+      if (k == 0 || depth < k) return false;
+      depth -= k - 1;
+    } else if (IS_OP_REDUCTION(op)) {
+      if (depth != 1) return false;
+      depth = 0;
+      reduced = true;
+    } else {
+      return false;
+    }
+
+    if (depth > MAX_PIPELINE_STACK_DEPTH) return false;
+    i += inline_bytes;
+  }
+  return chain_complete();
+}
+#endif
+
 inline FusionRpnSummary summarize_fusion_rpn(const std::vector<uint8_t>& rpn) {
   FusionRpnSummary summary;
   summary.bytes = rpn.size();

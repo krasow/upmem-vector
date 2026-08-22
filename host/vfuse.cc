@@ -463,10 +463,16 @@ void EventQueue::expand_absorbed_inputs(std::shared_ptr<Event> e) {
 
   if (inlined.inputs.size() > MAX_COMBINED_INPUTS) return;
 
+  std::vector<uint8_t> normalized_rpn =
+      detail::normalize_associative_rpn(inlined.rpn);
+#if JIT_PIPELINE_FALLBACK
+  if (!detail::pipeline_can_interpret(normalized_rpn)) return;
+#endif
+
   // Clear absorbed state — future ops that read this vector get it from MRAM.
   auto absorbed_vec = std::move(in_vec);
   e->inputs = std::move(inlined.inputs);
-  e->rpn_ops = detail::normalize_associative_rpn(inlined.rpn);
+  e->rpn_ops = std::move(normalized_rpn);
   e->scalars = std::move(inlined.scalars);
   e->is_scalar = false;
   if (absorbed_vec->last_producer_id != 0)
