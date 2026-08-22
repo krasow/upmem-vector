@@ -21,6 +21,9 @@
 #include <vectordpu.h>
 
 #include <algorithm>
+#if JIT_PIPELINE_FALLBACK
+#include <atomic>
+#endif
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -45,6 +48,11 @@ using CacheKey = std::vector<Signature>;
 std::map<CacheKey, std::string> g_jit_cache;
 std::map<Signature, std::string> g_kernel_obj_cache;
 std::recursive_mutex g_jit_cache_mutex;
+#if JIT_PIPELINE_FALLBACK
+std::atomic<int> g_binary_counter{0};
+#else
+int g_binary_counter = 0;
+#endif
 
 // The DPU IRAM cannot hold an unbounded batch, so cap how many kernels share a
 // binary regardless of JIT_BATCH_SIZE.
@@ -210,10 +218,14 @@ std::string jit_compile(
     object_files.push_back(
         compile_kernel_object(sig, build_dir, include_flags));
 
-  // Generate a main() that dispatches on args.kernel to the right sub-kernel.
-  static int binary_counter = 0;
+    // Generate a main() that dispatches on args.kernel to the right sub-kernel.
+#if JIT_PIPELINE_FALLBACK
+  int binary_id = g_binary_counter.fetch_add(1, std::memory_order_relaxed);
+#else
+  int binary_id = g_binary_counter++;
+#endif
   const std::string main_c_path =
-      build_dir + "/main_" + std::to_string(binary_counter++) + ".c";
+      build_dir + "/main_" + std::to_string(binary_id) + ".c";
   const std::string binpath = main_c_path + ".dpu";
 
   write_dpu_main(main_c_path, kernels);
@@ -251,15 +263,26 @@ void EventQueue::flush_jit_batch() {
 #endif
 
   std::shared_future<std::string> future = std::async(
-      std::launch::deferred, [batch]() { return jit_compile(batch); });
+#if JIT_PIPELINE_FALLBACK
+      std::launch::async,
+#else
+      std::launch::deferred,
+#endif
+      [batch]() { return jit_compile(batch); });
   for (auto& ev : pending_jit_events_) ev->jit_future = future;
+#if JIT_PIPELINE_FALLBACK
+  for (size_t i = 0; i < batch.size(); ++i)
+    inflight_jit_kernels_[batch[i]] = {future, (int)i};
+#endif
 
   pending_jit_events_.clear();
   pending_unique_kernels_.clear();
 }
 
 void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
-  if (e->op != Event::OperationType::COMPUTE || e->is_locked_for_jit) return;
+  if (e->op != Event::OperationType::COMPUTE || e->is_locked_for_jit ||
+      !e->jit_binary_path.empty())
+    return;
   e->is_locked_for_jit = true;
 
   if (e->rpn_ops.empty()) {
@@ -279,6 +302,15 @@ void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
   std::string canonical_type = jit_canonical_type_name(raw_type_name);
   Signature sig = {e->rpn_ops, canonical_type};
   e->jit_kernel_hash = jit_signature_hash(sig);
+
+#if JIT_PIPELINE_FALLBACK
+  auto inflight = inflight_jit_kernels_.find(sig);
+  if (inflight != inflight_jit_kernels_.end()) {
+    e->jit_future = inflight->second.binary;
+    e->jit_sub_kernel_idx = inflight->second.slot;
+    return;
+  }
+#endif
 
   // Check if this signature already has a slot in the current batch.
   for (size_t i = 0; i < pending_unique_kernels_.size(); ++i) {
@@ -308,6 +340,15 @@ void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
   pending_jit_events_.push_back(e);
   if (pending_jit_events_.size() >= jit_link_batch_limit()) flush_jit_batch();
 }
+
+#if JIT_PIPELINE_FALLBACK
+void EventQueue::await_jit_compilations() {
+  for (const auto& [signature, kernel] : inflight_jit_kernels_) {
+    (void)signature;
+    kernel.binary.get();
+  }
+}
+#endif
 
 bool jit_find_kernel_in_binary(const Signature& sig,
                                const std::string& bin_path, int& out_idx) {

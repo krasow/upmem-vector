@@ -11,6 +11,8 @@ LOGGING ?= 3
 PIPELINE ?= 0
 # this option enables JIT compilation of pipeline kernels
 JIT ?= 0
+# execute the interpreter until an asynchronously compiled kernel is ready
+JIT_PIPELINE_FALLBACK ?= 0
 # how many unique kernels to batch before triggering a JIT compile
 JIT_BATCH_SIZE ?= 16
 # how many pending queue events to scan ahead when looking for fusion candidates
@@ -58,6 +60,10 @@ endif
 
 # JIT requires pipeline logic to dispatch events correctly
 ifeq ($(JIT),1)
+  PIPELINE := 1
+endif
+ifeq ($(JIT_PIPELINE_FALLBACK),1)
+  JIT := 1
   PIPELINE := 1
 endif
 
@@ -109,6 +115,11 @@ ifeq ($(TRACE),1)
   LDFLAGS += -L$(PERFETTO_HOME)/lib -lperfetto -ldl -lpthread
 endif
 
+ifeq ($(JIT),1)
+  CXXFLAGS += -pthread
+  LDFLAGS += -pthread
+endif
+
 .PHONY: dependencies config_check cache_old reconfigure all clean clean-internal test build-test list-tests install install-julia uninstall print_config make_header
 
 GENERATED_TARGETS := dpu/kernels.h host/opinfo.h host/kernelids.h common/opcodes.h
@@ -155,6 +166,7 @@ reconfigure:
 	@echo "CXX_STANDARD=$(CXX_STANDARD)" >> $(CONFIG_STAMP)
 	@echo "PIPELINE=$(PIPELINE)" >> $(CONFIG_STAMP)
 	@echo "JIT=$(JIT)" >> $(CONFIG_STAMP)
+	@echo "JIT_PIPELINE_FALLBACK=$(JIT_PIPELINE_FALLBACK)" >> $(CONFIG_STAMP)
 	@echo "JIT_BATCH_SIZE=$(JIT_BATCH_SIZE)" >> $(CONFIG_STAMP)
 	@echo "TRACE=$(TRACE)" >> $(CONFIG_STAMP)
 	@echo "PERFETTO_HOME=$(PERFETTO_HOME)" >> $(CONFIG_STAMP)
@@ -192,7 +204,7 @@ ${DPU_TARGET}: ${DPU_SOURCES} ${DPU_HEADERS} ${COMMON_HEADERS} $(GENERATED_TARGE
 
 $(TEST_TARGET): ${TEST_SOURCES} ${TEST_HEADERS} ${HOST_TARGET} ${DPU_TARGET}
 	@echo "Building test target: $@"
-	$(CXX) -std=${CXX_STANDARD} $(CXXFLAGS) $(COMMON_FLAGS) -o $@ $(TEST_SOURCES) -I$(HOST_INCLUDES)  \
+	$(CXX) -std=${CXX_STANDARD} $(CXXFLAGS) $(COMMON_FLAGS) -pthread -o $@ $(TEST_SOURCES) -I$(HOST_INCLUDES)  \
 		-L$(BUILDDIR)/lib -Wl,-rpath,$(BUILDDIR)/lib -lvectordpu
 
 clean-internal:

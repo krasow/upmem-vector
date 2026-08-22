@@ -316,6 +316,22 @@ TEST(jit, cached_kernel_returns_same_values) {
   CHECK_VEC_EQ(second, expected);
 }
 
+#if JIT_PIPELINE_FALLBACK
+TEST(jit, pipeline_runs_while_kernel_compiles) {
+  const size_t n = 1024;
+  std::vector<T> input = tf::constant_vector<T>(n, 9);
+  dpu_vector<T> values = dpu_vector<T>::from_cpu(input);
+  tf::drain();
+
+  StatsSnapshot before = RuntimeStats::get().snapshot();
+  std::vector<T> actual = (-((values + (T)91) * (T)3)).to_cpu();
+  StatsSnapshot delta = RuntimeStats::get().snapshot() - before;
+
+  CHECK_VEC_EQ(actual, tf::constant_vector<T>(n, -300));
+  CHECK_GT(delta.jit_pipeline_fallbacks, 0u);
+}
+#endif
+
 // If the signature hash ignored part of the program, the second call would
 // reuse the first kernel and return its answer.
 TEST(jit, distinct_signatures_do_not_collide) {

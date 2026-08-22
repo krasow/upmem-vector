@@ -180,6 +180,9 @@ void DpuRuntime::shutdown() {
     logger_->lock(logcat::RUNTIME) << "Tracing shutdown..." << std::endl;
   TRACE_SHUTDOWN();
 
+#if JIT_PIPELINE_FALLBACK
+  if (event_queue_) event_queue_->await_jit_compilations();
+#endif
 #if JIT
   if (logger_)
     logger_->lock(logcat::RUNTIME) << "Cleaning up JIT files..." << std::endl;

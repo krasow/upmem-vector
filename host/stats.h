@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <string>
 
+#include "config.h"
+
 // Runtime observability counters.
 //
 // These are always compiled in, independent of ENABLE_DPU_LOGGING, so that
@@ -14,6 +16,13 @@
 //
 // Increments are relaxed atomics on the submit/dispatch path only -- a handful
 // of instructions per event, which is noise next to a DPU launch.
+
+#if JIT_PIPELINE_FALLBACK
+#define VECTORDPU_HYBRID_STAT(X) \
+  X(jit_pipeline_fallbacks, "interpreter launches while JIT is compiling")
+#else
+#define VECTORDPU_HYBRID_STAT(X)
+#endif
 
 // X(field, description)
 #define VECTORDPU_STAT_LIST(X)                                                 \
@@ -30,7 +39,8 @@
   X(jit_kernel_compiles, "distinct RPN kernels compiled to a DPU object")      \
   X(jit_kernel_cache_hits, "kernel-object cache hits")                         \
   X(jit_batch_links, "JIT batches linked into a new DPU binary")               \
-  X(jit_batch_cache_hits, "linked-binary cache hits")
+  X(jit_batch_cache_hits, "linked-binary cache hits")                          \
+  VECTORDPU_HYBRID_STAT(X)
 
 struct StatsSnapshot {
 #define VECTORDPU_STAT_FIELD(name, desc) size_t name = 0;

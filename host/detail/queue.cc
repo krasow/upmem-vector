@@ -127,6 +127,10 @@ void name_event(const std::shared_ptr<Event>& e) {
 #endif
   if (!e->jit_binary_path.empty())
     e->slice_name += " (from " + e->jit_binary_path + ")";
+#if JIT_PIPELINE_FALLBACK
+  else if (e->jit_pipeline_fallback)
+    e->slice_name += " (pipeline while JIT compiles)";
+#endif
 }
 
 // Its own JIT binary, the default one for a compute event, or whatever is
@@ -166,10 +170,13 @@ void launch_compute(const std::shared_ptr<Event>& e) {
 
   // Batched kernels are addressed by their slot in the JIT binary, unbatched
   // ones by their static pipeline id.
+  bool use_jit = e->is_locked_for_jit;
+#if JIT_PIPELINE_FALLBACK
+  use_jit = use_jit && !e->jit_pipeline_fallback;
+#endif
   const KernelID kid =
-      e->is_locked_for_jit
-          ? (KernelID)(JIT_STATIC_KERNEL_COUNT + e->jit_sub_kernel_idx)
-          : e->pipeline_kid;
+      use_jit ? (KernelID)(JIT_STATIC_KERNEL_COUNT + e->jit_sub_kernel_idx)
+              : e->pipeline_kid;
   const std::vector<detail::VectorDescRef> operands =
       e->inputs.size() > 1 ? std::vector<detail::VectorDescRef>(
                                  e->inputs.begin() + 1, e->inputs.end())
@@ -183,6 +190,43 @@ void launch_compute(const std::shared_ptr<Event>& e) {
   if (e->cb) e->cb();
 #endif
 }
+
+#if JIT_PIPELINE_FALLBACK
+bool pipeline_can_interpret(const std::vector<uint8_t>& rpn) {
+  if (rpn.size() > MAX_VFUSE_OPS) return false;
+  size_t depth = 0;
+  for (size_t i = 0; i < rpn.size(); ++i) {
+    uint8_t op = rpn[i];
+    if (op == OP_NEXT_CHAIN) {
+      if (depth != 1) return false;
+      depth = 0;
+      continue;
+    }
+    if (IS_OP_STACK(op) || op == OP_PUSH_SCALAR || op == OP_PUSH_SCALAR_VAR ||
+        op == OP_PUSH_INDEX || op == OP_PUSH_GLOBAL_INDEX) {
+      ++depth;
+    } else if (op == OP_DUP) {
+      if (depth == 0) return false;
+      ++depth;
+    } else if (IS_OP_UNARY(op) || IS_OP_SCALAR(op) || IS_OP_SCALAR_VAR(op) ||
+               IS_OP_REDUCTION(op)) {
+      if (depth == 0) return false;
+    } else if (IS_OP_BINARY(op)) {
+      if (depth < 2) return false;
+      --depth;
+    } else if (IS_OP_TERNARY(op)) {
+      if (depth < 3) return false;
+      depth -= 2;
+    } else {
+      return false;
+    }
+    if (depth > MAX_PIPELINE_STACK_DEPTH) return false;
+    i += OP_INLINE_BYTES(op);
+    if (i >= rpn.size() && OP_INLINE_BYTES(op) != 0) return false;
+  }
+  return depth == 1;
+}
+#endif
 
 // Logging wrappers, so the stages above read as control flow.  Each compiles
 // away when its level is not enabled.
@@ -464,6 +508,7 @@ void EventQueue::grow_fusion_batch(const std::shared_ptr<Event>& e) {
 
 #if JIT
   if (e->op != Event::OperationType::COMPUTE || JIT_BATCH_SIZE <= 0) return;
+  if (!e->jit_binary_path.empty()) return;
   if (!e->is_locked_for_jit) lock_for_jit(e);
   if (e->jit_future.valid()) return;
 
@@ -486,6 +531,15 @@ void EventQueue::grow_fusion_batch(const std::shared_ptr<Event>& e) {
 void EventQueue::await_jit_binary(const std::shared_ptr<Event>& e) {
 #if JIT
   if (e->op != Event::OperationType::COMPUTE || !e->jit_future.valid()) return;
+#if JIT_PIPELINE_FALLBACK
+  if (pipeline_can_interpret(e->rpn_ops) &&
+      e->jit_future.wait_for(std::chrono::seconds(0)) !=
+          std::future_status::ready) {
+    e->jit_pipeline_fallback = true;
+    VECTORDPU_NOTE(jit_pipeline_fallbacks);
+    return;
+  }
+#endif
   log_jit_wait(e);
   e->jit_binary_path = e->jit_future.get();
 #else

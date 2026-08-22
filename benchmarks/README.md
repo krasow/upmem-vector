@@ -18,6 +18,7 @@ Tune first, then run the suite:
 ./run.sh elementwise --default-params
 ./run.sh elementwise --tune --passes 2 --runner --variant polymerpim,julia
 ./run.sh --config polymerpim-modes.toml --default-params
+./run.sh --config dynamic.toml --default-params
 ```
 
 Arguments before `--tune` or `--runner` apply to both phases. Arguments after a
@@ -31,6 +32,11 @@ marker apply only to that phase. Set `JULIA` to choose the Julia executable.
 pipeline, and eager PolymerPIM on elementwise, k-NN, and linear regression.
 The three variants reuse the same benchmark sources and appear separately in
 the CSV. `--default-params` keeps the comparison on Makefile defaults.
+
+[`dynamic.toml`](dynamic.toml) is the cold-start suite. Its adaptive image loop
+has no warmup and changes expression shape after the error crosses a tolerance.
+It compares blocking JIT, asynchronous JIT with pipeline fallback, interpreted
+pipeline, and eager execution.
 
 `ntrials` in `benchmark.toml` launches each benchmark process independently;
 `iterations` remains the workload's in-process loop count. Override trials with

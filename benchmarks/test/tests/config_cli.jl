@@ -5,7 +5,8 @@
     @test config.defaults.ntrials == 5
     @test Set(keys(config.variants)) ==
           Set(["baseline", "cpu", "julia", "polymerpim", "simplepim",
-               "polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"])
+               "polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager",
+               "polymerpim-hybrid"])
     @test BenchmarkRunner.Options().profiles ==
           joinpath(BENCHMARKS, "results", "fusion", "profiles")
     @test BenchmarkRunner.TuneOptions().profiles ==
@@ -48,4 +49,9 @@
     @test length(unique(BenchmarkRunner.setup_key(
         modes, modes.variants[name], nothing)
         for name in modes.defaults.variants)) == 3
+
+    dynamic = load_config(joinpath(BENCHMARKS, "dynamic.toml"))
+    @test dynamic.benchmark_names == ["adaptive_image"]
+    @test dynamic.defaults.warmup == 0
+    @test "polymerpim-hybrid" in dynamic.defaults.variants
 end
