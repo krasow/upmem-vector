@@ -99,7 +99,7 @@ function execute_variant(config::RunnerConfig, variant::VariantSpec,
     result = execute_command(
         config, render_template(variant.run, context), directory, case.dpus;
         timeout, timed = true, echo)
-    outcome = assess_run(variant.name, case, result)
+    outcome = assess_run(variant.timing_label, case, result)
     !echo && !successful(outcome) && print_command_output(result)
     return outcome
 end
@@ -150,14 +150,29 @@ function setup_context(config::RunnerConfig, profile)
     )
 end
 
-function run_setup(config::RunnerConfig, active_variants::Vector{String},
+function setup_commands(config::RunnerConfig, variant::VariantSpec)
+    isempty(variant.setup) || return variant.setup
+    config.setup === nothing && return String[]
+    variant.name in config.setup.variants || return String[]
+    return config.setup.commands
+end
+
+function setup_key(config::RunnerConfig, variant::VariantSpec, profile)
+    commands = setup_commands(config, variant)
+    isempty(commands) && return nothing
+    context = setup_context(config, profile)
+    return join((strip(render_template(command, context))
+                 for command in commands), '\n')
+end
+
+function run_setup(config::RunnerConfig, variant::VariantSpec,
                    options::Options, profile = nothing)
     options.skip_setup && return nothing
-    config.setup === nothing && return nothing
-    isempty(intersect(Set(config.setup.variants), Set(active_variants))) && return nothing
+    commands = setup_commands(config, variant)
+    isempty(commands) && return nothing
     context = setup_context(config, profile)
-    for raw in config.setup.commands
-        command = render_template(raw, context)
+    for raw in commands
+        command = strip(render_template(raw, context))
         if options.dry_run
             print_command(config, command, config.paths.benchmarks)
             continue
@@ -171,10 +186,11 @@ function run_setup(config::RunnerConfig, active_variants::Vector{String},
 end
 
 
-function benchmark_profile(spec::BenchmarkSpec, active::Vector{String},
+function benchmark_profile(config::RunnerConfig, spec::BenchmarkSpec,
+                           active::Vector{String},
                            options::Options)
     options.use_profiles || return nothing
-    isempty(intersect(Set(active), Set(("polymerpim", "julia")))) && return nothing
+    any(name -> config.variants[name].use_profile, active) || return nothing
     return load_fusion_profile(options.profiles, spec.name)
 end
 
@@ -336,95 +352,170 @@ function trial_summary(timing, iterations::Int)
            "  wall=$wall_text s"
 end
 
-function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
-                        requested::Vector{String}, options::Options;
-                        invocation::Int = 0)
-    failures = String[]
-    setup_key = nothing
-    state = run_state(options)
+struct BenchmarkTask
+    name::String
+    case::RunCase
+    variants::Vector{String}
+    profile::Union{Nothing,FusionProfile}
+    ntrials::Int
+end
 
-    for name in benchmark_names, spec in config.benchmarks[name]
+struct PendingTrial
+    number::Int
+    record::Dict{String,Any}
+    key::String
+end
+
+mutable struct ExecutionState
+    runs::RunState
+    failures::Vector{String}
+    active_setup::Union{Nothing,String}
+    announced_profiles::Set{String}
+end
+
+function benchmark_tasks(config::RunnerConfig, names::Vector{String},
+                         requested::Vector{String}, options::Options)
+    tasks = BenchmarkTask[]
+    for name in names, spec in config.benchmarks[name]
         variants = selected_variants(spec, requested)
-        profile = benchmark_profile(spec, variants, options)
-        profile === nothing || println(
-            "Using fusion profile ", relpath(profile.path, config.paths.benchmarks),
-            ": ", fusion_flags(profile))
-        dpus_list = something(options.dpus, spec.dpus, config.defaults.dpus)
+        profile = benchmark_profile(config, spec, variants, options)
+        dpus = something(options.dpus, spec.dpus, config.defaults.dpus)
         sizes = something(options.elements_per_dpu, spec.elements_per_dpu)
         ntrials = options.generate_only ? 1 :
                   something(options.ntrials, config.defaults.ntrials)
-        for dpus in dpus_list, elements_per_dpu in sizes
-            case = resolved_case(spec, config.defaults, options, dpus,
-                                 elements_per_dpu)
-            @info "Benchmark case" benchmark = name dpus elements_per_dpu total_elements = total_elements(case) iterations = case.iterations ntrials
-            ordered = options.check ? unique(["cpu"; variants]) : variants
-            for variant_name in ordered
-                variant = config.variants[variant_name]
-                if !is_implemented(config, variant, case)
-                    println("  skip $variant_name (not implemented)")
-                    continue
-                end
-                keyed_profile = variant_name in ("polymerpim", "julia") ? profile : nothing
-                pending = Tuple{Int,Dict{String,Any},String}[]
-                for trial in 1:ntrials
-                    record = run_record(case, variant_name, keyed_profile, trial)
-                    key = run_key(record)
-                    if options.resume && key in state.completed
-                        println("  skip $variant_name trial $trial/$ntrials (completed)")
-                    else
-                        push!(pending, (trial, record, key))
-                    end
-                end
-                if isempty(pending)
-                    println("  skip $variant_name (completed)")
-                    continue
-                end
-                needs_setup = config.setup !== nothing &&
-                    variant_name in config.setup.variants
-                next_setup_key = fusion_flags(profile)
-                if needs_setup && next_setup_key != setup_key
-                    description = isempty(next_setup_key) ?
-                                  "default fusion parameters" : next_setup_key
-                    println("-- setup ($description)")
-                    setup_failure = run_setup(
-                        config, [variant_name], options, profile)
-                    setup_failure === nothing || error(
-                        "benchmark setup $(setup_failure.status)" *
-                        (setup_failure.exit_code === nothing ? "" :
-                         " (exit $(setup_failure.exit_code))"))
-                    setup_key = next_setup_key
-                end
-                println("-- $variant_name")
-                built = false
-                for (trial, record, key) in pending
-                    println("   trial $trial/$ntrials")
-                    outcome = run_variant(
-                        config, variant, case, options;
-                        profile = keyed_profile, invocation, trial,
-                        build_variant = !built)
-                    built = outcome.phase != :build
-                    if successful(outcome)
-                        get(outcome.timing, "time", "") isa Number &&
-                            println("      ", trial_summary(
-                                outcome.timing, case.iterations))
-                        push!(state.completed, key)
-                        push!(state.records, record)
-                        save_state(state)
-                        continue
-                    end
-                    println("      $(outcome.status)")
-                    push!(failures,
-                          "$name/$variant_name/$dpus/$elements_per_dpu/trial-$trial: " *
-                          string(outcome.status))
-                    options.keep_going || error(
-                        "benchmark $name/$variant_name trial $trial failed: " *
-                        string(outcome.status) *
-                        (outcome.command.exit_code === nothing ? "" :
-                         " (exit $(outcome.command.exit_code))"))
-                end
+        for dpu in dpus, size in sizes
+            case = resolved_case(spec, config.defaults, options, dpu, size)
+            push!(tasks, BenchmarkTask(name, case, variants, profile, ntrials))
+        end
+    end
+    return tasks
+end
+
+function announce_task!(config::RunnerConfig, task::BenchmarkTask,
+                        state::ExecutionState)
+    profile = task.profile
+    if profile !== nothing && !(profile.path in state.announced_profiles)
+        println("Using fusion profile ",
+                relpath(profile.path, config.paths.benchmarks), ": ",
+                fusion_flags(profile))
+        push!(state.announced_profiles, profile.path)
+    end
+    case = task.case
+    @info "Benchmark case" benchmark = task.name dpus = case.dpus elements_per_dpu = case.elements_per_dpu total_elements = total_elements(case) iterations = case.iterations ntrials = task.ntrials
+end
+
+function pending_trials(task::BenchmarkTask, variant::VariantSpec, profile,
+                        options::Options, state::ExecutionState)
+    pending = PendingTrial[]
+    for trial in 1:task.ntrials
+        record = run_record(task.case, variant.name, profile, trial)
+        key = run_key(record)
+        if options.resume && key in state.runs.completed
+            println("  skip $(variant.name) trial $trial/$(task.ntrials) (completed)")
+        else
+            push!(pending, PendingTrial(trial, record, key))
+        end
+    end
+    return pending
+end
+
+function ensure_setup!(config::RunnerConfig, variant::VariantSpec, profile,
+                       options::Options, state::ExecutionState)
+    options.skip_setup && return
+    key = setup_key(config, variant, profile)
+    (key === nothing || key == state.active_setup) && return
+    flags = fusion_flags(profile)
+    description = isempty(variant.setup) ?
+                  (isempty(flags) ? "default fusion parameters" : flags) :
+                  variant.name
+    println("-- setup ($description)")
+    failure = run_setup(config, variant, options, profile)
+    failure === nothing || error(
+        "benchmark setup $(failure.status)" *
+        (failure.exit_code === nothing ? "" : " (exit $(failure.exit_code))"))
+    state.active_setup = key
+end
+
+function record_success!(state::ExecutionState, trial::PendingTrial)
+    push!(state.runs.completed, trial.key)
+    push!(state.runs.records, trial.record)
+    save_state(state.runs)
+end
+
+function record_failure!(task::BenchmarkTask, variant::VariantSpec,
+                         trial::PendingTrial, outcome, options::Options,
+                         state::ExecutionState)
+    case = task.case
+    push!(state.failures,
+          "$(task.name)/$(variant.name)/$(case.dpus)/$(case.elements_per_dpu)" *
+          "/trial-$(trial.number): $(outcome.status)")
+    options.keep_going && return
+    exit = outcome.command.exit_code
+    error("benchmark $(task.name)/$(variant.name) trial $(trial.number) failed: " *
+          string(outcome.status) *
+          (exit === nothing ? "" : " (exit $exit)"))
+end
+
+function run_task!(config::RunnerConfig, task::BenchmarkTask,
+                   variant_name::String, options::Options,
+                   state::ExecutionState; invocation::Int)
+    variant = config.variants[variant_name]
+    if !is_implemented(config, variant, task.case)
+        println("  skip $variant_name (not implemented)")
+        return
+    end
+    profile = variant.use_profile ? task.profile : nothing
+    pending = pending_trials(task, variant, profile, options, state)
+    if isempty(pending)
+        println("  skip $variant_name (completed)")
+        return
+    end
+    ensure_setup!(config, variant, profile, options, state)
+    println("-- $variant_name")
+    built = false
+    for trial in pending
+        println("   trial $(trial.number)/$(task.ntrials)")
+        outcome = run_variant(
+            config, variant, task.case, options;
+            profile, invocation, trial = trial.number, build_variant = !built)
+        built = outcome.phase != :build
+        if successful(outcome)
+            get(outcome.timing, "time", "") isa Number &&
+                println("      ", trial_summary(
+                    outcome.timing, task.case.iterations))
+            record_success!(state, trial)
+        else
+            println("      $(outcome.status)")
+            record_failure!(task, variant, trial, outcome, options, state)
+        end
+    end
+end
+
+function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
+                        requested::Vector{String}, options::Options;
+                        invocation::Int = 0)
+    tasks = benchmark_tasks(config, benchmark_names, requested, options)
+    state = ExecutionState(run_state(options), String[], nothing, Set{String}())
+
+    if config.defaults.group_by_variant
+        order = options.check ? unique(["cpu"; requested]) : requested
+        for variant_name in order, task in tasks
+            allowed = options.check && variant_name == "cpu" ||
+                      variant_name in task.variants
+            allowed || continue
+            announce_task!(config, task, state)
+            run_task!(config, task, variant_name, options, state; invocation)
+        end
+    else
+        for task in tasks
+            announce_task!(config, task, state)
+            order = options.check ? unique(["cpu"; task.variants]) : task.variants
+            for variant_name in order
+                run_task!(config, task, variant_name, options, state; invocation)
             end
         end
     end
-    isempty(failures) || error("failed cases:\n  " * join(failures, "\n  "))
+    isempty(state.failures) || error(
+        "failed cases:\n  " * join(state.failures, "\n  "))
     return nothing
 end

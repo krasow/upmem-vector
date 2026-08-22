@@ -71,3 +71,19 @@ end
     @test length(findall("trial ", text)) == 5
     @test length(findall("make clean", text)) == 1
 end
+
+@testset "mode suite groups setup" begin
+    text = captured_output() do
+        run_cli([
+            "elementwise", "--config",
+            joinpath(BENCHMARKS, "polymerpim-modes.toml"),
+            "--dpus", "2", "--elements-per-dpu", "64,128",
+            "--warmup", "0", "--iterations", "1", "--ntrials", "1",
+            "--dry-run", "--no-profile",
+        ])
+    end
+    @test length(findall("-- setup", text)) == 3
+    @test length(findall("-- polymerpim-jit", text)) == 2
+    @test length(findall("-- polymerpim-pipeline", text)) == 2
+    @test length(findall("-- polymerpim-eager", text)) == 2
+end

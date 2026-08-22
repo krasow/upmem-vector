@@ -1,0 +1,10 @@
+name = "polymerpim-jit"
+directory = "variants/polymerpim/{benchmark}"
+parameter_file = "Param.h"
+setup = [
+  "make -C \"{repo}\" install DESTDIR=\"{install}\" PIPELINE=1 JIT=1 LOGGING=3 TRACE=0 JULIA=__skip_julia_wrapper__ {fusion_flags}",
+]
+build = ["make clean", "make"]
+run = "./run"
+timing_label = "polymerpim"
+use_profile = true

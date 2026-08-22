@@ -44,7 +44,14 @@ struct VariantSpec
     prepare::Vector{String}
     build::Vector{String}
     run::String
+    setup::Vector{String}
+    timing_label::String
+    use_profile::Bool
 end
+
+VariantSpec(name, directory, parameter_file, prepare, build, run) =
+    VariantSpec(name, directory, parameter_file, prepare, build, run,
+                String[], name, name in ("polymerpim", "julia"))
 
 struct RunnerDefaults
     dpus::Vector{Int}
@@ -53,6 +60,7 @@ struct RunnerDefaults
     ntrials::Int
     seed::Int
     variants::Vector{String}
+    group_by_variant::Bool
 end
 
 struct SetupSpec
@@ -180,7 +188,11 @@ function load_variants(paths::Paths)
         definitions[name] = VariantSpec(
             name, directory,
             parameter_file === nothing ? nothing : string(parameter_file),
-            string_list(table, "prepare"), string_list(table, "build"), run)
+            string_list(table, "prepare"), string_list(table, "build"), run,
+            string_list(table, "setup"),
+            string(get(table, "timing_label", name)),
+            Bool(get(table, "use_profile",
+                     name in ("polymerpim", "julia"))))
     end
     return definitions
 end
@@ -202,7 +214,8 @@ function load_config(path::AbstractString = DEFAULT_CONFIG)
     defaults = RunnerDefaults(
         default_dpus, default_warmup, default_iterations, default_ntrials,
         Int(get(runner, "seed", 1)),
-        string_list(runner, "variants"; default = sort(collect(keys(variants)))))
+        string_list(runner, "variants"; default = sort(collect(keys(variants)))),
+        Bool(get(runner, "group_by_variant", false)))
 
     unknown_defaults = setdiff(defaults.variants, collect(keys(variants)))
     isempty(unknown_defaults) || error(

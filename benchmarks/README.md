@@ -2,6 +2,7 @@
 
 [`benchmark.toml`](benchmark.toml) defines each workload's sizes, parameters,
 and variants. Implementations and build commands live in `variants/`.
+Pass `--config` to select another suite.
 
 `make` and `run.sh` install SimplePIM and Perfetto into `../opt/` on first use.
 
@@ -16,6 +17,7 @@ Tune first, then run the suite:
 ./run.sh elementwise --reset-tune
 ./run.sh elementwise --default-params
 ./run.sh elementwise --tune --passes 2 --runner --variant polymerpim,julia
+./run.sh --config polymerpim-modes.toml --default-params
 ```
 
 Arguments before `--tune` or `--runner` apply to both phases. Arguments after a
@@ -23,6 +25,11 @@ marker apply only to that phase. Set `JULIA` to choose the Julia executable.
 `--default-params` skips tuning and ignores saved fusion profiles.
 `--reset` removes the selected benchmarks from run CSVs and checkpoints;
 `--reset-tune` discards their tuning checkpoints and profiles.
+
+[`polymerpim-modes.toml`](polymerpim-modes.toml) compares JIT, interpreted
+pipeline, and eager PolymerPIM on elementwise, k-NN, and linear regression.
+The three variants reuse the same benchmark sources and appear separately in
+the CSV. `--default-params` keeps the comparison on Makefile defaults.
 
 `ntrials` in `benchmark.toml` launches each benchmark process independently;
 `iterations` remains the workload's in-process loop count. Override trials with

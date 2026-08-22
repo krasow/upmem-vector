@@ -4,7 +4,8 @@
     @test only(config.benchmarks["elementwise-interpreter"]).variants == ["baseline"]
     @test config.defaults.ntrials == 5
     @test Set(keys(config.variants)) ==
-          Set(["baseline", "cpu", "julia", "polymerpim", "simplepim"])
+          Set(["baseline", "cpu", "julia", "polymerpim", "simplepim",
+               "polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"])
     @test BenchmarkRunner.Options().profiles ==
           joinpath(BENCHMARKS, "results", "fusion", "profiles")
     @test BenchmarkRunner.TuneOptions().profiles ==
@@ -36,4 +37,15 @@
     @test process.exitcode == 2
     @test occursin("unknown shared option: --defualt-params",
                    String(take!(output)))
+
+    modes = load_config(joinpath(BENCHMARKS, "polymerpim-modes.toml"))
+    @test modes.benchmark_names == ["elementwise", "knn", "linreg"]
+    @test modes.defaults.variants ==
+          ["polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"]
+    @test modes.defaults.group_by_variant
+    @test all(modes.variants[name].timing_label == "polymerpim"
+              for name in modes.defaults.variants)
+    @test length(unique(BenchmarkRunner.setup_key(
+        modes, modes.variants[name], nothing)
+        for name in modes.defaults.variants)) == 3
 end

@@ -126,7 +126,7 @@ function runner_manifest_entry(config::RunnerConfig, names, requested,
     benchmarks = Dict{String,Any}[]
     for name in names, spec in config.benchmarks[name]
         variants = selected_variants(spec, requested)
-        profile = benchmark_profile(spec, variants, options)
+        profile = benchmark_profile(config, spec, variants, options)
         dpus_list = something(options.dpus, spec.dpus, config.defaults.dpus)
         sizes = something(options.elements_per_dpu, spec.elements_per_dpu)
         selected = options.check ? unique(["cpu"; variants]) : variants
