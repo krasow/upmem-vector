@@ -9,7 +9,7 @@ function usage(io::IO = stdout; advanced::Bool = false)
       --dpus N[,N...]              Override configured DPU counts
       --elements-per-dpu N[,N...] Override configured problem sizes
       --check                      Generate CPU references and verify results
-      --resume                     Skip completed runs
+      --resume                     Skip successes and retry missing trials
       --reset                      Discard selected benchmarks' saved runs
       --verbose                    Print subprocess output
       --help-all                   Show advanced options
@@ -26,7 +26,6 @@ function usage(io::IO = stdout; advanced::Bool = false)
       --skip-setup                 Skip setup commands
       --generate-only              Only write generated parameters
       --dry-run                    Print actions without running them
-      --keep-going                 Continue after failures
       --state PATH                 Override the checkpoint path
       --csv PATH                   Override the timing CSV path
       --profiles PATH              Override the fusion profile directory
@@ -58,7 +57,7 @@ function parse_args(args)
         elseif arg == "--list"
             options.action = :list
         elseif arg in ("--check", "--skip-setup", "--generate-only",
-                       "--dry-run", "--keep-going", "--resume", "--reset",
+                       "--dry-run", "--resume", "--reset",
                        "--verbose")
             setproperty!(options, Symbol(replace(arg[3:end], '-' => '_')), true)
         elseif arg == "--no-profile"

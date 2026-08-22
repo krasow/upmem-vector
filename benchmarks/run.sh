@@ -10,15 +10,16 @@ runner=()
 phase=shared
 reset_run=false
 reset_tune=false
+resume_run=false
 default_params=false
 
 common_options=(-h --help --dpus --elements-per-dpu --warmup --iterations
-                --check --resume --verbose --profiles --timeout
+                --check --verbose --profiles --timeout
                 --build-timeout --config)
 tune_options=(--passes --lookahead --hfuse-chains --jit-batch --vfuse-ops
               --workspace --checkpoints)
 runner_options=(--list --variant --ntrials --skip-setup --generate-only
-                --dry-run --keep-going --state --csv --no-profile --help-all)
+                --dry-run --state --csv --no-profile --help-all)
 
 contains() {
     local needle="$1"
@@ -48,6 +49,7 @@ for arg in "$@"; do
         --runner) phase=runner ;;
         --reset) reset_run=true ;;
         --reset-tune) reset_tune=true ;;
+        --resume) resume_run=true ;;
         --default-params) default_params=true ;;
         *)
             [[ "${arg}" != -* ]] || validate_option "${phase}" "${arg}"
@@ -69,6 +71,10 @@ if [[ "${reset_tune}" == true ]]; then
 fi
 
 [[ "${reset_run}" == false ]] || runner+=(--reset)
+if [[ "${resume_run}" == true ]]; then
+    runner+=(--resume)
+    [[ "${reset_tune}" == true ]] || tune+=(--resume)
+fi
 
 make -C "${dir}/.." dependencies
 

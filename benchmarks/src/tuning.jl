@@ -324,6 +324,10 @@ function checkpoint_signature(config::RunnerConfig, spec::BenchmarkSpec,
     )
 end
 
+checkpoint_request(signature) = Dict(
+    key => value for (key, value) in signature
+    if key != "source_fingerprint")
+
 function trial_result(trial)
     cases = Tuple{Int,Int}[]
     for item in get(trial, "cases", String[])
@@ -349,12 +353,20 @@ function load_checkpoint(config::RunnerConfig, spec::BenchmarkSpec,
         saved_trials = get(raw, "trials", Dict{String,Any}[])
         complete = Bool(get(raw, "complete", false))
         if raw["signature"] != signature
-            if complete || !isempty(saved_trials)
-                error("tuning options do not match $path; use --reset to retune")
+            profile = joinpath(options.profiles, spec.name * ".toml")
+            reusable = complete && isfile(profile) &&
+                       checkpoint_request(raw["signature"]) ==
+                       checkpoint_request(signature)
+            if reusable
+                println("[fusion] source changed; reusing completed $(spec.name) profile")
+            elseif complete || !isempty(saved_trials)
+                error("tuning options do not match $path; reset tuning to retune")
+            else
+                loaded = false
+                println("[fusion] refreshing empty checkpoint $(spec.name)")
             end
-            loaded = false
-            println("[fusion] refreshing empty checkpoint $(spec.name)")
-        else
+        end
+        if loaded
             append!(trials, saved_trials)
             for trial in trials
                 build = Dict(knob => Int(trial["build"][knob])

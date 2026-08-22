@@ -100,7 +100,6 @@ function execute_variant(config::RunnerConfig, variant::VariantSpec,
         config, render_template(variant.run, context), directory, case.dpus;
         timeout, timed = true, echo)
     outcome = assess_run(variant.timing_label, case, result)
-    !echo && !successful(outcome) && print_command_output(result)
     return outcome
 end
 
@@ -443,17 +442,15 @@ function record_success!(state::ExecutionState, trial::PendingTrial)
 end
 
 function record_failure!(task::BenchmarkTask, variant::VariantSpec,
-                         trial::PendingTrial, outcome, options::Options,
+                         trial::PendingTrial, outcome,
                          state::ExecutionState)
     case = task.case
+    exit = outcome.command.exit_code
+    detail = string(outcome.status) *
+             (exit === nothing ? "" : " (exit $exit)")
     push!(state.failures,
           "$(task.name)/$(variant.name)/$(case.dpus)/$(case.elements_per_dpu)" *
-          "/trial-$(trial.number): $(outcome.status)")
-    options.keep_going && return
-    exit = outcome.command.exit_code
-    error("benchmark $(task.name)/$(variant.name) trial $(trial.number) failed: " *
-          string(outcome.status) *
-          (exit === nothing ? "" : " (exit $exit)"))
+          "/trial-$(trial.number): $detail")
 end
 
 function run_task!(config::RunnerConfig, task::BenchmarkTask,
@@ -486,7 +483,7 @@ function run_task!(config::RunnerConfig, task::BenchmarkTask,
             record_success!(state, trial)
         else
             println("      $(outcome.status)")
-            record_failure!(task, variant, trial, outcome, options, state)
+            record_failure!(task, variant, trial, outcome, state)
         end
     end
 end
@@ -516,6 +513,7 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
         end
     end
     isempty(state.failures) || error(
-        "failed cases:\n  " * join(state.failures, "\n  "))
+        "failed trials (rerun with --resume):\n  " *
+        join(state.failures, "\n  "))
     return nothing
 end

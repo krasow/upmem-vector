@@ -22,6 +22,7 @@ Tune first, then run the suite:
 
 Arguments before `--tune` or `--runner` apply to both phases. Arguments after a
 marker apply only to that phase. Set `JULIA` to choose the Julia executable.
+`--resume` resumes tuning first, then retries unfinished benchmark trials.
 `--default-params` skips tuning and ignores saved fusion profiles.
 `--reset` removes the selected benchmarks from run CSVs and checkpoints;
 `--reset-tune` discards their tuning checkpoints and profiles.
@@ -65,8 +66,8 @@ Benchmark commands run under `/usr/bin/time`. Generated parameters, binaries,
 reference data, profiles, and results are untracked.
 
 Build, timeout, runtime, timing, and verification failures have distinct CSV
-statuses. Only successful runs enter checkpoints; `--keep-going` records later
-cases after a failure.
+statuses. Failures do not stop the suite. Only successes enter the checkpoint,
+so `--resume` retries missing trials without repeating completed ones.
 
 The UPMEM SDK is loaded from `$UPMEM_ENV` or `/usr/upmem_env.sh`. `.localenv`
 points `SIMPLE_PIM_LIB` at the installed `opt/SimplePIM` checkout.

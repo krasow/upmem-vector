@@ -25,7 +25,6 @@ Base.@kwdef mutable struct Options
     skip_setup::Bool = false
     generate_only::Bool = false
     dry_run::Bool = false
-    keep_going::Bool = false
     verbose::Bool = false
     action::Symbol = :run
     config::String = DEFAULT_CONFIG
