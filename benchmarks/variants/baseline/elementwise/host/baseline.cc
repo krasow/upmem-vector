@@ -9,7 +9,9 @@
 
 #include <benchmark.h>
 
+#ifndef ELEMENTWISE_PARAM_INCLUDED
 #include "../Param.h"
+#endif
 
 #ifndef FRESH_RESULT_BUFFER
 #define FRESH_RESULT_BUFFER 0

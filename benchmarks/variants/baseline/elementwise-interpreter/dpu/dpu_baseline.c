@@ -50,9 +50,7 @@ int main(void) {
     mram_read((__mram_ptr void const *)(rhs_ptr + block_loc), rhs_block,
               block_bytes);
 
-    // ("complex", "abs(-((a + b) - a))")
-    // I am unrolling this "complex" test to see the effects of the interpreted
-    // kernel in polymerpim and comparing it directly against a compiled kernel.
+    // Keep each operation in a separate loop to model interpreted execution.
 
     for (uint32_t i = 0; i < block_elems; i++) {
       res_block[i] = lhs_block[i] + rhs_block[i];

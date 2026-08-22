@@ -18,15 +18,16 @@ all : $(HOST) $(DPU)
 
 
 # Compiler flags
-CFLAGS := -O3 -fopenmp
+TESTS_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../..)
+CFLAGS := -O3 -fopenmp -I$(TESTS_DIR)
 LIBS := -lm -ldl `dpu-pkg-config --cflags --libs dpu`
 DPU_FLAGS := -Wall -Wextra -O3 -DNR_TASKLETS=$(NR_TASKLETS)
 
 $(BIN_DIR)/host_slice: host/slice.cc
 	gcc $(CFLAGS) host/slice.cc -o $(BIN_DIR)/host_slice $(LIBS)
 
-$(BIN_DIR)/host_baseline: host/baseline.cc
-	gcc $(CFLAGS) host/baseline.cc -o $(BIN_DIR)/host_baseline $(LIBS)
+$(BIN_DIR)/host_baseline: host/baseline.cc Param.h ../elementwise/host/baseline.cc
+	g++ $(CFLAGS) host/baseline.cc -o $(BIN_DIR)/host_baseline $(LIBS)
 
 $(BIN_DIR)/baseline.dpu: dpu/dpu_baseline.c
 	dpu-upmem-dpurte-clang ${DPU_FLAGS} -o $(BIN_DIR)/baseline.dpu dpu/dpu_baseline.c
