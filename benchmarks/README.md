@@ -33,10 +33,10 @@ pipeline, and eager PolymerPIM on elementwise, k-NN, and linear regression.
 The three variants reuse the same benchmark sources and appear separately in
 the CSV. `--default-params` keeps the comparison on Makefile defaults.
 
-[`dynamic.toml`](dynamic.toml) is the cold-start suite. Its adaptive image loop
-has no warmup and changes expression shape after the error crosses a tolerance.
-It compares blocking JIT, asynchronous JIT with pipeline/eager fallback,
-interpreted pipeline, and eager execution.
+[`dynamic.toml`](dynamic.toml) is the cold-start suite. Four image planes queue
+independent reductions and updates for horizontal fusion; periodic convergence
+checks change the fused expression shape. It compares blocking JIT, hybrid
+fallback, interpreted pipeline, and eager execution without warmup.
 
 `ntrials` in `benchmark.toml` launches each benchmark process independently;
 `iterations` remains the workload's in-process loop count. Override trials with
