@@ -47,6 +47,16 @@ of falling back to a host loop.
 Host scalars are captured when an expression is built but passed at launch, so
 different values reuse the same compiled kernel.
 
+## Timing
+
+`@dputime` measures one synchronized execution and returns its value:
+
+```julia
+result = @dputime abs2.(a .- 3) .+ b
+```
+
+The first call includes JIT compilation; later calls reuse the kernel.
+
 ## Reductions
 
 `sum`, `prod`, `minimum`, and `maximum` return futures. Leave independent
