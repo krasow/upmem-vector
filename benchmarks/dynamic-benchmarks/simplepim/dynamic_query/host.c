@@ -63,7 +63,9 @@ static query_plan_t* load_queries(uint32_t* count) {
   char line[256];
   *count = 0;
   while (fgets(line, sizeof(line), file)) {
-    if (line[0] == '#' || line[0] == '\n') continue;
+    if (line[0] == '#' || line[0] == '\n') {
+      continue;
+    }
     query_plan_t* plan = &queries[(*count)++];
     plan->steps = calloc(query_ops, sizeof(*plan->steps));
     char* token = strtok(line, ",\n");
@@ -119,13 +121,17 @@ static T expected_max(const query_plan_t* plan, uint32_t projection) {
 #pragma omp parallel for reduction(max : result)
   for (uint64_t i = 0; i < period; ++i) {
     T value = project_cpu(plan, projection, i);
-    if (value > result) result = value;
+    if (value > result) {
+      result = value;
+    }
   }
   return result;
 }
 
 static void free_handle_local(handle_t* handle) {
-  if (!handle) return;
+  if (!handle) {
+    return;
+  }
   free(handle->bin_location);
   free(handle->so_bin_location);
   free(handle);
@@ -163,9 +169,11 @@ int main(void) {
   bench_stage_end(&stages);
   bench_stage_begin(&stages, BENCH_STAGE_LOAD);
 #pragma omp parallel for
-  for (uint64_t i = 0; i < nr_elements; ++i)
-    for (uint32_t column = 0; column < columns; ++column)
+  for (uint64_t i = 0; i < nr_elements; ++i) {
+    for (uint32_t column = 0; column < columns; ++column) {
       rows[i].values[column] = column_value(i, column);
+    }
+  }
   bench_stage_end(&stages);
   bench_stage_begin(&stages, BENCH_STAGE_WRITE);
   simplepim_scatter("query_rows", rows, nr_elements, sizeof(*rows), management);
@@ -197,7 +205,9 @@ int main(void) {
     for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
       bench_start(&batch_timer, 0);
       bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-      if (batch == 0) handle = create_handle(functions, REDUCE);
+      if (batch == 0) {
+        handle = create_handle(functions, REDUCE);
+      }
       T results[QUERY_COLUMNS];
       for (uint32_t projection = 0; projection < projections; ++projection) {
         T* result = table_gen_red("query_rows", "query_result", sizeof(T), 1,
@@ -207,12 +217,14 @@ int main(void) {
       }
       bench_stage_end(&stages);
 
-      if (check_correctness)
+      if (check_correctness) {
         memcpy(&checked_results[batch * projections], results,
                projections * sizeof(T));
-      for (uint32_t projection = 0; projection < projections; ++projection)
+      }
+      for (uint32_t projection = 0; projection < projections; ++projection) {
         checksum =
             checksum * UINT64_C(1099511628211) ^ (uint64_t)results[projection];
+      }
       bench_stop(&batch_timer, 0);
       bench_stats_update(batch == 0 ? &first_stats : &reuse_stats,
                          batch_timer.time[0]);
@@ -247,8 +259,9 @@ int main(void) {
 
   bench_stats_print("simplepim", &stats);
   bench_stats_print("dynamic_query_first_batch", &first_stats);
-  if (reuse_stats.count > 0)
+  if (reuse_stats.count > 0) {
     bench_stats_print("dynamic_query_reuse_batch", &reuse_stats);
+  }
   bench_stages_report("simplepim", &stages);
   printf("simplepim_stage_query_first (ms): %.6f\n", first_stats.mean / 1000.0);
   printf("simplepim_stage_query_reuse (ms): %.6f\n",
@@ -258,11 +271,13 @@ int main(void) {
       "query_ops=%u projections=%u checksum=%llu\n",
       iterations, trace_queries, batches_per_query, query_ops, projections,
       (unsigned long long)checksum);
-  if (check_correctness)
+  if (check_correctness) {
     printf("All results match after %u queries.\n", iterations);
+  }
 
-  for (uint32_t query = 0; query < trace_queries; ++query)
+  for (uint32_t query = 0; query < trace_queries; ++query) {
     free(queries[query].steps);
+  }
   free(queries);
   free(rows);
   table_management_free(management);

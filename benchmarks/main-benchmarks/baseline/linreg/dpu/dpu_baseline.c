@@ -43,7 +43,9 @@ int main(void) {
 
   // Partial gradients for this tasklet
   __dma_aligned RED_T local_grads[dim];
-  for (uint32_t i = 0; i < dim; i++) local_grads[i] = 0;
+  for (uint32_t i = 0; i < dim; i++) {
+    local_grads[i] = 0;
+  }
 
   __dma_aligned T row_cache[(padded_row_size + sizeof(T) - 1) / sizeof(T)];
 

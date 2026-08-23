@@ -40,7 +40,9 @@ int main(void) {
   mram_read((__mram_ptr T*)(uintptr_t)args.weights_offset + weight_offset,
             weights, weight_count * sizeof(T));
 
-  for (uint32_t i = 0; i < RESULT_WORDS; i++) result[i] = 0;
+  for (uint32_t i = 0; i < RESULT_WORDS; i++) {
+    result[i] = 0;
+  }
 
   __mram_ptr T* input = (__mram_ptr T*)(uintptr_t)args.rows_offset;
   for (uint32_t first = tid * BLOCK_ROWS; first < args.num_elements;
@@ -58,8 +60,9 @@ int main(void) {
         uint32_t best_class = 0;
         for (uint32_t c = 0; c < FLOW_CLASSES; c++) {
           int32_t score = 0;
-          for (uint32_t d = 0; d < FLOW_FEATURES; d++)
+          for (uint32_t d = 0; d < FLOW_FEATURES; d++) {
             score += weights[c * FLOW_FEATURES + d] * row[d];
+          }
           if (c == 0 || score > best_score) {
             best_score = score;
             best_class = c;
@@ -70,11 +73,14 @@ int main(void) {
       }
 
       int32_t score = 0;
-      for (uint32_t d = 0; d < FLOW_FEATURES; d++) score += weights[d] * row[d];
+      for (uint32_t d = 0; d < FLOW_FEATURES; d++) {
+        score += weights[d] * row[d];
+      }
       int32_t label = svm_signed_label(row[FLOW_FEATURES], args.classifier);
       if (label * score < SVM_MARGIN) {
-        for (uint32_t d = 0; d < FLOW_FEATURES; d++)
+        for (uint32_t d = 0; d < FLOW_FEATURES; d++) {
           result[d] += (RED_T)(-label * row[d]);
+        }
         result[FLOW_FEATURES]++;
       }
     }

@@ -175,8 +175,7 @@ TEST(reductions, lazy_future_get_after_other_work) {
   CHECK_VEC_EQ(other, expected_other);
 }
 
-// dpu_future_vector keeps reductions queued long enough to fuse; the values
-// must match reading each one eagerly.
+// Collecting futures together keeps reductions queued long enough to fuse.
 TEST(reductions, future_vector_matches_eager_reads) {
   const size_t count = 6;
   const size_t n = 1024;
@@ -188,10 +187,10 @@ TEST(reductions, future_vector_matches_eager_reads) {
   }
   tf::drain();
 
-  dpu_future_vector<T> futures;
+  std::vector<dpu_future<T>> futures;
   for (size_t i = 0; i < count; ++i) futures.push_back(sum(vecs[i]));
   std::vector<int64_t> lazy;
-  for (auto value : futures.get()) lazy.push_back((int64_t)value);
+  for (auto value : tf::get_all(futures)) lazy.push_back((int64_t)value);
 
   CHECK_EQ(lazy.size(), count);
   for (size_t i = 0; i < count && i < lazy.size(); ++i) {

@@ -32,8 +32,9 @@ void map_to_val_func(void* input, void* output, uint32_t* key) {
     uint32_t best_class = 0;
     for (uint32_t c = 0; c < CLASSES; c++) {
       int32_t score = 0;
-      for (uint32_t d = 0; d < FEATURES; d++)
+      for (uint32_t d = 0; d < FEATURES; d++) {
         score += state_buf[3 + c * FEATURES + d] * row[d];
+      }
       if (c == 0 || score > best_score) {
         best_score = score;
         best_class = c;
@@ -46,14 +47,17 @@ void map_to_val_func(void* input, void* output, uint32_t* key) {
   uint32_t classifier = (uint32_t)state_buf[1];
   uint32_t statistic = (uint32_t)state_buf[2];
   int32_t score = 0;
-  for (uint32_t d = 0; d < FEATURES; d++) score += state_buf[3 + d] * row[d];
+  for (uint32_t d = 0; d < FEATURES; d++) {
+    score += state_buf[3 + d] * row[d];
+  }
 
   int32_t label = svm_signed_label(row[FEATURES], classifier);
   int active = label * score < SVM_MARGIN;
-  if (statistic < FEATURES)
+  if (statistic < FEATURES) {
     *(RED_T*)output = active ? (RED_T)(-label * row[statistic]) : 0;
-  else
+  } else {
     *(RED_T*)output = active ? 1 : 0;
+  }
 }
 
 #endif

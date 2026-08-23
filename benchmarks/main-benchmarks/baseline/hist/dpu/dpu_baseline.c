@@ -32,7 +32,9 @@ int main(void) {
 
   T *buf = tasklet_bufs[tid];
   uint32_t *local_hist = tasklet_hists[tid];
-  for (int b = 0; b < BINS; b++) local_hist[b] = 0;
+  for (int b = 0; b < BINS; b++) {
+    local_hist[b] = 0;
+  }
 
   for (uint32_t i = tid * BLOCK_SIZE; i < n; i += NR_TASKLETS * BLOCK_SIZE) {
     uint32_t cnt = (i + BLOCK_SIZE <= n) ? BLOCK_SIZE : (n - i);
@@ -40,7 +42,9 @@ int main(void) {
     mram_read((__mram_ptr void const *)(data + i), buf, bytes);
     for (uint32_t j = 0; j < cnt; j++) {
       uint32_t bucket = ((uint32_t)buf[j] * BINS) >> DEPTH;
-      if (bucket < BINS) local_hist[bucket]++;
+      if (bucket < BINS) {
+        local_hist[bucket]++;
+      }
     }
   }
 

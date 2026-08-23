@@ -13,7 +13,7 @@ if !isfile(_wrapper_lib * ".so")
     error("""
           PolymerPIM wrapper not installed at $INSTALL_DIR.
           Build it:
-            make -C julia build VECTORDPU_DIR=/path/to/vectordpu
+            make install
           """)
 end
 
@@ -27,7 +27,7 @@ _read_stamp(name) = (f = joinpath(INSTALL_DIR, name);
 """
     installinfo() -> Dict{String,String}
 
-Provenance of this install: the vectordpu prefix it links against, when and with
+Provenance of this install: the PolymerPIM prefix it links against, when and with
 what each side was built. Written by `deps/build.jl`.
 """
 installinfo() = _read_stamp("install.config")
@@ -35,7 +35,7 @@ installinfo() = _read_stamp("install.config")
 """
     configuration() -> Dict{String,String}
 
-The build configuration of the `libvectordpu` actually loaded, read out of the
+The build configuration of the `libpolymerpim` actually loaded, read out of the
 library itself. Ground truth; `installinfo()` records how it got there.
 """
 configuration() = _parse_stamp(String(build_config()))
@@ -51,13 +51,13 @@ function _check_config()
                   if get(snapshot, k, nothing) != get(live, k, nothing)])
     isempty(drift) && return
     error("""
-          The libvectordpu PolymerPIM loaded is not the one it was built against:
+          The libpolymerpim loaded is not the one the wrapper was built against:
 
           $(join(["  $k: built against $(get(snapshot, k, "-")), loaded $(get(live, k, "-"))"
                   for k in drift], "\n"))
 
           Rebuild the wrapper against it:
-            make -C julia clean build VECTORDPU_DIR=$(get(installinfo(), "VECTORDPU_DIR", "/path/to/vectordpu"))
+            make -C julia clean build POLYMERPIM_ROOT=$(get(installinfo(), "POLYMERPIM_ROOT", "/path/to/install"))
           """)
 end
 
@@ -72,7 +72,7 @@ function __init__()
     # so a relinked library cannot be masked by a precompile cache.
     if !PolymerPIM.built_with_pipeline() || !PolymerPIM.built_with_jit()
         error("""
-              PolymerPIM.jl requires libvectordpu built with PIPELINE=1 JIT=1 \
+              PolymerPIM.jl requires libpolymerpim built with PIPELINE=1 JIT=1 \
               (found PIPELINE=$(Int(PolymerPIM.built_with_pipeline())) \
               JIT=$(Int(PolymerPIM.built_with_jit()))).
 
@@ -86,7 +86,7 @@ function __init__()
     # when no capture is open -- an int compare per call site.
     if PolymerPIM.log_max_level() < 1
         error("""
-              PolymerPIM.jl requires libvectordpu built with LOGGING >= 1 \
+              PolymerPIM.jl requires libpolymerpim built with LOGGING >= 1 \
               (found ENABLE_DPU_LOGGING=$(Int(PolymerPIM.log_max_level()))); \
               @show_log has nothing to capture without it.
 

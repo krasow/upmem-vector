@@ -114,8 +114,9 @@ int main(int argc, char** argv) {
       {
         for (int j = 0; j < k; j++) {
           counts[j] += local_counts[j];
-          for (int d = 0; d < dim; d++)
+          for (int d = 0; d < dim; d++) {
             sums[j * dim + d] += local_sums[j * dim + d];
+          }
         }
       }
     }

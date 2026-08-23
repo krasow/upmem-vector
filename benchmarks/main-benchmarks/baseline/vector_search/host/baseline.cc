@@ -29,7 +29,9 @@ static vector_search_result_t cpu_best(const T *data, const T *query) {
 #pragma omp for nowait
     for (uint64_t i = 0; i < N; ++i) {
       int32_t score = 0;
-      for (uint32_t d = 0; d < DIM; ++d) score += data[i * DIM + d] + query[d];
+      for (uint32_t d = 0; d < DIM; ++d) {
+        score += data[i * DIM + d] + query[d];
+      }
       vector_search_result_insert(&local,
                                   vector_search_pack_key(score, i, N, DIM));
     }
@@ -76,9 +78,11 @@ int main() {
 
   bench_stage_begin(&stages, BENCH_STAGE_LOAD);
 #pragma omp parallel for
-  for (uint64_t i = 0; i < N; ++i)
-    for (uint32_t d = 0; d < DIM; ++d)
+  for (uint64_t i = 0; i < N; ++i) {
+    for (uint32_t d = 0; d < DIM; ++d) {
       data[i * DIM + d] = vector_search_dataset_value(seed, i, d, DIM);
+    }
+  }
   bench_stage_end(&stages);
 
   for (uint32_t i = 0; i < nr_dpus; ++i) {
@@ -101,8 +105,9 @@ int main() {
   bench_stage_end(&stages);
 
   auto run_query = [&](uint64_t query_id, BenchStages &query_stages) {
-    for (uint32_t d = 0; d < DIM; ++d)
+    for (uint32_t d = 0; d < DIM; ++d) {
       query[d] = vector_search_query_value(seed, query_id, d);
+    }
 
     bench_stage_begin(&query_stages, BENCH_STAGE_WRITE);
     CHECK(dpu_broadcast_to(dpu_set, DPU_MRAM_HEAP_POINTER_NAME, query_offset,
@@ -124,8 +129,9 @@ int main() {
     bench_stage_begin(&query_stages, BENCH_STAGE_MERGE);
     vector_search_result_t global;
     vector_search_result_init(&global);
-    for (const auto &local : local_results)
+    for (const auto &local : local_results) {
       vector_search_result_merge(&global, &local);
+    }
     bench_stage_end(&query_stages);
     return global;
   };
@@ -139,7 +145,9 @@ int main() {
     bench_stop(&timer, 0);
     bench_stats_update(&warmup_stats, timer.time[0]);
   }
-  if (warmup_iterations) bench_stats_print("baseline_warmup", &warmup_stats);
+  if (warmup_iterations) {
+    bench_stats_print("baseline_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
@@ -159,11 +167,12 @@ int main() {
   if (check_correctness && iterations) {
     vector_search_result_t expected = cpu_best(data.data(), query.data());
     bool ok = result.key == expected.key;
-    if (ok)
+    if (ok) {
       std::printf("the result is correct\n");
-    else
+    } else {
       std::printf("Mismatch: got key %d, expected %d\n", result.key,
                   expected.key);
+    }
   }
 
   CHECK(dpu_free(dpu_set));

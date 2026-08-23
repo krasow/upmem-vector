@@ -5,13 +5,14 @@
 
 #include <common.h>
 #include <opinfo.h>
-#include <vectordesc.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "vector_desc.h"
 
 #if PIPELINE
 namespace detail {

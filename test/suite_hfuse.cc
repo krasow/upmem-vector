@@ -118,9 +118,9 @@ TEST(hfuse, reductions_at_chain_limit_share_one_kernel) {
 
   std::vector<int64_t> actual;
   StatsSnapshot k = tf::measure([&] {
-    dpu_future_vector<T> futures;
+    std::vector<dpu_future<T>> futures;
     for (size_t i = 0; i < count; ++i) futures.push_back(sum(ops.dpu[i]));
-    for (auto value : futures.get()) actual.push_back((int64_t)value);
+    for (auto value : tf::get_all(futures)) actual.push_back((int64_t)value);
   });
 
   CHECK_EQ(actual.size(), count);
@@ -141,9 +141,9 @@ TEST(hfuse, reductions_past_chain_limit_spill_to_two_kernels) {
 
   std::vector<int64_t> actual;
   StatsSnapshot k = tf::measure([&] {
-    dpu_future_vector<T> futures;
+    std::vector<dpu_future<T>> futures;
     for (size_t i = 0; i < count; ++i) futures.push_back(sum(ops.dpu[i]));
-    for (auto value : futures.get()) actual.push_back((int64_t)value);
+    for (auto value : tf::get_all(futures)) actual.push_back((int64_t)value);
   });
 
   CHECK_EQ(actual.size(), count);
@@ -167,9 +167,9 @@ TEST(hfuse, reduction_kernel_count_scales_with_chain_limit) {
 
     std::vector<int64_t> actual;
     StatsSnapshot k = tf::measure([&] {
-      dpu_future_vector<T> futures;
+      std::vector<dpu_future<T>> futures;
       for (size_t i = 0; i < count; ++i) futures.push_back(sum(ops.dpu[i]));
-      for (auto value : futures.get()) actual.push_back((int64_t)value);
+      for (auto value : tf::get_all(futures)) actual.push_back((int64_t)value);
     });
 
     bool values_ok = actual.size() == count;
@@ -248,10 +248,10 @@ TEST(hfuse, weighted_sums_fuse_vertically_and_horizontally) {
 
   std::vector<int64_t> actual;
   StatsSnapshot k = tf::measure([&] {
-    dpu_future_vector<T> futures;
+    std::vector<dpu_future<T>> futures;
     for (size_t i = 0; i < count; ++i)
       futures.push_back(sum(cols.dpu[i] * derr));
-    for (auto value : futures.get()) actual.push_back((int64_t)value);
+    for (auto value : tf::get_all(futures)) actual.push_back((int64_t)value);
   });
 
   CHECK_EQ(actual.size(), count);
@@ -289,11 +289,11 @@ TEST(hfuse, linreg_deferred_producers_do_not_fragment_reductions) {
       error_shifted = error >> (T)3;
     }
 
-    dpu_future_vector<T> futures;
+    std::vector<dpu_future<T>> futures;
     for (size_t i = 0; i < count; ++i)
       futures.push_back(sum((cols.dpu[i] >> (T)2) * error_shifted));
     dpu_fence();
-    for (auto value : futures.get()) actual.push_back((int64_t)value);
+    for (auto value : tf::get_all(futures)) actual.push_back((int64_t)value);
   });
 
   CHECK_EQ(actual.size(), count);
@@ -333,9 +333,9 @@ TEST(hfuse, histogram_shape_counts_are_correct) {
   std::vector<int64_t> counts;
   StatsSnapshot k = tf::measure([&] {
     dpu_vector<T> buckets = (da * bins) >> depth;
-    dpu_future_vector<T> futures;
+    std::vector<dpu_future<T>> futures;
     for (T bin = 0; bin < bins; ++bin) futures.push_back(sum(buckets == bin));
-    for (auto value : futures.get()) counts.push_back((int64_t)value);
+    for (auto value : tf::get_all(futures)) counts.push_back((int64_t)value);
   });
 
   std::vector<int64_t> expected((size_t)bins, 0);
@@ -366,9 +366,9 @@ TEST(hfuse, fused_reductions_match_serialised_reductions) {
 
   std::vector<int64_t> fused;
   StatsSnapshot k = tf::measure([&] {
-    dpu_future_vector<T> futures;
+    std::vector<dpu_future<T>> futures;
     for (size_t i = 0; i < count; ++i) futures.push_back(sum(ops.dpu[i]));
-    for (auto value : futures.get()) fused.push_back((int64_t)value);
+    for (auto value : tf::get_all(futures)) fused.push_back((int64_t)value);
   });
 
   std::vector<int64_t> serial;

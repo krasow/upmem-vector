@@ -30,9 +30,10 @@ int main() {
   bench_stage_begin(&stages, BENCH_STAGE_INIT);
   simplepim_management_t* table_management = table_management_init(dpu_number);
   bench_stage_end(&stages);
-  if (print_info)
+  if (print_info) {
     printf("dim: %d, num_elem: %ld, iter: %d, lr: %f, RED_T size: %zu\n", dim,
            nr_elements, iterations, lr, sizeof(RED_T));
+  }
 
   // inputs
   T* elements = NULL;
@@ -99,15 +100,18 @@ int main() {
     simplepim_broadcast("t2", weights, 1, dim * sizeof(T), table_management);
     bench_stage_end(&warm_stages);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("simplepim_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
   BenchTimer timer;
   RED_T* final_res = NULL;
   for (int l = 0; l < iterations; l++) {
-    if (final_res) free(final_res);
+    if (final_res) {
+      free(final_res);
+    }
     bench_start(&timer, 0);
     bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
     final_res = table_gen_red("t1", "t3", dim * sizeof(RED_T), 1, va_handle,
@@ -148,7 +152,9 @@ int main() {
     }
     free(expected_grads);
   }
-  if (final_res) free(final_res);
+  if (final_res) {
+    free(final_res);
+  }
 
   return 0;
 }

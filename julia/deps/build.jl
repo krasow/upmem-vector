@@ -9,35 +9,34 @@ const WRAPPER_LIB = "libpolymerpim_wrapper.so"
 jlcxx_prefix = CxxWrap.prefix_path()
 julia_prefix = joinpath(Sys.BINDIR, "..")
 
-# The prefix the C++ side installs to (Makefile DESTDIR), overridable.  Normally
-# `make install` in the source tree runs this build and passes its own DESTDIR.
-const DEFAULT_PREFIX = normpath(joinpath(@__DIR__, "..", "..", "..", "vectordpu"))
-vectordpu_dir = abspath(get(ENV, "VECTORDPU_DIR", DEFAULT_PREFIX))
+# The repository-local C++ install prefix, overridable for packaged installs.
+const DEFAULT_PREFIX = normpath(joinpath(@__DIR__, "..", "..", "install"))
+polymerpim_root = abspath(get(ENV, "POLYMERPIM_ROOT", DEFAULT_PREFIX))
 
-isdir(vectordpu_dir) || error("""
-    vectordpu not installed at $vectordpu_dir. From the source tree:
+isdir(polymerpim_root) || error("""
+    PolymerPIM not installed at $polymerpim_root. From the source tree:
         make install PIPELINE=1 JIT=1 BACKEND=hw
-    or set VECTORDPU_DIR to an existing install.""")
-prefix_share = joinpath(vectordpu_dir, "share", "vectordpu")
+    or set POLYMERPIM_ROOT to an existing install.""")
+prefix_share = joinpath(polymerpim_root, "share", "polymerpim")
 
 # The prefix is a copy and can lag the source tree it came from.  Once the
 # wrapper is linked the two are indistinguishable, so check now.
 source_config = joinpath(@__DIR__, "..", "..", "build.config")
 if !isfile(joinpath(prefix_share, "build.config"))
-    @warn "$vectordpu_dir records no build.config; reinstall the C++ library to record one"
+    @warn "$polymerpim_root records no build.config; reinstall the C++ library to record one"
 elseif isfile(source_config) &&
        read(source_config, String) != read(joinpath(prefix_share, "build.config"), String)
-    @warn "$vectordpu_dir is stale relative to its source tree; run `make install` there first"
+    @warn "$polymerpim_root is stale relative to its source tree; run `make install` there first"
 end
 
-@info "Building PolymerPIM C++ wrapper" jlcxx_prefix vectordpu_dir
+@info "Building PolymerPIM C++ wrapper" jlcxx_prefix polymerpim_root
 
 mkpath(BUILD_DIR)
 cd(BUILD_DIR) do
     run(`cmake $(WRAPPER_DIR)
         -DCMAKE_PREFIX_PATH=$(jlcxx_prefix)
         -DJulia_PREFIX=$(julia_prefix)
-        -DVECTORDPU_DIR=$(vectordpu_dir)
+        -DPOLYMERPIM_ROOT=$(polymerpim_root)
         -DCMAKE_BUILD_TYPE=Release`)
     run(`cmake --build . --config Release`)
 end
@@ -51,7 +50,7 @@ cp(joinpath(prefix_share, "build.config"), joinpath(INSTALL_DIR, "build.config")
 open(joinpath(INSTALL_DIR, "install.config"), "w") do io
     prefix_install = joinpath(prefix_share, "install.config")
     isfile(prefix_install) && write(io, read(prefix_install))
-    println(io, "VECTORDPU_DIR=", vectordpu_dir)
+    println(io, "POLYMERPIM_ROOT=", polymerpim_root)
     println(io, "WRAPPER_BUILT=", Libc.strftime("%Y-%m-%dT%H:%M:%S%z", time()))
     println(io, "JULIA_VERSION=", VERSION)
     println(io, "CXXWRAP_PREFIX=", jlcxx_prefix)

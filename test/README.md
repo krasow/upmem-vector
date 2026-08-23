@@ -1,6 +1,6 @@
 # vectordpu test suite
 
-All suites build into `test/vectordpu_test` and are selected at runtime.
+All suites build into `test/polymerpim_test` and are selected at runtime.
 
 ```sh
 source /usr/upmem_env.sh
@@ -32,6 +32,7 @@ and leaked runtime state.
 
 | Suite | Coverage |
 | --- | --- |
+| `public_api` | Lazy expressions, runtime scalars, local updates |
 | `elementwise` | Operators, aliasing, compound assignment |
 | `reductions` | Reductions, lazy futures, edge cases |
 | `vfuse`, `hfuse` | Vertical and horizontal fusion |

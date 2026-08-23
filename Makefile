@@ -71,16 +71,16 @@ DPU_DIR := dpu
 HOST_DIR := host
 TEST_DIR := test
 
-DESTDIR ?= ../vectordpu
+DESTDIR ?= $(CURDIR)/install
 
 # Julia interpreter used to build the PolymerPIM.jl wrapper during `make install`.
 JULIA ?= julia
 
 CONFIG_STAMP := build.config
 
-HOST_TARGET := ${BUILDDIR}/lib/libvectordpu.so
+HOST_TARGET := ${BUILDDIR}/lib/libpolymerpim.so
 DPU_TARGET := ${BUILDDIR}/bin/runtime.dpu
-TEST_TARGET := ${TEST_DIR}/vectordpu_test
+TEST_TARGET := ${TEST_DIR}/polymerpim_test
 
 COMMON_DIR := common
 HOST_INCLUDES := host
@@ -93,7 +93,9 @@ TEST_HEADERS := $(wildcard ${TEST_DIR}/*.h) $(wildcard ${TEST_DIR}/*.inl)
 
 HOST_HEADERS := $(wildcard ${HOST_DIR}/*.inl) $(wildcard ${HOST_DIR}/*.h) \
                 $(wildcard ${HOST_DIR}/detail/*.h) \
-                $(wildcard ${HOST_DIR}/perfetto/*.h)
+                $(wildcard ${HOST_DIR}/detail/*.inl) \
+                $(wildcard ${HOST_DIR}/perfetto/*.h) \
+                $(wildcard ${HOST_DIR}/perfetto/detail/*.h)
 DPU_HEADERS := $(wildcard ${DPU_DIR}/*.inl) $(wildcard ${DPU_DIR}/*.h)
 COMMON_HEADERS := ${COMMON_DIR}/common.h ${COMMON_DIR}/config.h
 
@@ -120,7 +122,7 @@ ifeq ($(JIT),1)
   LDFLAGS += -pthread
 endif
 
-.PHONY: dependencies config_check cache_old reconfigure all clean clean-internal test build-test list-tests install install-julia uninstall print_config make_header
+.PHONY: dependencies config_check cache_old reconfigure all clean clean-internal test build-test list-tests install install-cpp install-julia uninstall print_config make_header
 
 GENERATED_TARGETS := dpu/kernels.h host/opinfo.h host/kernelids.h common/opcodes.h
 # Same generator, but not a C header -- must stay out of the install list.
@@ -205,7 +207,7 @@ ${DPU_TARGET}: ${DPU_SOURCES} ${DPU_HEADERS} ${COMMON_HEADERS} $(GENERATED_TARGE
 $(TEST_TARGET): ${TEST_SOURCES} ${TEST_HEADERS} ${HOST_TARGET} ${DPU_TARGET}
 	@echo "Building test target: $@"
 	$(CXX) -std=${CXX_STANDARD} $(CXXFLAGS) $(COMMON_FLAGS) -pthread -o $@ $(TEST_SOURCES) -I$(HOST_INCLUDES)  \
-		-L$(BUILDDIR)/lib -Wl,-rpath,$(BUILDDIR)/lib -lvectordpu
+		-L$(BUILDDIR)/lib -Wl,-rpath,$(BUILDDIR)/lib -lpolymerpim
 
 clean-internal:
 	$(RM) -r $(BUILDDIR) $(TEST_TARGET)
@@ -251,29 +253,22 @@ list-tests: all $(TEST_TARGET)
 	@./$(TEST_TARGET) --list
 bindir := $(DESTDIR)/bin
 libdir := $(DESTDIR)/lib
-includedir := $(DESTDIR)/include/vectordpu
+includedir := $(DESTDIR)/include/polymerpim
 # Consumers link against this prefix, not the source tree, so the prefix has to
 # be able to say what it holds without anyone guessing from mtimes.
-sharedir := $(DESTDIR)/share/vectordpu
+sharedir := $(DESTDIR)/share/polymerpim
+jitincludedir := $(sharedir)/jit
 
-install: all
+install: install-cpp
+	@$(MAKE) install-julia
+
+install-cpp: all
 	@echo "Installing to $(DESTDIR)..."
-	install -d $(bindir) $(libdir) $(includedir)
+	install -d $(bindir) $(libdir) $(includedir) $(jitincludedir)
 	install -m 644 $(DPU_TARGET) $(bindir)
 	install -m 644 $(HOST_TARGET) $(libdir)
-	# Install base host headers.  host/detail/ and fusion.h are internal:
-	# they are implementation, not API, so they are deliberately left out.
-	install -m 644 $(wildcard ${HOST_DIR}/*.inl) \
-		$(filter-out ${HOST_DIR}/fusion.h, $(wildcard ${HOST_DIR}/*.h)) \
-		$(includedir)
-	# Install DPU-side .inl files
-	install -m 644 $(wildcard ${DPU_DIR}/*.inl) $(includedir)
-	# Install perfetto headers
-	install -d $(includedir)/perfetto
-	install -m 644 $(wildcard ${HOST_DIR}/perfetto/*.h) $(includedir)/perfetto
-	# Install common and generated headers
-	install -m 644 $(COMMON_HEADERS) $(includedir)
-	install -m 644 $(GENERATED_TARGETS) $(includedir)
+	install -m 644 $(HOST_DIR)/polymerpim.h $(COMMON_DIR)/config.h $(includedir)
+	install -m 644 $(COMMON_HEADERS) common/opcodes.h $(jitincludedir)
 	# build.config verbatim, so it matches BUILD_CONFIG_STRING in the shipped library.
 	install -d $(sharedir)
 	install -m 644 $(CONFIG_STAMP) $(sharedir)/build.config
@@ -289,7 +284,6 @@ install: all
 	  echo "HOST=$$(uname -n)"; \
 	} > $(sharedir)/install.config
 	@echo "Installed configuration recorded in $(sharedir)/"
-	@$(MAKE) install-julia
 
 # The Julia package binds ops that only exist under PIPELINE=1 JIT=1, so other
 # configurations install the C++ library alone.
@@ -299,7 +293,7 @@ install-julia:
 	elif ! command -v $(JULIA) >/dev/null 2>&1; then \
 	    echo "Skipping PolymerPIM.jl: $(JULIA) not on PATH"; \
 	else \
-	    $(MAKE) -C julia build VECTORDPU_DIR=$(abspath $(DESTDIR)); \
+	    $(MAKE) -C julia wrapper POLYMERPIM_ROOT=$(abspath $(DESTDIR)); \
 	fi
 
 uninstall:

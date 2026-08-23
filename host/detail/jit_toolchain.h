@@ -7,7 +7,7 @@
 
 namespace detail {
 
-// -I flags pointing at the installed vectordpu headers.
+// -I flags pointing at the installed PolymerPIM detail headers.
 std::string get_include_flags();
 
 // Compiles one generated .c to a DPU object.  Returns false on failure.

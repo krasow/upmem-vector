@@ -10,7 +10,7 @@
 #include <sstream>
 #include <vector>
 
-#include "perfetto/trace_internal.h"
+#include "perfetto/detail/trace.h"
 #include "runtime.h"
 
 std::string operationtype_to_string(Event::OperationType op) {
@@ -170,18 +170,18 @@ static bool truthy_env(const char* value) {
 bool trace::enabled() { return tracing_enabled_; }
 
 static bool requested() {
-  return truthy_env(std::getenv("VECTORDPU_TRACE")) ||
+  return truthy_env(std::getenv("POLYMERPIM_TRACE")) ||
          truthy_env(std::getenv("TRACE_OUTPUT"));
 }
 
 static std::string output_path() {
-  const char* vectordpu_trace = std::getenv("VECTORDPU_TRACE");
-  if (truthy_env(vectordpu_trace) && std::strcmp(vectordpu_trace, "1") != 0 &&
-      std::strcmp(vectordpu_trace, "true") != 0 &&
-      std::strcmp(vectordpu_trace, "TRUE") != 0 &&
-      std::strcmp(vectordpu_trace, "on") != 0 &&
-      std::strcmp(vectordpu_trace, "ON") != 0) {
-    return vectordpu_trace;
+  const char* polymerpim_trace = std::getenv("POLYMERPIM_TRACE");
+  if (truthy_env(polymerpim_trace) && std::strcmp(polymerpim_trace, "1") != 0 &&
+      std::strcmp(polymerpim_trace, "true") != 0 &&
+      std::strcmp(polymerpim_trace, "TRUE") != 0 &&
+      std::strcmp(polymerpim_trace, "on") != 0 &&
+      std::strcmp(polymerpim_trace, "ON") != 0) {
+    return polymerpim_trace;
   }
   const char* trace_output = std::getenv("TRACE_OUTPUT");
   return truthy_env(trace_output) ? trace_output : "trace.perfetto-trace";

@@ -5,14 +5,14 @@
 
 #include <detail/fusion.h>
 #include <detail/queue.h>
+#include <detail/vector.h>
 #include <jit.h>
 #include <opinfo.h>
+#include <perfetto/detail/trace.h>
 #include <perfetto/trace.h>
-#include <perfetto/trace_internal.h>
 #include <queue.h>
 #include <runtime.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 #include <algorithm>
 #include <cassert>

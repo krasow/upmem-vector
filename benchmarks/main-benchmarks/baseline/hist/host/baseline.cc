@@ -56,7 +56,9 @@ int main() {
   } else {
     bench_stage_begin(&stages, BENCH_STAGE_LOAD);
     srand(seed);
-    for (uint64_t i = 0; i < N; i++) input[i] = rand() % 4096;
+    for (uint64_t i = 0; i < N; i++) {
+      input[i] = rand() % 4096;
+    }
     bench_stage_end(&stages);
   }
 
@@ -100,9 +102,14 @@ int main() {
     bench_stage_end(&stages);
 
     bench_stage_begin(&stages, BENCH_STAGE_MERGE);
-    for (int b = 0; b < BINS; b++) result_hist[b] = 0;
-    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++)
-      for (int b = 0; b < BINS; b++) result_hist[b] += partials[i * BINS + b];
+    for (int b = 0; b < BINS; b++) {
+      result_hist[b] = 0;
+    }
+    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++) {
+      for (int b = 0; b < BINS; b++) {
+        result_hist[b] += partials[i * BINS + b];
+      }
+    }
     bench_stage_end(&stages);
   };
 
@@ -116,8 +123,9 @@ int main() {
     bench_stop(&warmup_timer, 0);
     bench_stats_update(&warmup_stats, warmup_timer.time[0]);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("baseline_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
@@ -147,7 +155,9 @@ int main() {
         ok = false;
       }
     }
-    if (ok) printf("the result is correct\n");
+    if (ok) {
+      printf("the result is correct\n");
+    }
   }
 
   free(input);

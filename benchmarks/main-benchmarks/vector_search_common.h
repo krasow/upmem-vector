@@ -50,7 +50,9 @@ static inline void vector_search_result_init(vector_search_result_t *result) {
 /* Retain the single best packed score/ID key. */
 static inline void vector_search_result_insert(vector_search_result_t *result,
                                                int32_t key) {
-  if (key > result->key) result->key = key;
+  if (key > result->key) {
+    result->key = key;
+  }
 }
 
 static inline void vector_search_result_merge(

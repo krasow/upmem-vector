@@ -1,5 +1,5 @@
 #include <benchmark.h>
-#include <vectordpu.h>
+#include <polymerpim.h>
 
 #include <cstdlib>
 #include <fstream>
@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "Param.h"
+
+using namespace polymerpim;
 
 static int divRoundClosest(const int n, const int d) {
   return ((n < 0) ^ (d < 0)) ? ((n - d / 2) / d) : ((n + d / 2) / d);
@@ -29,7 +31,7 @@ int main() {
     bench_stages_init(&stages);
     bench_stages_init(&warm_stages);
     bench_stage_begin(&stages, BENCH_STAGE_INIT);
-    DpuRuntime::get().init(nr_dpus);
+    init(nr_dpus);
     bench_stage_end(&stages);
     {
       std::vector<T> centroids_init;
@@ -44,14 +46,16 @@ int main() {
         bench_stage_end(&stages);
       } else {
         bench_stage_begin(&stages, BENCH_STAGE_LOAD);
-        for (uint32_t j = 0; j < K; j++)
-          for (uint32_t d = 0; d < DIM; d++)
+        for (uint32_t j = 0; j < K; j++) {
+          for (uint32_t d = 0; d < DIM; d++) {
             centroids_init[j * DIM + d] = (T)((j + d) % 1000);
+          }
+        }
         bench_stage_end(&stages);
       }
 
       std::vector<std::string> dpu_names;
-      std::vector<dpu_vector<T> > da;
+      std::vector<DPUVector<T> > da;
       da.reserve(DIM);
       dpu_names.reserve(DIM);
       for (uint32_t d = 0; d < DIM; d++) {
@@ -67,14 +71,15 @@ int main() {
           bench_stage_end(&stages);
         } else {
           bench_stage_begin(&stages, BENCH_STAGE_LOAD);
-          for (uint64_t i = 0; i < N; i++) col[i] = (T)((i + d) % 1000);
+          for (uint64_t i = 0; i < N; i++) {
+            col[i] = (T)((i + d) % 1000);
+          }
           bench_stage_end(&stages);
         }
         bench_stage_begin(&stages, BENCH_STAGE_WRITE);
         dpu_names.push_back("x" + std::to_string(d));
-        da.push_back(dpu_vector<T>::from_cpu(col, dpu_names.back(),
-                                             VECTORDPU_SOURCE_LOCATION));
-        da.back().add_fence();
+        da.emplace_back(col, dpu_names.back());
+        fence(da.back());
         bench_stage_end(&stages);
       }
 
@@ -82,49 +87,26 @@ int main() {
 
       auto run_kmeans = [&](BenchStages &stages) {
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-        // Build the nearest-centroid expression once, then append local
-        // accumulator side effects so assignment and update share one scan.
-        std::vector<uint32_t> centroid_scalars(K * DIM);
-        for (uint32_t j = 0; j < K; j++) {
-          for (uint32_t d = 0; d < DIM; d++) {
-            centroid_scalars[j * DIM + d] = (uint32_t)centroids[j * DIM + d];
+        using ReductionResult = typename DPUVector<T>::reduction_result_t;
+        DPULocalVector<T> local_stats(K * (DIM + 1));
+
+        std::vector<DpuLazy<T> > distances;
+        distances.reserve(K);
+        for (uint32_t j = 0; j < K; ++j) {
+          auto distance = sqr(da[0] - centroids[j * DIM]);
+          for (uint32_t d = 1; d < DIM; ++d) {
+            distance = distance + sqr(da[d] - centroids[j * DIM + d]);
           }
+          distances.push_back(std::move(distance));
         }
 
-        using ReductionResult = typename dpu_vector<T>::reduction_result_t;
-        dpu_local_vector<T> local_stats(K * (DIM + 1));
-        std::vector<dpu_vector<T> > dist_operands(da.begin() + 1, da.end());
+        auto base = argmin(distances) * (T)(DIM + 1);
+        local_stats[base] += (T)1;
+        for (uint32_t d = 0; d < DIM; ++d) {
+          local_stats[base + (T)(d + 1)] += da[d];
+        }
 
-        dpu_jit_foreach<T>(
-            da[0], dist_operands, centroid_scalars,
-            [&](const std::vector<dpu_expr<T> > &x,
-                dpu_pipeline_context<T> &ctx) {
-              auto distance_to_centroid = [&](uint32_t j) {
-                auto dist = (x[0] - dpu_expr<T>::scalar_var(j * DIM + 0)).sqr();
-                for (uint32_t d = 1; d < DIM; d++) {
-                  dist = dist +
-                         (x[d] - dpu_expr<T>::scalar_var(j * DIM + d)).sqr();
-                }
-                return dist;
-              };
-
-              // One variadic argmin over the K candidate distances replaces the
-              // compare+dual-select chain; .label is the winning centroid.
-              std::vector<dpu_expr<T> > dists;
-              dists.reserve(K);
-              for (uint32_t j = 0; j < K; j++)
-                dists.push_back(distance_to_centroid(j));
-              auto best_label = argmin(dists).label;
-
-              auto base = best_label * (T)(DIM + 1);
-              ctx.local_sum(local_stats, base, (T)1);
-
-              for (uint32_t d = 0; d < DIM; d++) {
-                ctx.local_sum(local_stats, base + (T)(d + 1), x[d]);
-              }
-            });
-
-        dpu_fence();  // finish fused assignment/update before closing the stage
+        sync();  // finish fused assignment/update before closing the stage
         bench_stage_end(&stages);
 
         bench_stage_begin(&stages, BENCH_STAGE_READ);
@@ -144,7 +126,9 @@ int main() {
         bench_stage_begin(&stages, BENCH_STAGE_MERGE);
         for (uint32_t j = 0; j < K; j++) {
           ReductionResult count_j = counts[j];
-          if (count_j <= 0) continue;
+          if (count_j <= 0) {
+            continue;
+          }
           for (uint32_t d = 0; d < DIM; d++) {
             ReductionResult s = sums[j * DIM + d];
             centroids[j * DIM + d] = (T)divRoundClosest((int)s, (int)count_j);
@@ -163,8 +147,9 @@ int main() {
         bench_stop(&warmup_timer, 0);
         bench_stats_update(&warmup_stats, warmup_timer.time[0]);
       }
-      if (warmup_iterations > 0)
+      if (warmup_iterations > 0) {
         bench_stats_print("polymerpim_warmup", &warmup_stats);
+      }
 
       centroids = centroids_init;
       BenchStats stats;
@@ -193,14 +178,16 @@ int main() {
             ok = false;
           }
         }
-        if (ok) std::cout << "the result is correct" << std::endl;
+        if (ok) {
+          std::cout << "the result is correct" << std::endl;
+        }
       }
     }
 
-    DpuRuntime::get().shutdown();
+    shutdown();
     return 0;
 #endif
-  } catch (const DpuOOMException &e) {
+  } catch (const OutOfMemory &e) {
     std::cerr << "DPU OOM: Not enough memory for requested size." << std::endl;
     return 1;
   } catch (const std::exception &e) {

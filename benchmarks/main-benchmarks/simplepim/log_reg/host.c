@@ -66,7 +66,9 @@ void run() {
     load_bin(path, cpu_grads, dim * sizeof(T));
   } else {
     init_input(elements);
-    for (int i = 0; i < dim; i++) weights[i] = 0.0f;
+    for (int i = 0; i < dim; i++) {
+      weights[i] = 0.0f;
+    }
   }
 
   simplepim_scatter("t1", elements, num_elements, (dim + 1) * sizeof(T),
@@ -99,7 +101,9 @@ void run() {
         correct = 0;
       }
     }
-    if (correct) printf("the result is correct\n");
+    if (correct) {
+      printf("the result is correct\n");
+    }
   }
 
   free(res);

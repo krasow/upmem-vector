@@ -17,8 +17,7 @@ enum KernelCategory {
   KERNEL_PIPELINE = 4
 };
 
-#include <config.h>
-
+#include "config.h"
 #include "opcodes.h"
 
 #ifndef BLOCK_SIZE_LOG2

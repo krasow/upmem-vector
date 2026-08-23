@@ -1,8 +1,5 @@
 #pragma once
 
-#include <common.h>
-#include <config.h>
-
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -14,7 +11,9 @@
 #include <string_view>
 #include <vector>
 
-#include "vectordesc.h"
+#include "common.h"
+#include "config.h"
+#include "detail/vector_desc.h"
 
 namespace logcat {
 inline constexpr std::string_view EVENT = "EVENT";

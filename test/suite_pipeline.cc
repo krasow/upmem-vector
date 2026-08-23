@@ -4,6 +4,9 @@
 // separation.
 
 #include "framework.h"
+#if JIT
+#include <jit.h>
+#endif
 #if JIT_PIPELINE_FALLBACK
 #include <detail/rpn.h>
 #endif
@@ -262,6 +265,16 @@ TEST(pipeline, expr_builder_select) {
 
 #if JIT
 
+TEST(jit, scalar_variables_use_hoisted_values) {
+  Signature sig{{OP_PUSH_INPUT, OP_MUL_SCALAR_VAR, 0, OP_SUM}, "int32_t"};
+  std::string source = jit_kernel_source(sig);
+  const std::string table_access = "args.pipeline.scalars[0]";
+
+  CHECK(source.find("scalar_vars[0]") != std::string::npos);
+  CHECK(source.find(table_access) != std::string::npos);
+  CHECK_EQ(source.find(table_access), source.rfind(table_access));
+}
+
 TEST(jit, explicit_jit_chain) {
   const size_t n = tf::elements();
   std::vector<T> a = tf::random_vector<T>(n, -100, 100);
@@ -392,52 +405,6 @@ TEST(jit, distinct_signatures_do_not_collide) {
 
   CHECK_VEC_EQ(plus, tf::constant_vector<T>(n, 15));
   CHECK_VEC_EQ(minus, tf::constant_vector<T>(n, 5));
-}
-
-// transform() builds RPN from a lambda over expression objects.
-TEST(jit, transform_lambda) {
-  const size_t n = tf::elements();
-  std::vector<T> a = tf::random_vector<T>(n, -20, 20);
-  std::vector<T> b = tf::random_vector<T>(n, -20, 20);
-  dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
-  dpu_vector<T> db = dpu_vector<T>::from_cpu(b);
-  tf::drain();
-
-  std::vector<T> actual =
-      da.transform(
-            [](const std::vector<dpu_pipeline_expr<T>>& in) {
-              return (in[0] + in[1]) * (T)2;
-            },
-            {db})
-          .vec.to_cpu();
-
-  std::vector<T> expected(n);
-  for (size_t i = 0; i < n; ++i) expected[i] = (a[i] + b[i]) * 2;
-  CHECK_VEC_EQ(actual, expected);
-}
-
-TEST(jit, reduce_lambda) {
-  const size_t n = tf::elements();
-  std::vector<T> a = tf::random_vector<T>(n, -20, 20);
-  std::vector<T> b = tf::random_vector<T>(n, -20, 20);
-  dpu_vector<T> da = dpu_vector<T>::from_cpu(a);
-  dpu_vector<T> db = dpu_vector<T>::from_cpu(b);
-  tf::drain();
-
-  auto future = da.reduce(
-      [](const std::vector<dpu_pipeline_expr<T>>& in) {
-        dpu_pipeline_expr<T> diff = in[0] - in[1];
-        return diff.sqr().sum();
-      },
-      {db});
-  int64_t actual = (int64_t)future.get();
-
-  int64_t expected = 0;
-  for (size_t i = 0; i < n; ++i) {
-    int64_t d = (int64_t)a[i] - b[i];
-    expected += d * d;
-  }
-  CHECK_EQ(actual, expected);
 }
 
 // argmin/argmax over K whole vectors: the per-element winning lane index.

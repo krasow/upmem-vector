@@ -38,7 +38,7 @@ _field(io, key, value) = println(io, "  ", rpad(key * ":", 16), value)
 """
     PolymerPIM.versioninfo(io = stdout)
 
-Print the runtime shape, the configuration of the `libvectordpu` in use, and
+Print the runtime shape, the configuration of the `libpolymerpim` in use, and
 where it came from. `configuration()` and `installinfo()` return the same
 information as dictionaries.
 """
@@ -69,7 +69,7 @@ function versioninfo(io::IO = stdout)
                                MAX_LOCAL_SCRATCH_VECTORS, " locals"))
 
     println(io, "Install:")
-    _field(io, "Prefix", inst("VECTORDPU_DIR"))
+    _field(io, "Prefix", inst("POLYMERPIM_ROOT"))
     _field(io, "Installed", string(inst("INSTALL_DATE"), " from ",
                                    inst("GIT_BRANCH"), " ", first(inst("GIT_REV"), 7),
                                    inst("GIT_DIRTY") == "1" ? " (dirty)" : ""))

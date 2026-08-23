@@ -13,7 +13,6 @@
 #include <queue.h>
 #include <runtime.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 #include <algorithm>
 #include <cassert>
@@ -26,6 +25,8 @@
 #include <map>
 #include <mutex>
 #include <vector>
+
+#include "vector.h"
 
 namespace fs = std::filesystem;
 
@@ -165,7 +166,7 @@ KernelPlan analyze_rpn(const std::vector<uint8_t>& rpn_ops) {
       } else if (IS_OP_INDIRECT_UPDATE(op)) {
         if (i + 1 < end) plan.uses_local[rpn_ops[i + 1]] = true;
         i += OP_INLINE_BYTES(op);
-      } else if (op == OP_PUSH_SCALAR_VAR) {
+      } else if (op == OP_PUSH_SCALAR_VAR || IS_OP_SCALAR_VAR(op)) {
         if (i + 1 < end) plan.uses_scalar[rpn_ops[i + 1]] = true;
         i += OP_INLINE_BYTES(op);
       } else if (OP_INLINE_BYTES(op) > 0) {
@@ -322,7 +323,7 @@ class ChainCompiler {
     } else {
       uint8_t slot = rpn[i + 1];
       i += SCALAR_VAR_INDEX_BYTES;
-      rhs = "args.pipeline.scalars[" + std::to_string(slot) + "]";
+      rhs = "scalar_vars[" + std::to_string(slot) + "]";
       rhs_id = "scalar_var:" + std::to_string(slot);
     }
 

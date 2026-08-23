@@ -1,24 +1,20 @@
-// Julia bindings for vectordpu, built on the public C++ API.
+// Julia bindings for PolymerPIM.
 //
-// Everything here goes through the documented surface (operators, abs, sum,
-// select, lazy reductions) rather than detail::launch_*, so the host-side
-// fusion pipeline sees the same op stream it would from C++.  In particular
-// reductions return a *future*: keeping them unread lets independent
-// reductions fuse into one kernel pass.
+// Ordinary operations use the vector API. Julia's fused broadcasts lower to
+// RPN, so their launch hooks deliberately remain internal.
 
+#include <detail/vector.h>
 #include <jit.h>
 #include <logger.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 // The Julia package targets the configuration the library is meant to be used
 // in.  PIPELINE=0 / JIT=0 exist so the C++ side can measure the alternatives;
 // binding them would mean carrying fallbacks for op sets that do not exist.
 #if !PIPELINE || !JIT
-#error "PolymerPIM.jl requires libvectordpu built with PIPELINE=1 JIT=1"
+#error "PolymerPIM.jl requires libpolymerpim built with PIPELINE=1 JIT=1"
 #endif
 
-#include <cstring>
 #include <jlcxx/array.hpp>
 #include <jlcxx/jlcxx.hpp>
 #include <jlcxx/stl.hpp>
@@ -31,6 +27,20 @@ namespace {
 using Vec = dpu_vector<int32_t>;
 using Future = lazy_reduction_result<int32_t>;
 
+template <typename T>
+std::vector<T> copy_array(jlcxx::ArrayRef<T> values) {
+  return {values.data(), values.data() + values.size()};
+}
+
+std::vector<uint32_t> scalar_args(jlcxx::ArrayRef<int32_t> values) {
+  std::vector<uint32_t> result;
+  result.reserve(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    result.push_back((uint32_t)values[i]);
+  }
+  return result;
+}
+
 // CxxWrap has no clean mapping for std::vector<Vec>, so K-ary APIs (argmin
 // over lanes, extra pipeline operands) take a list built up one push at a time.
 struct VecList {
@@ -42,8 +52,7 @@ using Local = dpu_local_vector<int32_t>;
 // Every Julia vector is Int32, so a program's JIT signature is just its opcodes
 // paired with the canonical name the cache keys on.
 Signature make_signature(jlcxx::ArrayRef<uint8_t> ops) {
-  return {std::vector<uint8_t>(ops.data(), ops.data() + ops.size()),
-          jit_canonical_type_name(typeid(int32_t).name())};
+  return {copy_array(ops), jit_canonical_type_name(typeid(int32_t).name())};
 }
 
 // Same story for the scatter targets of a local-reduce program.  Held by
@@ -52,6 +61,24 @@ Signature make_signature(jlcxx::ArrayRef<uint8_t> ops) {
 struct LocalList {
   std::vector<std::shared_ptr<Local>> items;
 };
+
+std::vector<detail::VectorDescRef> vector_refs(const VecList& values) {
+  std::vector<detail::VectorDescRef> result;
+  result.reserve(values.items.size());
+  for (const auto& value : values.items) {
+    result.push_back(value.data_desc_ref());
+  }
+  return result;
+}
+
+std::vector<detail::VectorDescRef> local_refs(const LocalList& values) {
+  std::vector<detail::VectorDescRef> result;
+  result.reserve(values.items.size());
+  for (const auto& value : values.items) {
+    result.push_back(value->data_desc_ref());
+  }
+  return result;
+}
 
 // Dispatch is keyed on the opcode from common/opcodes.h, which
 // internal/opcodes.jl is generated from -- so there is exactly one numbering
@@ -227,11 +254,6 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
     return apply_reduce_op(input, op);
   });
 
-  // Eager convenience: submit and read immediately.
-  mod.method("launch_reduction", [](const Vec& input, uint8_t op) -> int64_t {
-    return (int64_t)apply_reduce_op(input, op).get();
-  });
-
   // ---- build limits, so Julia validates against the real library ----
 
   mod.method("limit_operands", []() -> int64_t { return MAX_VFUSE_INPUTS; });
@@ -245,23 +267,18 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("built_with_jit", []() -> bool { return JIT != 0; });
   mod.method("built_with_pipeline", []() -> bool { return PIPELINE != 0; });
 
-  // The whole build.config the *loaded* libvectordpu was compiled from.  The
+  // The whole build.config the *loaded* libpolymerpim was compiled from.  The
   // package snapshots this at wrapper-build time; comparing the two at load
   // catches an install prefix rebuilt with different flags underneath a wrapper
   // that is still linked against it.
   mod.method("build_config",
              []() -> std::string { return BUILD_CONFIG_STRING; });
-  mod.method("backend", []() -> std::string { return BACKEND; });
-
   // ---- vector lists, for the K-ary APIs ----
 
   mod.add_type<VecList>("DpuVecList")
       .constructor<>()
       .method("veclist_push!",
-              [](VecList& l, const Vec& v) { l.items.push_back(v); })
-      .method("veclist_length", [](const VecList& l) -> int64_t {
-        return (int64_t)l.items.size();
-      });
+              [](VecList& l, const Vec& v) { l.items.push_back(v); });
 
   // ---- local (WRAM-resident) scatter accumulators ----
   //
@@ -288,10 +305,6 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
                std::copy(merged.begin(), merged.begin() + n, out.data());
              });
 
-  mod.method("local_length", [](const std::shared_ptr<Local>& l) -> int64_t {
-    return (int64_t)l->size();
-  });
-
   mod.add_type<LocalList>("DpuLocalList")
       .constructor<>()
       .method("locallist_push!",
@@ -304,23 +317,11 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("launch_pipeline_scatter",
              [](Vec& input, jlcxx::ArrayRef<uint8_t> ops, VecList& operands,
                 jlcxx::ArrayRef<int32_t> scalars, LocalList& locals) {
-               std::vector<uint8_t> rpn(ops.data(), ops.data() + ops.size());
-               std::vector<detail::VectorDescRef> operand_refs;
-               operand_refs.reserve(operands.items.size());
-               for (auto& o : operands.items)
-                 operand_refs.push_back(o.data_desc_ref());
-               std::vector<uint32_t> sc;
-               sc.reserve(scalars.size());
-               for (size_t i = 0; i < scalars.size(); ++i)
-                 sc.push_back((uint32_t)scalars[i]);
-               std::vector<detail::VectorDescRef> local_refs;
-               local_refs.reserve(locals.items.size());
-               for (auto& l : locals.items)
-                 local_refs.push_back(l->data_desc_ref());
                detail::launch_universal_pipeline(
-                   detail::VectorDescRef{}, input.data_desc_ref(), rpn,
-                   operand_refs, OpInfo<int32_t>::universal_pipeline, sc, {},
-                   local_refs);
+                   detail::VectorDescRef{}, input.data_desc_ref(),
+                   copy_array(ops), vector_refs(operands),
+                   OpInfo<int32_t>::universal_pipeline, scalar_args(scalars),
+                   {}, local_refs(locals));
              });
 
   // ---- explicit RPN programs ----
@@ -330,16 +331,12 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   // binding a C++ callable.  It also works under JIT=0, where those two
   // templates do not exist.
 
-  mod.method("launch_pipeline",
-             [](Vec& input, jlcxx::ArrayRef<uint8_t> ops, VecList& operands,
-                jlcxx::ArrayRef<int32_t> scalars) {
-               std::vector<uint8_t> rpn(ops.data(), ops.data() + ops.size());
-               std::vector<uint32_t> sc;
-               sc.reserve(scalars.size());
-               for (size_t i = 0; i < scalars.size(); ++i)
-                 sc.push_back((uint32_t)scalars[i]);
-               return input.pipeline(rpn, operands.items, sc).vec;
-             });
+  mod.method("launch_pipeline", [](Vec& input, jlcxx::ArrayRef<uint8_t> ops,
+                                   VecList& operands,
+                                   jlcxx::ArrayRef<int32_t> scalars) {
+    return input.pipeline(copy_array(ops), operands.items, scalar_args(scalars))
+        .vec;
+  });
 
   // Write into an existing vector, for `dest .= expr`.  dpu_vector is a handle
   // type, so rebinding dest would leave other handles on the old buffer -- the
@@ -349,18 +346,10 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("launch_pipeline_into",
              [](Vec& dest, Vec& input, jlcxx::ArrayRef<uint8_t> ops,
                 VecList& operands, jlcxx::ArrayRef<int32_t> scalars) {
-               std::vector<uint8_t> rpn(ops.data(), ops.data() + ops.size());
-               std::vector<detail::VectorDescRef> operand_refs;
-               operand_refs.reserve(operands.items.size());
-               for (auto& o : operands.items)
-                 operand_refs.push_back(o.data_desc_ref());
-               std::vector<uint32_t> sc;
-               sc.reserve(scalars.size());
-               for (size_t i = 0; i < scalars.size(); ++i)
-                 sc.push_back((uint32_t)scalars[i]);
                detail::launch_universal_pipeline(
-                   dest.data_desc_ref(), input.data_desc_ref(), rpn,
-                   operand_refs, OpInfo<int32_t>::universal_pipeline, sc);
+                   dest.data_desc_ref(), input.data_desc_ref(), copy_array(ops),
+                   vector_refs(operands), OpInfo<int32_t>::universal_pipeline,
+                   scalar_args(scalars));
              });
 
   // Several chains, several outputs, one pass.  `dests[0]` takes chain 0 and
@@ -374,48 +363,23 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("launch_pipeline_multi",
              [](VecList& dests, Vec& input, jlcxx::ArrayRef<uint8_t> ops,
                 VecList& operands, jlcxx::ArrayRef<int32_t> scalars) {
-               std::vector<uint8_t> rpn(ops.data(), ops.data() + ops.size());
-               std::vector<detail::VectorDescRef> operand_refs;
-               operand_refs.reserve(operands.items.size());
-               for (auto& o : operands.items)
-                 operand_refs.push_back(o.data_desc_ref());
                std::vector<detail::VectorDescRef> extra;
                extra.reserve(dests.items.size() - 1);
                for (size_t i = 1; i < dests.items.size(); ++i)
                  extra.push_back(dests.items[i].data_desc_ref());
-               std::vector<uint32_t> sc;
-               sc.reserve(scalars.size());
-               for (size_t i = 0; i < scalars.size(); ++i)
-                 sc.push_back((uint32_t)scalars[i]);
                detail::launch_universal_pipeline(
-                   dests.items[0].data_desc_ref(), input.data_desc_ref(), rpn,
-                   operand_refs, OpInfo<int32_t>::universal_pipeline, sc, {},
-                   extra);
+                   dests.items[0].data_desc_ref(), input.data_desc_ref(),
+                   copy_array(ops), vector_refs(operands),
+                   OpInfo<int32_t>::universal_pipeline, scalar_args(scalars),
+                   {}, extra);
              });
 
   mod.method("launch_pipeline_reduce",
              [](Vec& input, jlcxx::ArrayRef<uint8_t> ops, VecList& operands,
                 jlcxx::ArrayRef<int32_t> scalars) {
-               std::vector<uint8_t> rpn(ops.data(), ops.data() + ops.size());
-               std::vector<uint32_t> sc;
-               sc.reserve(scalars.size());
-               for (size_t i = 0; i < scalars.size(); ++i)
-                 sc.push_back((uint32_t)scalars[i]);
-               return input.pipeline_reduce(rpn, operands.items, sc);
+               return input.pipeline_reduce(copy_array(ops), operands.items,
+                                            scalar_args(scalars));
              });
-
-  // ---- K-ary argmin / argmax over whole vectors ----
-
-  mod.method("launch_argmin_k", [](VecList& lanes) {
-    if (lanes.items.empty())
-      throw std::invalid_argument("argmin needs at least one lane");
-    return argmin(lanes.items);
-  });
-  mod.method("launch_argmax_k", [](VecList& lanes) {
-    if (lanes.items.empty())
-      throw std::invalid_argument("argmax needs at least one lane");
-    return argmax(lanes.items);
-  });
 
   // ---- synchronization ----
 
@@ -453,7 +417,6 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.method("jit_hash", [](jlcxx::ArrayRef<uint8_t> ops) -> std::string {
     return jit_signature_hash(make_signature(ops));
   });
-  mod.method("jit_main", []() -> std::string { return jit_main_source(); });
   mod.method("jit_dir", []() -> std::string { return jit_build_dir(); });
 
   // ---- runtime shape ----
@@ -476,9 +439,6 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
 
   mod.method("stat_compute_launches", []() -> int64_t {
     return (int64_t)RuntimeStats::get().snapshot().compute_launches;
-  });
-  mod.method("stat_horizontal_fusions", []() -> int64_t {
-    return (int64_t)RuntimeStats::get().snapshot().horizontal_fusions;
   });
   mod.method("stat_vertical_fusions", []() -> int64_t {
     return (int64_t)RuntimeStats::get().snapshot().vertical_fusions;

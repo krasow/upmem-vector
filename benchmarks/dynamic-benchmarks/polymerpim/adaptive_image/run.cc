@@ -1,7 +1,5 @@
 #include <benchmark.h>
-#include <runtime.h>
-#include <stats.h>
-#include <vectordpu.h>
+#include <polymerpim.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -9,6 +7,8 @@
 #include <vector>
 
 #include "Param.h"
+
+using namespace polymerpim;
 
 static T target_pixel(uint64_t index, uint32_t channel) {
   return (T)(32 + ((index * 17 + channel * 29 + seed) % 192));
@@ -36,34 +36,36 @@ int main() {
     bench_stages_init(&stages);
 
     bench_stage_begin(&stages, BENCH_STAGE_INIT);
-    DpuRuntime::get().init(nr_dpus);
+    init(nr_dpus);
     bench_stage_end(&stages);
 
     bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
     std::vector<T> host_buffer(N, 0);
     bench_stage_end(&stages);
 
-    std::vector<dpu_vector<T>> images;
-    std::vector<dpu_vector<T>> targets;
+    std::vector<DPUVector<T>> images;
+    std::vector<DPUVector<T>> targets;
     images.reserve(channels);
     targets.reserve(channels);
 
     bench_stage_begin(&stages, BENCH_STAGE_WRITE);
-    for (uint32_t channel = 0; channel < channels; ++channel)
-      images.push_back(dpu_vector<T>::from_cpu(host_buffer, "image"));
-    dpu_fence();
+    for (uint32_t channel = 0; channel < channels; ++channel) {
+      images.push_back(DPUVector<T>(host_buffer, "image"));
+    }
+    sync();
     bench_stage_end(&stages);
 
     for (uint32_t channel = 0; channel < channels; ++channel) {
       bench_stage_begin(&stages, BENCH_STAGE_LOAD);
 #pragma omp parallel for
-      for (uint64_t i = 0; i < N; ++i)
+      for (uint64_t i = 0; i < N; ++i) {
         host_buffer[i] = target_pixel(i, channel);
+      }
       bench_stage_end(&stages);
 
       bench_stage_begin(&stages, BENCH_STAGE_WRITE);
-      targets.push_back(dpu_vector<T>::from_cpu(host_buffer, "target"));
-      dpu_fence();
+      targets.push_back(DPUVector<T>(host_buffer, "target"));
+      sync();
       bench_stage_end(&stages);
     }
 
@@ -72,23 +74,27 @@ int main() {
     bench_stats_init(&stats);
     uint32_t fine_updates = 0;
     std::vector<T> last_errors(channels, 0);
-    StatsSnapshot runtime_before = RuntimeStats::get().snapshot();
+    RuntimeStatistics runtime_before = statistics();
 
     for (uint32_t iteration = 0; iteration < iterations; ++iteration) {
       bench_start(&timer, 0);
 
       if (iteration % check_interval == 0) {
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-        dpu_future_vector<T> pending_errors;
+        std::vector<DpuFuture<T>> pending_errors;
         pending_errors.reserve(channels);
-        for (uint32_t channel = 0; channel < channels; ++channel)
+        for (uint32_t channel = 0; channel < channels; ++channel) {
           pending_errors.push_back(
-              max(abs(targets[channel] - images[channel])));
-        dpu_fence();
+              maximum(abs(targets[channel] - images[channel])));
+        }
+        sync();
         bench_stage_end(&stages);
 
         bench_stage_begin(&stages, BENCH_STAGE_READ);
-        last_errors = pending_errors.get();
+        last_errors.clear();
+        for (auto& error : pending_errors) {
+          last_errors.push_back((T)error.get());
+        }
         bench_stage_end(&stages);
       }
 
@@ -104,7 +110,7 @@ int main() {
               images[channel] + ((targets[channel] - images[channel]) >> (T)1);
         }
       }
-      dpu_fence();
+      sync();
       bench_stage_end(&stages);
 
       bench_stop(&timer, 0);
@@ -125,7 +131,9 @@ int main() {
       if (check_correctness) {
         std::fill(expected.begin(), expected.end(), 0);
 #pragma omp parallel for
-        for (uint64_t i = 0; i < N; ++i) target[i] = target_pixel(i, channel);
+        for (uint64_t i = 0; i < N; ++i) {
+          target[i] = target_pixel(i, channel);
+        }
         T error = 0;
         for (uint32_t iteration = 0; iteration < iterations; ++iteration) {
           if (iteration % check_interval == 0) {
@@ -133,8 +141,12 @@ int main() {
 #pragma omp parallel for reduction(max : error)
             for (uint64_t i = 0; i < N; ++i) {
               T delta = target[i] - expected[i];
-              if (delta < 0) delta = -delta;
-              if (delta > error) error = delta;
+              if (delta < 0) {
+                delta = -delta;
+              }
+              if (delta > error) {
+                error = delta;
+              }
             }
           }
 #pragma omp parallel for
@@ -156,8 +168,7 @@ int main() {
       }
     }
 
-    StatsSnapshot runtime_stats =
-        RuntimeStats::get().snapshot() - runtime_before;
+    RuntimeStatistics runtime_stats = statistics() - runtime_before;
 #if JIT_PIPELINE_FALLBACK
     size_t jit_pipeline_fallbacks = runtime_stats.jit_pipeline_fallbacks;
     size_t jit_eager_fallbacks = runtime_stats.jit_eager_fallbacks;
@@ -168,7 +179,9 @@ int main() {
     bench_stats_print("polymerpim", &stats);
     bench_stages_report("polymerpim", &stages);
     T final_error = 0;
-    for (T error : last_errors) final_error = std::max(final_error, error);
+    for (T error : last_errors) {
+      final_error = std::max(final_error, error);
+    }
     std::cout << "adaptive_image: channels=" << channels
               << " coarse_updates=" << iterations * channels - fine_updates
               << " fine_updates=" << fine_updates
@@ -188,7 +201,7 @@ int main() {
                 << " dynamic iterations." << std::endl;
     }
 
-    DpuRuntime::get().shutdown();
+    shutdown();
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "Exception: " << error.what() << std::endl;

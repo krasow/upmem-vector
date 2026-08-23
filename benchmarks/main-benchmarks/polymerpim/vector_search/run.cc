@@ -1,5 +1,5 @@
 #include <benchmark.h>
-#include <vectordpu.h>
+#include <polymerpim.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "Param.h"
+
+using namespace polymerpim;
 
 static vector_search_result_t cpu_best(const std::vector<T> &query) {
   vector_search_result_t result;
@@ -19,8 +21,9 @@ static vector_search_result_t cpu_best(const std::vector<T> &query) {
 #pragma omp for nowait
     for (uint64_t i = 0; i < N; ++i) {
       int32_t score = 0;
-      for (uint32_t d = 0; d < DIM; ++d)
+      for (uint32_t d = 0; d < DIM; ++d) {
         score += vector_search_dataset_value(seed, i, d, DIM) + query[d];
+      }
       vector_search_result_insert(&local,
                                   vector_search_pack_key(score, i, N, DIM));
     }
@@ -47,10 +50,10 @@ int main() {
     bench_stages_init(&warm_stages);
 
     bench_stage_begin(&stages, BENCH_STAGE_INIT);
-    DpuRuntime::get().init(nr_dpus);
+    init(nr_dpus);
     bench_stage_end(&stages);
 
-    std::vector<dpu_vector<T>> columns;
+    std::vector<DPUVector<T>> columns;
     std::vector<std::string> names;
     columns.reserve(DIM + 1);
     names.reserve(DIM + 1);
@@ -64,26 +67,27 @@ int main() {
 
       bench_stage_begin(&stages, BENCH_STAGE_LOAD);
 #pragma omp parallel for
-      for (uint64_t i = 0; i < N; ++i)
+      for (uint64_t i = 0; i < N; ++i) {
         host_column[i] = vector_search_dataset_value(seed, i, d, DIM);
+      }
       bench_stage_end(&stages);
 
       bench_stage_begin(&stages, BENCH_STAGE_WRITE);
       names.push_back("x" + std::to_string(d));
-      columns.push_back(dpu_vector<T>::from_cpu(host_column, names.back(),
-                                                VECTORDPU_SOURCE_LOCATION));
-      columns.back().add_fence();
+      columns.emplace_back(host_column, names.back());
+      fence(columns.back());
       bench_stage_end(&stages);
     }
 
     std::vector<T> tie_breakers(N);
 #pragma omp parallel for
-    for (uint64_t i = 0; i < N; ++i) tie_breakers[i] = (T)(N - 1 - i);
+    for (uint64_t i = 0; i < N; ++i) {
+      tie_breakers[i] = (T)(N - 1 - i);
+    }
     bench_stage_begin(&stages, BENCH_STAGE_WRITE);
     names.push_back("tie_breaker");
-    columns.push_back(dpu_vector<T>::from_cpu(tie_breakers, names.back(),
-                                              VECTORDPU_SOURCE_LOCATION));
-    columns.back().add_fence();
+    columns.emplace_back(tie_breakers, names.back());
+    fence(columns.back());
     bench_stage_end(&stages);
     tie_breakers.clear();
     tie_breakers.shrink_to_fit();
@@ -92,67 +96,47 @@ int main() {
     uint64_t query_id = 0;
 
     auto run_queries = [&](uint32_t count, BenchStages &query_stages) {
-      dpu_future_vector<T> pending_bests;
+      std::vector<DpuFuture<T>> pending_bests;
       pending_bests.reserve(count);
 
       for (uint32_t q = 0; q < count; ++q) {
         bench_stage_begin(&query_stages, BENCH_STAGE_WRITE);
-        for (uint32_t d = 0; d < DIM; ++d)
+        for (uint32_t d = 0; d < DIM; ++d) {
           query[d] = vector_search_query_value(seed, query_id, d);
+        }
         ++query_id;
         bench_stage_end(&query_stages);
 
         bench_stage_begin(&query_stages, BENCH_STAGE_KERNEL);
-#if PIPELINE
-        std::vector<dpu_vector<T>> operands(columns.begin() + 1, columns.end());
-        std::vector<uint32_t> query_scalars(DIM);
-        for (uint32_t d = 0; d < DIM; ++d) {
-          query_scalars[d] = (uint32_t)query[d];
-        }
-        auto score = dpu_expr<T>::input() + dpu_expr<T>::scalar_var(0);
+        auto score = columns[0] + query[0];
         for (uint32_t d = 1; d < DIM; ++d) {
-          score = score + dpu_expr<T>::operand((uint8_t)(d - 1)) +
-                  dpu_expr<T>::scalar_var((uint8_t)d);
+          score = score + columns[d] + query[d];
         }
-        auto packed = (score + (T)(2 * DIM)) * (T)N +
-                      dpu_expr<T>::operand((uint8_t)(DIM - 1));
-        pending_bests.push_back(
-            columns[0].pipeline_reduce(packed.max(), operands, query_scalars));
-#else
-        dpu_vector<T> keys = columns[0] + query[0];
-        dpu_fence();
-        for (uint32_t d = 1; d < DIM; ++d) {
-          auto term = columns[d] + query[d];
-          dpu_fence();
-          keys += term;
-          dpu_fence();
-        }
-        keys += (T)(2 * DIM);
-        dpu_fence();
-        keys *= (T)N;
-        dpu_fence();
-        keys += columns[DIM];
-        dpu_fence();
-        pending_bests.push_back(max(keys));
-#endif
+        auto packed = (score + (T)(2 * DIM)) * (T)N + columns[DIM];
+        pending_bests.push_back(maximum(packed));
         bench_stage_end(&query_stages);
       }
 
       /* Expose the full batch to the queue before execution. Independent
        * query reductions can now be emitted as horizontal chains. */
       bench_stage_begin(&query_stages, BENCH_STAGE_KERNEL);
-      dpu_fence();
+      sync();
       bench_stage_end(&query_stages);
 
       bench_stage_begin(&query_stages, BENCH_STAGE_READ);
-      auto best_values = pending_bests.get();
+      std::vector<typename DPUVector<T>::reduction_result_t> best_values;
+      best_values.reserve(pending_bests.size());
+      for (auto &best : pending_bests) {
+        best_values.push_back(best.get());
+      }
       bench_stage_end(&query_stages);
 
       vector_search_result_t global;
       vector_search_result_init(&global);
       bench_stage_begin(&query_stages, BENCH_STAGE_MERGE);
-      if (!best_values.empty())
+      if (!best_values.empty()) {
         vector_search_result_insert(&global, (T)best_values.back());
+      }
       bench_stage_end(&query_stages);
       return global;
     };
@@ -169,8 +153,9 @@ int main() {
       bench_stats_update(&warmup_stats,
                          timer.time[0] / std::max(warmup_iterations, 1u));
     }
-    if (warmup_iterations)
+    if (warmup_iterations) {
       bench_stats_print("polymerpim_warmup", &warmup_stats);
+    }
 
     BenchStats stats;
     bench_stats_init(&stats);
@@ -188,9 +173,9 @@ int main() {
     if (check_correctness && iterations) {
       vector_search_result_t expected = cpu_best(query);
       bool ok = result.key == expected.key;
-      if (ok)
+      if (ok) {
         std::cout << "the result is correct" << std::endl;
-      else {
+      } else {
         std::cout << "Mismatch: got";
         std::cout << " " << result.key;
         std::cout << ", expected";
@@ -201,9 +186,9 @@ int main() {
 
     /* Release MRAM-backed vectors while the runtime/allocator is still live. */
     columns.clear();
-    DpuRuntime::get().shutdown();
+    shutdown();
     return 0;
-  } catch (const DpuOOMException &) {
+  } catch (const OutOfMemory &) {
     std::cerr << "DPU OOM: Not enough memory for requested size." << std::endl;
     return 1;
   } catch (const std::exception &e) {

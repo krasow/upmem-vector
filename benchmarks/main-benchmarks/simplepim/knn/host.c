@@ -43,10 +43,14 @@ void run() {
     bench_stage_end(&stages);
   } else {
     bench_stage_begin(&stages, BENCH_STAGE_LOAD);
-    for (uint64_t i = 0; i < nr_elements; i++)
-      for (uint32_t d = 0; d < DIM; d++)
+    for (uint64_t i = 0; i < nr_elements; i++) {
+      for (uint32_t d = 0; d < DIM; d++) {
         data[i * DIM + d] = (T)((i * (DIM + 1) + d) % 256);
-    for (uint32_t d = 0; d < DIM; d++) query[d] = (T)(d * 17 % 128);
+      }
+    }
+    for (uint32_t d = 0; d < DIM; d++) {
+      query[d] = (T)(d * 17 % 128);
+    }
     bench_stage_end(&stages);
   }
 
@@ -85,8 +89,9 @@ void run() {
                                           (w == 0 ? create_handle_us : 0.0));
     free(res);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("simplepim_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
@@ -114,10 +119,11 @@ void run() {
     RED_T expected;
     snprintf(path, sizeof(path), "%s/ref_res.bin", ref_path);
     bench_load_bin(path, &expected, sizeof(RED_T));
-    if (result == expected)
+    if (result == expected) {
       printf("the result is correct\n");
-    else
+    } else {
       printf("Mismatch: got %d, expected %d\n", (int)result, (int)expected);
+    }
   }
 
   free_table("query", mgmt);

@@ -6,7 +6,7 @@ endif
 SRCS := $(wildcard ./*.cc)
 
 TESTS_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../..)
-INCLUDES := -I../../../../install/include/vectordpu -I$(TESTS_DIR)
+INCLUDES := -I../../../../install/include/polymerpim -I$(TESTS_DIR)
 LDFLAGS := -L../../../../install/lib
 CXXFLAGS := -std=c++17 -O3 $(INCLUDES) $(EXTRA_FLAGS)
 
@@ -15,6 +15,6 @@ CXXFLAGS := -std=c++17 -O3 $(INCLUDES) $(EXTRA_FLAGS)
 all: run
 
 run: $(SRCS)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)  -Wl,-rpath,../../../../install/lib -lvectordpu
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)  -Wl,-rpath,../../../../install/lib -lpolymerpim
 clean:
 	rm -f run

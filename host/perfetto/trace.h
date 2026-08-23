@@ -1,14 +1,17 @@
 #pragma once
-#include <opinfo.h>
-
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "../opinfo.h"
+#if __has_include("../config.h")
+#include "../config.h"
+#else
 #include "config.h"
+#endif
 
 // Descriptive helpers available even if TRACE=0
-#include "queue.h"
+#include "../queue.h"
 std::string operationtype_to_string(Event::OperationType op);
 
 namespace trace {
@@ -78,7 +81,7 @@ struct scoped_event {
   ~scoped_event() { event_end(category); }
 };
 
-// RAII helpers for public template functions in vectordpu.inl.
+// RAII helpers for vector template operations.
 // These call the opaque functions above so the user program doesn't need
 // <perfetto.h>.
 struct reduction_cpu {

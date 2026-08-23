@@ -34,8 +34,11 @@ int main(void) {
             centroids, (K * DIM * sizeof(T) + 7) & ~7u);
 
   RED_T(*partial)[DIM + 1] = tasklet_partials[tid];
-  for (uint32_t j = 0; j < K; j++)
-    for (uint32_t d = 0; d <= DIM; d++) partial[j][d] = 0;
+  for (uint32_t j = 0; j < K; j++) {
+    for (uint32_t d = 0; d <= DIM; d++) {
+      partial[j][d] = 0;
+    }
+  }
 
   T *row_buf = tasklet_row_bufs[tid];
 
@@ -64,7 +67,9 @@ int main(void) {
           best_j = j;
         }
       }
-      for (uint32_t d = 0; d < DIM; d++) partial[best_j][d] += (RED_T)row[d];
+      for (uint32_t d = 0; d < DIM; d++) {
+        partial[best_j][d] += (RED_T)row[d];
+      }
       partial[best_j][DIM]++;
     }
   }

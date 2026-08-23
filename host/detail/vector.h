@@ -1,21 +1,19 @@
 #pragma once
 
-#include <common.h>
-#include <config.h>
-
 #include <cstring>
 #include <memory>
-#include <mutex>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "common.h"
+#include "config.h"
 #include "jit.h"
 #include "kernelids.h"
 #include "opinfo.h"
 #include "runtime.h"
 #include "timer.h"
-#include "vectordesc.h"
+#include "vector_desc.h"
 
 #if __cplusplus < 202002L
 // Fake source_location for pre-C++20
@@ -60,12 +58,6 @@ template <typename T>
 struct lazy_reduction_result;
 
 template <typename T>
-struct reduction_batch_result_state;
-
-template <typename T>
-class dpu_reduction_batch;
-
-template <typename T>
 class dpu_local_vector;
 
 template <typename T>
@@ -78,53 +70,6 @@ class dpu_pipeline_expr;
 template <typename T>
 using dpu_expr = dpu_pipeline_expr<T>;
 #endif
-
-namespace detail {
-struct jit_recorder {
-  std::vector<uint8_t> rpn;
-  std::vector<detail::VectorDescRef> operands;
-  std::vector<detail::VectorDescRef> locals;
-
-  uint8_t add_operand(detail::VectorDescRef d) {
-    for (size_t i = 0; i < operands.size(); i++)
-      if (operands[i] == d) return (uint8_t)i;
-    operands.push_back(d);
-    return (uint8_t)(operands.size() - 1);
-  }
-  uint8_t add_local(detail::VectorDescRef d) {
-    for (size_t i = 0; i < locals.size(); i++)
-      if (locals[i] == d) return (uint8_t)i;
-    locals.push_back(d);
-    return (uint8_t)(locals.size() - 1);
-  }
-};
-
-struct jit_index_expr {
-  jit_recorder& rec;
-};
-template <typename T>
-struct jit_indirect_load_expr {
-  const dpu_vector<T>& vec;
-  jit_recorder& rec;
-
-  jit_indirect_load_expr operator*(T rhs) const;
-  jit_indirect_load_expr operator+(T rhs) const;
-  jit_indirect_load_expr operator-(T rhs) const;
-};
-template <typename T>
-struct jit_indirect_ref_expr {
-  dpu_local_vector<T>& vec;
-  jit_recorder& rec;
-
-  void operator++(int);
-  void apply(T value);
-  void apply(const jit_indirect_load_expr<T>& value);
-};
-}  // namespace detail
-
-inline detail::jit_index_expr dpu_index(detail::jit_recorder& rec) {
-  return {rec};
-}
 
 #if PIPELINE
 template <typename T>
@@ -193,10 +138,6 @@ class dpu_vector {
   dpu_vector<T> operator-() const;
   dpu_vector<T> operator==(T scalar) const;
 
-#if PIPELINE
-  dpu_vector<T>& operator=(const pipeline_result<T>& other);
-#endif
-
   const detail::VectorDesc& data_desc() const { return *data_; }
   detail::VectorDescRef data_desc_ref() const { return data_; }
 
@@ -231,7 +172,6 @@ class dpu_vector {
       const dpu_pipeline_expr<T>& expr,
       const std::vector<dpu_vector<T>>& operands = {},
       const std::vector<uint32_t>& scalars = {});
-  dpu_reduction_batch<T> reduction_batch();
 #endif
 #if JIT
   pipeline_result<T> jit(const std::vector<uint8_t>& ops);
@@ -239,16 +179,6 @@ class dpu_vector {
                          const std::vector<dpu_vector<T>>& operands,
                          const std::vector<uint32_t>& scalars = {});
 
-  detail::jit_indirect_load_expr<T> operator[](
-      detail::jit_index_expr idx) const;
-  template <typename F>
-  pipeline_result<T> transform(F&& build,
-                               const std::vector<dpu_vector<T>>& operands = {},
-                               const std::vector<uint32_t>& scalars = {});
-  template <typename F>
-  lazy_reduction_result<T> reduce(
-      F&& build, const std::vector<dpu_vector<T>>& operands = {},
-      const std::vector<uint32_t>& scalars = {});
 #endif
 };
 
@@ -256,18 +186,9 @@ template <typename T>
 struct lazy_reduction_result {
   dpu_vector<T> vec;
   KernelID rid = 0;
-  std::shared_ptr<reduction_batch_result_state<T>> batch_state;
-  size_t batch_index = 0;
   lazy_reduction_result() noexcept = default;
   lazy_reduction_result(dpu_vector<T> v, KernelID r)
       : vec(std::move(v)), rid(r) {}
-  lazy_reduction_result(dpu_vector<T> v, KernelID r,
-                        std::shared_ptr<reduction_batch_result_state<T>> state,
-                        size_t index)
-      : vec(std::move(v)),
-        rid(r),
-        batch_state(std::move(state)),
-        batch_index(index) {}
   typename dpu_vector<T>::reduction_result_t get();
   operator typename dpu_vector<T>::reduction_result_t() { return get(); }
 #if ENABLE_PROMOTION_REDUCTIONS
@@ -277,65 +198,6 @@ struct lazy_reduction_result {
 
 template <typename T>
 using dpu_future = lazy_reduction_result<T>;
-
-// A collection of lazy DPU results. Keeping the producers queued until get()
-// lets independent computations become horizontal fusion chains.
-template <typename T>
-class dpu_future_vector {
- public:
-  using future_type = dpu_future<T>;
-  using result_type = typename dpu_vector<T>::reduction_result_t;
-
-  void reserve(size_t count) { futures_.reserve(count); }
-  void push_back(future_type future) { futures_.push_back(std::move(future)); }
-
-  size_t size() const { return futures_.size(); }
-  bool empty() const { return futures_.empty(); }
-
-  std::vector<result_type> get() {
-    std::vector<result_type> results;
-    results.reserve(futures_.size());
-    if (!futures_.empty()) dpu_fence();
-    for (auto& future : futures_) results.push_back(future.get());
-    return results;
-  }
-
- private:
-  std::vector<future_type> futures_;
-};
-
-#if PIPELINE
-template <typename T>
-class dpu_reduction_batch {
- public:
-  explicit dpu_reduction_batch(dpu_vector<T>& primary);
-  dpu_reduction_batch(const dpu_reduction_batch&) = delete;
-  dpu_reduction_batch& operator=(const dpu_reduction_batch&) = delete;
-  dpu_reduction_batch(dpu_reduction_batch&&) noexcept = default;
-  dpu_reduction_batch& operator=(dpu_reduction_batch&&) noexcept = default;
-
-  template <typename F>
-  lazy_reduction_result<T> add(F&& build,
-                               const std::vector<dpu_vector<T>>& operands = {},
-                               const std::vector<uint32_t>& scalars = {});
-  void submit();
-
- private:
-  struct Entry {
-    std::vector<uint8_t> ops;
-    std::vector<detail::VectorDescRef> operands;
-    std::vector<uint32_t> scalars;
-    detail::VectorDescRef output;
-    KernelID rid = OpInfo<T>::sum;
-  };
-
-  dpu_vector<T>* primary_;
-  std::vector<Entry> entries_;
-  std::shared_ptr<reduction_batch_result_state<T>> result_state_;
-
-  static KernelID reduction_id(const std::vector<uint8_t>& ops);
-};
-#endif
 
 enum class dpu_local_reduce_op : uint8_t {
   sum,
@@ -508,8 +370,7 @@ dpu_arg_expr<T> detail_arg_k_lanes(
   return {dpu_pipeline_expr<T>(std::move(label_ops)), best};
 }
 
-// (a) over K candidate EXPRESSIONS, per element (used inside transform /
-//     reduce / dpu_jit_foreach lambdas).
+// Over K candidate expressions, per element.
 template <typename T>
 dpu_arg_expr<T> argmin(const std::vector<dpu_pipeline_expr<T>>& lanes) {
   return detail_arg_k_lanes(lanes, (uint8_t)OP_ARGMIN_K);
@@ -519,35 +380,29 @@ dpu_arg_expr<T> argmax(const std::vector<dpu_pipeline_expr<T>>& lanes) {
   return detail_arg_k_lanes(lanes, (uint8_t)OP_ARGMAX_K);
 }
 
-// (b) over K whole VECTORS, by itself -- launches its own fused kernel and
-//     returns the per-element winning-lane-index vector.
-//
-// These call transform(), which only exists under JIT, so they need a tighter
-// guard than the expression forms above.
+// Over K whole vectors, returning the per-element winning lane.
 #if JIT
 template <typename T>
 dpu_vector<T> argmin(std::vector<dpu_vector<T>>& lanes) {
   std::vector<dpu_vector<T>> operands(lanes.begin() + 1, lanes.end());
-  return lanes[0]
-      .transform(
-          [](const std::vector<dpu_pipeline_expr<T>>& x) {
-            return argmin(std::vector<dpu_pipeline_expr<T>>(x.begin(), x.end()))
-                .label;
-          },
-          operands)
-      .vec;
+  std::vector<dpu_pipeline_expr<T>> expressions;
+  expressions.reserve(lanes.size());
+  expressions.push_back(dpu_pipeline_expr<T>::input());
+  for (size_t i = 0; i < operands.size(); ++i) {
+    expressions.push_back(dpu_pipeline_expr<T>::operand((uint8_t)i));
+  }
+  return lanes[0].jit(argmin(expressions).label.ops(), operands).vec;
 }
 template <typename T>
 dpu_vector<T> argmax(std::vector<dpu_vector<T>>& lanes) {
   std::vector<dpu_vector<T>> operands(lanes.begin() + 1, lanes.end());
-  return lanes[0]
-      .transform(
-          [](const std::vector<dpu_pipeline_expr<T>>& x) {
-            return argmax(std::vector<dpu_pipeline_expr<T>>(x.begin(), x.end()))
-                .label;
-          },
-          operands)
-      .vec;
+  std::vector<dpu_pipeline_expr<T>> expressions;
+  expressions.reserve(lanes.size());
+  expressions.push_back(dpu_pipeline_expr<T>::input());
+  for (size_t i = 0; i < operands.size(); ++i) {
+    expressions.push_back(dpu_pipeline_expr<T>::operand((uint8_t)i));
+  }
+  return lanes[0].jit(argmax(expressions).label.ops(), operands).vec;
 }
 #endif  // JIT
 #endif
@@ -556,15 +411,7 @@ dpu_vector<T> argmax(std::vector<dpu_vector<T>>& lanes) {
 template <typename T>
 struct pipeline_result {
   dpu_vector<T> vec;
-  pipeline_result(dpu_vector<T> v) : vec(std::move(v)) {}
-  operator T();
-  operator int64_t();
-  operator dpu_vector<T>() { return std::move(vec); }
-  dpu_vector<T>* operator->() { return &vec; }
-  operator lazy_reduction_result<T>() {
-    return lazy_reduction_result<T>(std::move(vec),
-                                    vec.data_desc().reduction_rid);
-  }
+  explicit pipeline_result(dpu_vector<T> value) : vec(std::move(value)) {}
 };
 #endif
 
@@ -589,9 +436,6 @@ class dpu_local_vector {
   dpu_local_vector(uint32_t n, dpu_local_reduce_op reduce_op,
                    LOGGER_ARGS_WITH_DEFAULTS);
   ~dpu_local_vector() = default;
-
-  detail::jit_indirect_ref_expr<T> operator[](
-      const detail::jit_indirect_load_expr<T>& idx);
 
   vector<T> to_cpu();
   dpu_local_reduce_op reduce_op() const { return reduce_op_; }
@@ -645,9 +489,6 @@ class dpu_pipeline_context {
 };
 #endif
 
-template <typename T, typename F>
-void dpu_jit_foreach(size_t n, F f);
-
 #if JIT
 template <typename T, typename F>
 void dpu_jit_foreach(dpu_vector<T>& primary,
@@ -656,8 +497,6 @@ void dpu_jit_foreach(dpu_vector<T>& primary,
 #endif
 
 namespace detail {
-void vec_xfer_from_dpu_span(char* cpu, VectorDescRef base, size_t span_bytes);
-
 void launch_binary(VectorDescRef res, VectorDescRef lhs, VectorDescRef rhs,
                    KernelID kernel_id, uint8_t opcode, KernelID pipeline_kid);
 void launch_binary_scalar(VectorDescRef res, VectorDescRef lhs, uint32_t scalar,
@@ -668,12 +507,8 @@ void launch_unary(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
 void launch_reduction(VectorDescRef buf, VectorDescRef rhs, KernelID kernel_id,
                       uint8_t opcode, KernelID pipeline_kid);
 
-void internal_launch_binary(VectorDescRef res, VectorDescRef lhs,
-                            VectorDescRef rhs, KernelID kernel_id);
 void internal_launch_unary(VectorDescRef res, VectorDescRef lhs,
                            KernelID kernel_id);
-void internal_launch_reduction(VectorDescRef res, VectorDescRef rhs,
-                               KernelID kernel_id);
 
 #if PIPELINE
 void launch_universal_pipeline(
@@ -699,4 +534,4 @@ void internal_launch_jit(const std::string& binary_path, VectorDescRef output,
 #endif
 }  // namespace detail
 
-#include "vectordpu.inl"
+#include "vector.inl"

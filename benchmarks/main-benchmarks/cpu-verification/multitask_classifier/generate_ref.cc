@@ -34,14 +34,16 @@ static svm_metrics_t run_classifier(const std::vector<T>& rows,
       for (uint32_t c = 0; c < CLASSES; c++) {
         uint64_t base = (uint64_t)c * FEATURES;
         int32_t score = 0;
-        for (uint32_t d = 0; d < FEATURES; d++)
+        for (uint32_t d = 0; d < FEATURES; d++) {
           score += weights[base + d] * row[d];
+        }
 
         int32_t label = svm_signed_label(class_id, c);
         if (label * score < SVM_MARGIN) {
           metrics.margin_violations++;
-          for (uint32_t d = 0; d < FEATURES; d++)
+          for (uint32_t d = 0; d < FEATURES; d++) {
             gradients[base + d] += -label * row[d];
+          }
         }
       }
     }
@@ -61,8 +63,9 @@ static svm_metrics_t run_classifier(const std::vector<T>& rows,
       uint32_t best_class = 0;
       for (uint32_t c = 0; c < CLASSES; c++) {
         int32_t score = 0;
-        for (uint32_t d = 0; d < FEATURES; d++)
+        for (uint32_t d = 0; d < FEATURES; d++) {
           score += weights[(uint64_t)c * FEATURES + d] * row[d];
+        }
         if (c == 0 || score > best_score) {
           best_score = score;
           best_class = c;
@@ -79,7 +82,9 @@ template <typename U>
 static bool write_vector(const std::string& path,
                          const std::vector<U>& values) {
   FILE* file = fopen(path.c_str(), "wb");
-  if (!file) return false;
+  if (!file) {
+    return false;
+  }
   bool ok =
       fwrite(values.data(), sizeof(U), values.size(), file) == values.size();
   fclose(file);

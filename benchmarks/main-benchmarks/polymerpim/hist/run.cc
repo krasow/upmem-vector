@@ -1,6 +1,6 @@
 #include <benchmark.h>
 #include <omp.h>
-#include <vectordpu.h>
+#include <polymerpim.h>
 
 #include <cstdlib>
 #include <ctime>
@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "Param.h"
+
+using namespace polymerpim;
 
 void compare_results(const std::vector<RED_T>& dpu_hist) {
   std::vector<uint32_t> cpu_hist(BINS);
@@ -34,7 +36,9 @@ void compare_results(const std::vector<RED_T>& dpu_hist) {
     }
   }
 
-  if (!correct) std::exit(EXIT_FAILURE);
+  if (!correct) {
+    std::exit(EXIT_FAILURE);
+  }
   std::cout << "the result is correct" << std::endl;
 }
 
@@ -54,7 +58,7 @@ int main() {
     bench_stages_init(&stages);
     bench_stages_init(&warm_stages);
     bench_stage_begin(&stages, BENCH_STAGE_INIT);
-    DpuRuntime::get().init(nr_dpus);
+    init(nr_dpus);
     bench_stage_end(&stages);
     {
       bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
@@ -82,22 +86,18 @@ int main() {
 
       std::vector<RED_T> result_hist(BINS);
 
-      // Lazy runtime: from_cpu and the jit_foreach only enqueue work. Fence at
-      // each stage boundary so write/kernel time stays in its own stage rather
-      // than landing in to_cpu()'s blocking read.
+      // Fence at stage boundaries so asynchronous work stays in its stage.
       auto run_round_trip = [&](std::vector<RED_T>& res_hist,
                                 BenchStages& stages) {
         bench_stage_begin(&stages, BENCH_STAGE_WRITE);
-        dpu_vector<T> da =
-            dpu_vector<T>::from_cpu(a, "a", VECTORDPU_SOURCE_LOCATION);
-        dpu_fence();
+        DPUVector<T> da(a, "a");
+        sync();
         bench_stage_end(&stages);
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-        dpu_local_vector<T> local_hist(BINS);
+        DPULocalVector<T> local_hist(BINS);
         auto buckets = ((da * (T)BINS) >> (T)DEPTH);
-        dpu_jit_foreach<T>(da.size(),
-                           [&](auto i) { local_hist[buckets[i]].apply((T)1); });
-        dpu_fence();
+        local_hist[buckets] += (T)1;
+        sync();
         bench_stage_end(&stages);
         bench_stage_begin(&stages, BENCH_STAGE_READ);
         res_hist = local_hist.to_cpu();  // implicit runtime fence
@@ -114,8 +114,9 @@ int main() {
         bench_stop(&warmup_timer, 0);
         bench_stats_update(&warmup_stats, warmup_timer.time[0]);
       }
-      if (warmup_iterations > 0)
+      if (warmup_iterations > 0) {
         bench_stats_print("polymerpim_warmup", &warmup_stats);
+      }
 
       std::cout << "Starting benchmark iterations=" << iterations << "..."
                 << std::endl;
@@ -137,7 +138,7 @@ int main() {
       }
     }
 
-    DpuRuntime::get().shutdown();
+    shutdown();
 
     return 0;
 #endif

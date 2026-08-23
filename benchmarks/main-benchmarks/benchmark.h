@@ -61,8 +61,12 @@ static inline void bench_stats_update(BenchStats *s, double elapsed_us) {
     s->min_us = elapsed_us;
     s->max_us = elapsed_us;
   } else {
-    if (elapsed_us < s->min_us) s->min_us = elapsed_us;
-    if (elapsed_us > s->max_us) s->max_us = elapsed_us;
+    if (elapsed_us < s->min_us) {
+      s->min_us = elapsed_us;
+    }
+    if (elapsed_us > s->max_us) {
+      s->max_us = elapsed_us;
+    }
   }
 }
 
@@ -124,7 +128,9 @@ typedef struct {
 } BenchStages;
 
 static inline void bench_stages_init(BenchStages *s) {
-  for (int i = 0; i < BENCH_STAGE_COUNT; i++) s->us[i] = 0.0;
+  for (int i = 0; i < BENCH_STAGE_COUNT; i++) {
+    s->us[i] = 0.0;
+  }
   s->_active = -1;
 }
 static inline void bench_stage_begin(BenchStages *s, bench_stage_t stage) {
@@ -143,7 +149,8 @@ static inline void bench_stage_end(BenchStages *s) {
 // Prints one "<label>_stage_<name> (ms): <total>" line per stage. The "_stage_"
 // infix keeps these from colliding with the steady "<label> (ms):" parse.
 static inline void bench_stages_report(const char *label, BenchStages *s) {
-  for (int i = 0; i < BENCH_STAGE_COUNT; i++)
+  for (int i = 0; i < BENCH_STAGE_COUNT; i++) {
     printf("%s_stage_%s (ms): %f\n", label, BENCH_STAGE_NAMES[i],
            s->us[i] / 1000.0);
+  }
 }

@@ -1,8 +1,6 @@
 #include <benchmark.h>
 #include <omp.h>
-#include <runtime.h>
-#include <stats.h>
-#include <vectordpu.h>
+#include <polymerpim.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -17,6 +15,8 @@
 
 #include "Param.h"
 
+using namespace polymerpim;
+
 enum class QueryOp : uint8_t { ADD, ABS_DIFF, AVERAGE, CENTER };
 
 struct QueryStep {
@@ -25,7 +25,7 @@ struct QueryStep {
 };
 
 using QueryPlan = std::vector<QueryStep>;
-using QueryResult = typename dpu_vector<T>::reduction_result_t;
+using QueryResult = typename DPUVector<T>::reduction_result_t;
 
 static T column_value(uint64_t index, uint32_t column) {
   return (T)(1 + ((index * 17 + column * 53 + seed * 11) % 251));
@@ -48,34 +48,42 @@ static QueryOp parse_op(char code) {
 
 static std::vector<QueryPlan> load_queries(const char* path) {
   std::ifstream file(path);
-  if (!file) throw std::runtime_error(std::string("cannot open ") + path);
+  if (!file) {
+    throw std::runtime_error(std::string("cannot open ") + path);
+  }
 
   std::vector<QueryPlan> queries;
   std::string line;
   while (std::getline(file, line)) {
-    if (line.empty() || line[0] == '#') continue;
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
     QueryPlan plan;
     std::stringstream fields(line);
     std::string token;
     while (std::getline(fields, token, ',')) {
-      if (token.size() < 2)
+      if (token.size() < 2) {
         throw std::runtime_error("invalid query token: " + token);
+      }
       uint32_t column = (uint32_t)std::stoul(token.substr(1));
-      if (column >= columns)
+      if (column >= columns) {
         throw std::runtime_error("query column exceeds configured columns");
+      }
       plan.push_back({parse_op(token[0]), column});
     }
-    if (query_ops == 0 || plan.size() < query_ops)
+    if (query_ops == 0 || plan.size() < query_ops) {
       throw std::runtime_error("query has fewer operations than query_ops");
+    }
     plan.resize(query_ops);
     queries.push_back(std::move(plan));
   }
   return queries;
 }
 
-static dpu_vector<T> project(const QueryPlan& plan, uint32_t projection,
-                             const std::vector<dpu_vector<T>>& input) {
-  dpu_vector<T> value = input[projection % columns];
+static auto project(const QueryPlan& plan, uint32_t projection,
+                    const std::vector<DPUVector<T>>& input) {
+  using Expression = decltype(input[0] + (T)0);
+  Expression value = input[projection % columns];
   for (const QueryStep& step : plan) {
     const auto& operand = input[(step.column + projection) % columns];
     switch (step.op) {
@@ -127,8 +135,9 @@ static QueryResult expected_max(const QueryPlan& plan, uint32_t projection) {
   T result = std::numeric_limits<T>::lowest();
   const uint64_t period = std::min<uint64_t>(N, 251);
 #pragma omp parallel for reduction(max : result)
-  for (uint64_t i = 0; i < period; ++i)
+  for (uint64_t i = 0; i < period; ++i) {
     result = std::max(result, project_cpu(plan, projection, i));
+  }
   return (QueryResult)result;
 }
 
@@ -153,12 +162,12 @@ int main() {
     bench_stages_init(&stages);
 
     bench_stage_begin(&stages, BENCH_STAGE_INIT);
-    DpuRuntime::get().init(nr_dpus);
+    init(nr_dpus);
     bench_stage_end(&stages);
 
     bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
     std::vector<T> host_column(N);
-    std::vector<dpu_vector<T>> input;
+    std::vector<DPUVector<T>> input;
     input.reserve(columns);
     bench_stage_end(&stages);
 
@@ -174,12 +183,14 @@ int main() {
     for (uint32_t column = 0; column < columns; ++column) {
       bench_stage_begin(&stages, BENCH_STAGE_LOAD);
 #pragma omp parallel for
-      for (uint64_t i = 0; i < N; ++i) host_column[i] = column_value(i, column);
+      for (uint64_t i = 0; i < N; ++i) {
+        host_column[i] = column_value(i, column);
+      }
       bench_stage_end(&stages);
 
       bench_stage_begin(&stages, BENCH_STAGE_WRITE);
-      input.push_back(dpu_vector<T>::from_cpu(host_column, "query_column"));
-      dpu_fence();
+      input.push_back(DPUVector<T>(host_column, "query_column"));
+      sync();
       bench_stage_end(&stages);
     }
 
@@ -191,39 +202,45 @@ int main() {
     bench_stats_init(&stats);
     bench_stats_init(&first_batch_stats);
     bench_stats_init(&reuse_batch_stats);
-    StatsSnapshot runtime_before = RuntimeStats::get().snapshot();
+    RuntimeStatistics runtime_before = statistics();
 
     uint64_t checksum = seed;
 
     for (uint32_t query = 0; query < iterations; ++query) {
       const QueryPlan& plan = queries[query];
       std::vector<QueryResult> checked_results;
-      if (check_correctness)
+      if (check_correctness) {
         checked_results.reserve(batches_per_query * projections);
+      }
       bench_start(&timer, 0);
 
       for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
         bench_start(&batch_timer, 0);
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-        std::vector<dpu_future<T>> pending;
+        std::vector<DpuFuture<T>> pending;
         pending.reserve(projections);
-        for (uint32_t projection = 0; projection < projections; ++projection)
-          pending.push_back(max(project(plan, projection, input)));
-        dpu_fence();
+        for (uint32_t projection = 0; projection < projections; ++projection) {
+          pending.push_back(maximum(project(plan, projection, input)));
+        }
+        sync();
         bench_stage_end(&stages);
 
         bench_stage_begin(&stages, BENCH_STAGE_READ);
         std::vector<QueryResult> results;
         results.reserve(projections);
-        for (auto& future : pending) results.push_back(future.get());
+        for (auto& future : pending) {
+          results.push_back(future.get());
+        }
         bench_stage_end(&stages);
 
-        if (check_correctness)
+        if (check_correctness) {
           checked_results.insert(checked_results.end(), results.begin(),
                                  results.end());
+        }
 
-        for (QueryResult result : results)
+        for (QueryResult result : results) {
           checksum = checksum * UINT64_C(1099511628211) ^ (uint64_t)result;
+        }
 
         bench_stop(&batch_timer, 0);
         bench_stats_update(batch == 0 ? &first_batch_stats : &reuse_batch_stats,
@@ -250,8 +267,7 @@ int main() {
       }
     }
 
-    StatsSnapshot runtime_stats =
-        RuntimeStats::get().snapshot() - runtime_before;
+    RuntimeStatistics runtime_stats = statistics() - runtime_before;
 #if JIT_PIPELINE_FALLBACK
     size_t jit_pipeline_fallbacks = runtime_stats.jit_pipeline_fallbacks;
     size_t jit_eager_fallbacks = runtime_stats.jit_eager_fallbacks;
@@ -262,8 +278,9 @@ int main() {
 
     bench_stats_print("polymerpim", &stats);
     bench_stats_print("dynamic_query_first_batch", &first_batch_stats);
-    if (reuse_batch_stats.count > 0)
+    if (reuse_batch_stats.count > 0) {
       bench_stats_print("dynamic_query_reuse_batch", &reuse_batch_stats);
+    }
     bench_stages_report("polymerpim", &stages);
     std::cout << "polymerpim_stage_query_first (ms): "
               << first_batch_stats.mean / 1000.0 << '\n';
@@ -286,13 +303,14 @@ int main() {
               << " jit_pipeline_fallbacks=" << jit_pipeline_fallbacks
               << " jit_eager_fallbacks=" << jit_eager_fallbacks << std::endl;
 
-    if (check_correctness)
+    if (check_correctness) {
       std::cout << "All results match after " << iterations << " queries."
                 << std::endl;
+    }
 
-    DpuRuntime::get().shutdown();
+    shutdown();
     return 0;
-  } catch (const DpuOOMException& error) {
+  } catch (const OutOfMemory& error) {
     std::cerr << "DPU OOM: " << error.what() << std::endl;
     return 1;
   } catch (const std::exception& error) {
