@@ -1,8 +1,8 @@
 # PolymerPIM
 
-PolymerPIM provides lazy C++ and Julia vector APIs for UPMEM DPUs. Operations
-are queued and fused before execution, while host scalar values are passed as
-runtime parameters so changing them does not require recompilation.
+PolymerPIM is a C++ and Julia library for programming UPMEM DPUs with vector
+expressions. Operations are automatically fused and JIT-compiled into DPU
+kernels.
 
 ## Build
 
