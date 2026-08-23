@@ -1,7 +1,7 @@
 const APP_TIME_FORMAT = "APP_TIME real=%e user=%U sys=%S maxrss=%M"
 const APP_TIME_RE = r"APP_TIME real=([\d.]+) user=([\d.]+) sys=([\d.]+) maxrss=(\d+)"
 const STAGE_NAMES = ("alloc", "load", "transpose", "init", "write", "kernel",
-                     "read", "merge")
+                     "read", "merge", "query_first", "query_reuse")
 const MEASURE_COLUMNS = [
     "time", "stddev", "min", "max", "warmup_ms",
     "real_s", "user_s", "sys_s", "max_rss_kb",

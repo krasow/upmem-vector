@@ -1,8 +1,9 @@
 # Benchmarks
 
-[`benchmark.toml`](benchmark.toml) defines each workload's sizes, parameters,
-and variants. Implementations and build commands live in `variants/`.
-Pass `--config` to select another suite.
+[`main-benchmarks/benchmark.toml`](main-benchmarks/benchmark.toml) defines each
+workload's sizes, parameters, and backends. Regular workloads live in
+`main-benchmarks/`, dynamic workloads in `dynamic-benchmarks/`, and backend
+definitions in `backends/`. Pass `--config` to select another suite.
 
 `make` and `run.sh` install SimplePIM and Perfetto into `../opt/` on first use.
 
@@ -17,8 +18,8 @@ Tune first, then run the suite:
 ./run.sh elementwise --reset-tune
 ./run.sh elementwise --default-params
 ./run.sh elementwise --tune --passes 2 --runner --variant polymerpim,julia
-./run.sh --config polymerpim-modes.toml --default-params
-./run.sh --config dynamic.toml --default-params
+./run.sh --config main-benchmarks/polymerpim-modes.toml --default-params
+./run.sh --config dynamic-benchmarks/benchmark.toml --default-params
 ```
 
 Arguments before `--tune` or `--runner` apply to both phases. Arguments after a
@@ -28,17 +29,33 @@ marker apply only to that phase. Set `JULIA` to choose the Julia executable.
 `--reset` removes the selected benchmarks from run CSVs and checkpoints;
 `--reset-tune` discards their tuning checkpoints and profiles.
 
-[`polymerpim-modes.toml`](polymerpim-modes.toml) compares JIT, interpreted
-pipeline, and eager PolymerPIM on elementwise, k-NN, and linear regression.
+[`main-benchmarks/polymerpim-modes.toml`](main-benchmarks/polymerpim-modes.toml)
+compares JIT, interpreted pipeline, and eager PolymerPIM on elementwise, k-NN,
+and linear regression.
 The three variants reuse the same benchmark sources and appear separately in
 the CSV. `--default-params` keeps the comparison on Makefile defaults.
 
-[`dynamic.toml`](dynamic.toml) is the cold-start suite. Four image planes queue
-independent reductions and updates for horizontal fusion; periodic convergence
-checks change the fused expression shape. It compares blocking JIT, hybrid
-fallback, interpreted pipeline, and eager execution without warmup.
+[`dynamic-benchmarks/benchmark.toml`](dynamic-benchmarks/benchmark.toml) is the
+cold-start suite. `adaptive_image` changes its update graph after convergence
+checks. `dynamic_query` builds a new online query, then reuses it across five
+batches; its independent projections expose horizontal fusion. Both compare
+blocking JIT, hybrid fallback, interpreted pipeline, and eager execution
+without warmup. All implementations consume the same 50-query trace in
+[`dynamic-benchmarks/dynamic_query.csv`](dynamic-benchmarks/dynamic_query.csv);
+requesting more than 50 queries is an error.
 
-`ntrials` in `benchmark.toml` launches each benchmark process independently;
+`dynamic-benchmarks/query_sweep.sh` compares PolymerPIM JIT, hybrid, pipeline,
+and SimplePIM on the first ten deterministic two-operation queries. It sweeps
+total input size, checks every result against the CPU implementation outside
+the timed region, resumes from its own checkpoint, and writes
+`results/query-sweep.svg` plus the boundary data in
+`results/query-sweep-summary.csv`.
+
+```bash
+./dynamic-benchmarks/query_sweep.sh
+```
+
+`ntrials` in a suite TOML launches each benchmark process independently;
 `iterations` remains the workload's in-process loop count. Override trials with
 `--ntrials`.
 

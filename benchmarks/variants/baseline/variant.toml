@@ -1,5 +1,0 @@
-name = "baseline"
-directory = "variants/baseline/{benchmark}"
-parameter_file = "Param.h"
-build = ["make clean", "make"]
-run = "./bin/host_baseline"

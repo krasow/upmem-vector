@@ -3,6 +3,7 @@
     @test "elementwise-interpreter" in config.benchmark_names
     @test only(config.benchmarks["elementwise-interpreter"]).variants == ["baseline"]
     @test config.defaults.ntrials == 5
+    @test config.defaults.benchmark_root == "main-benchmarks"
     @test Set(keys(config.variants)) ==
           Set(["baseline", "cpu", "julia", "polymerpim", "simplepim",
                "polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager",
@@ -39,7 +40,8 @@
     @test occursin("unknown shared option: --defualt-params",
                    String(take!(output)))
 
-    modes = load_config(joinpath(BENCHMARKS, "polymerpim-modes.toml"))
+    modes = load_config(joinpath(
+        BENCHMARKS, "main-benchmarks", "polymerpim-modes.toml"))
     @test modes.benchmark_names == ["elementwise", "knn", "linreg"]
     @test modes.defaults.variants ==
           ["polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"]
@@ -50,8 +52,12 @@
         modes, modes.variants[name], nothing)
         for name in modes.defaults.variants)) == 3
 
-    dynamic = load_config(joinpath(BENCHMARKS, "dynamic.toml"))
-    @test dynamic.benchmark_names == ["adaptive_image"]
+    dynamic = load_config(joinpath(
+        BENCHMARKS, "dynamic-benchmarks", "benchmark.toml"))
+    @test dynamic.benchmark_names == ["adaptive_image", "dynamic_query"]
     @test dynamic.defaults.warmup == 0
+    @test dynamic.defaults.benchmark_root == "dynamic-benchmarks"
     @test "polymerpim-hybrid" in dynamic.defaults.variants
+    @test "simplepim" ∉ only(dynamic.benchmarks["adaptive_image"]).variants
+    @test "simplepim" ∈ only(dynamic.benchmarks["dynamic_query"]).variants
 end

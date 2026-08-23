@@ -1,0 +1,4 @@
+name = "julia"
+directory = "{benchmark_root}/julia/{benchmark}"
+parameter_file = "Param.jl"
+run = "\"{julia}\" --project=\"{repo}/julia\" run.jl"
