@@ -323,7 +323,7 @@ class ChainCompiler {
     } else {
       uint8_t slot = rpn[i + 1];
       i += SCALAR_VAR_INDEX_BYTES;
-      rhs = "args.pipeline.scalars[" + std::to_string(slot) + "]";
+      rhs = "scalar_vars[" + std::to_string(slot) + "]";
       rhs_id = "scalar_var:" + std::to_string(slot);
     }
 

@@ -4,6 +4,9 @@
 // separation.
 
 #include "framework.h"
+#if JIT
+#include <jit.h>
+#endif
 #if JIT_PIPELINE_FALLBACK
 #include <detail/rpn.h>
 #endif
@@ -261,6 +264,16 @@ TEST(pipeline, expr_builder_select) {
 // --------------------------------------------------------------------------
 
 #if JIT
+
+TEST(jit, scalar_variables_use_hoisted_values) {
+  Signature sig{{OP_PUSH_INPUT, OP_MUL_SCALAR_VAR, 0, OP_SUM}, "int32_t"};
+  std::string source = jit_kernel_source(sig);
+  const std::string table_access = "args.pipeline.scalars[0]";
+
+  CHECK(source.find("scalar_vars[0]") != std::string::npos);
+  CHECK(source.find(table_access) != std::string::npos);
+  CHECK_EQ(source.find(table_access), source.rfind(table_access));
+}
 
 TEST(jit, explicit_jit_chain) {
   const size_t n = tf::elements();
