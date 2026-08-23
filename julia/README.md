@@ -1,63 +1,29 @@
 # PolymerPIM.jl
 
-Julia bindings for PolymerPIM: a 1-D `Int32` vector in UPMEM DPU memory.
-
-Requires the C++ library built with `PIPELINE=1 JIT=1`; the wrapper refuses to
-compile against anything else.
+PolymerPIM.jl provides lazy `Int32` vectors backed by UPMEM DPUs. Broadcasts,
+reductions, and indexed local updates are fused before execution.
 
 ## Build
 
-`make install` in the source tree builds the wrapper too, against the prefix it
-just installed:
+From the repository root:
 
-```sh
+```bash
 source /usr/upmem_env.sh
-cd .. && make install PIPELINE=1 JIT=1 BACKEND=hw   # BACKEND=simulator if HW is down
-cd julia && make test
+make install BACKEND=hw PIPELINE=1 JIT=1
+make -C julia test
 ```
 
-It is skipped, with a message, under any other configuration or without `julia`
-on `PATH`. The default prefix is the repository's `install/`; override it with
-`POLYMERPIM_ROOT` for a packaged install.
-
-`lib/wrapper/` holds the wrapper source and its cmake tree; the finished library
-is installed to `lib/wrapper/PolymerPIM/`, next to the two stamps recording what
-it is:
-
-```sh
-make config          # both stamps
-```
-
-| file | contents |
-| --- | --- |
-| `build.config` | the flags `libpolymerpim` was compiled with, copied from the prefix |
-| `install.config` | where that prefix came from (git rev, date, host) and how the wrapper was configured against it |
-
-`build.config` is not just a record. The wrapper reaches its `libpolymerpim`
-through `RUNPATH`, so a later `make install` with different flags would swap the
-library out from under it; the package compares this stamp against what the
-loaded library reports for itself and refuses a mismatch instead of silently
-running the wrong configuration. From Julia:
-
-```julia
-PolymerPIM.versioninfo()   # all of it, printed
-installinfo()              # provenance, as recorded at wrapper build time
-configuration()            # what the loaded libpolymerpim says it is -- ground truth
-ndpus(), ntasklets()
-```
-
-`versioninfo` is not exported, since `InteractiveUtils` exports one too; call it
-qualified.
-
-DPUs are claimed on the first allocation, so `NR_DPUS` has to be set before it
-(default 8); `ndpus()` reports the count either way. Tasklets per DPU are fixed
-at library build time by `NR_TASKLETS`.
-
-```sh
-NR_DPUS=32 julia --project=. yourscript.jl
-```
+The Julia package requires `PIPELINE=1 JIT=1`. Running `make -C julia` directly
+builds and installs that configuration into the repository's `install/`
+prefix first. Set `POLYMERPIM_ROOT` to build against another installation.
 
 ## Usage
+
+Set the DPU count before the first allocation; the default is 8:
+
+```bash
+NR_DPUS=64 julia --project=julia script.jl
+```
 
 ```julia
 using PolymerPIM
@@ -65,134 +31,83 @@ using PolymerPIM
 a = DPUVector(Int32[1, 2, 3, 4])
 b = DPUVector(fill(Int32(10), 4))
 
-Array(a + b)          # elementwise; also - * div, and vector/scalar forms
-Array(a >> 1)         # arithmetic shift by a scalar
-Array(abs(-a))
-Array(a < b)          # comparisons give a 1/0 mask; also > >= <= ==
-Array(select_op(a < b, a, b))
+result = abs2.(a .- 3) .+ b
+mask = a .< b
+chosen = ifelse.(mask, a, b)
 
-sum(a)                # reductions: sum, prod, minimum, maximum
-add!(acc, b)          # in-place: add! sub! mul! div! shr!
+Array(result)             # read back and block
+sum(result)[]             # read a lazy reduction
+sync()                    # drain all pending work
 ```
 
-Operations are queued, not run on the spot. `Array(v)` reads back and blocks,
-`fence(v)` waits without transferring, `sync()` drains everything.
+Supported broadcasts include `+`, `-`, `*`, `div`, `>>`, comparisons, unary
+`-`, `abs`, `abs2`, and `ifelse`. Unsupported functions raise an error instead
+of falling back to a host loop.
 
-## Broadcasting
-
-The expression tree stays lazy and lowers to a single RPN program, so a whole
-broadcast is one kernel pass:
-
-```julia
-r = a .+ b .* c
-d .= abs.(a .- b) .+ 1          # writes through d's buffer
-m = ifelse.(a .> b, a, b)       # per-lane select
-```
-
-Supported: `+ - * div >> == < > <= >=`, `-`, `abs`, and three-argument
-`ifelse`. Anything else (`sqrt`, `sin`, …) raises rather than falling back to a
-host loop.
-
-Only within one expression — `d = d .+ 1` in a loop is still a pass per
-statement.
-
-## Inspecting the generated kernel
-
-A broadcast becomes one RPN program and one JIT-compiled C kernel.
-`@code_jitted` shows that kernel without compiling or launching anything:
-
-```julia
-julia> @code_jitted a .+ b .* c
-JIT kernel k_9a0cf153d43a1c54 -- 5 opcodes, 2 operands, 16 elements
-  build/jit/k_9a0cf153d43a1c54.c (not compiled yet)
-
-#include <barrier.h>
-...
-int k_9a0cf153d43a1c54(void) {
-...
-```
-
-The source is generated on the spot, so nothing exists on disk yet -- the path is
-where the kernel *will* land, and `iscompiled(code)` says whether it has. The
-first launch of a program writes `build/jit/k_<hash>.c` and `.o`, plus one
-`main_<n>.c` per compiled batch holding the launch args, tasklet barrier and WRAM
-workspace its kernels share. `<hash>` is the cache key, so the same expression
-later reuses that object instead of regenerating it. Once written, the file is
-byte-identical to what `@code_jitted` printed.
-
-The result is a `JittedCode` -- `.source`, `.ops`, `.hash`, and `.path` are all
-readable. `a + b` and `sum(a)` run on statically compiled kernels and have no
-generated source.
+Host scalars are captured when an expression is built but passed at launch, so
+different values reuse the same compiled kernel.
 
 ## Reductions
 
-A reduction returns a future, not a number. Reading one forces it; leave several
-unread and they share one kernel pass:
+`sum`, `prod`, `minimum`, and `maximum` return futures. Leave independent
+futures unread so they can share a pass:
 
 ```julia
-f = sum(a); g = sum(b)          # queued, nothing read
-f[], g[]                        # one pass for both
-
-totals = [sum(v) for v in vectors]   # 8 vectors, 1 pass
-[t[] for t in totals]
+x = sum(a)
+y = maximum(b)
+x[], y[]
 ```
 
-`f[]`, `get(f)` and `fetch(f)` are the same read; `prod`, `minimum` and
-`maximum` behave the same.
+Reductions over broadcasts remain fused, including `sum(abs, a)`,
+`mapreduce(abs, +, a)`, and `sum(a .* b)`.
 
-Reducing a lazy expression folds the terminal into the same pass:
+## Local accumulators
+
+`DPULocalVector` keeps small indexed reductions in DPU-local memory until
+`Array` or `sync()` flushes them:
 
 ```julia
-sum(abs, a)                     # 1 pass -- traced into the program
-mapreduce(abs, +, a)            # same, op in (+, *, min, max)
-sum(abs.(a))                    # 1 pass
-sum(a .* b)                     # 1 pass, two vectors
+bins = DPULocalVector(256)
+bins[(a .* 256) .>> 12] .+= 1
+histogram = Array(bins)
 ```
 
-`sum.(a .+ b)` is not a reduction at all -- `sum.` broadcasts `sum` over each
-element, which is identity on integers -- so it raises rather than lowering.
+Use `reduce_op = :product`, `:min`, or `:max` for other accumulation modes.
 
-Integer scalars in a lazy broadcast are launch parameters automatically. Their
-values are captured when the expression is written but stay out of the opcode
-stream, so changing a scalar reuses the compiled kernel:
+## Multiple vectors
+
+`argmin.(zip(a, b, c))` and `argmax.(...)` return the winning vector index per
+element. `findmin_lanes` and `findmax_lanes` return both values and indices.
+`min_squared_distance(cols, query)` performs a fused distance reduction.
+
+## Inspecting JIT code
+
+`@code_jitted` displays the generated kernel without compiling or launching it:
 
 ```julia
-distance = abs2.(col .- centroid)   # no wrapper required
+@code_jitted abs2.(a .- b) .+ 1
+@code_jitted sum(a .* b)
 ```
 
-The raw RPN builders and launch helpers live in `PolymerPIM.Internal`. They are
-implementation details rather than part of the supported Julia API.
+The returned `JittedCode` exposes `.source`, `.ops`, `.hash`, and `.path`;
+`iscompiled(code)` reports whether it is already cached.
 
-## K-ary
+## Configuration and tests
 
-`argmin.(zip(v1, v2, v3))` / `argmax.(...)` give the winning vector per element,
-1-based as Julia's are, in one pass. `findmin_lanes(vectors)` /
-`findmax_lanes(vectors)` add the winning value in the same pass, returning the
-two columns unzipped -- Julia's `findmin.(zip(...))` would be a vector of tuples,
-which a DPU cannot hold. `argmax(v::DPUVector)` is the other axis, over one
-vector's elements: two passes, both on the DPUs, and only scalars come back.
-`min_squared_distance(cols, query)` is the minimum over rows of the squared
-distance to `query`.
-
-## Tests
-
-`test/runtests.jl` drives one file per concern in `test/suites/`: `core`,
-`elementwise`, `reductions`, `inplace`, `kary`, `broadcast`, and `internal`.
-
-```sh
-julia --project=. test/runtests.jl                       # everything
-julia --project=. test/runtests.jl broadcast internal  # substring filter
+```julia
+PolymerPIM.versioninfo()
+configuration()
+installinfo()
+ndpus(), ntasklets()
 ```
 
-Suite files rely on the driver for `using` and `N`, so run them through it.
+The wrapper checks that the loaded C++ library matches the configuration it
+was built against.
 
-## Adding an operation
+```bash
+make -C julia test
+julia --project=julia julia/test/runtests.jl broadcast reductions
+```
 
-Ops are named by their opcode. `src/internal/opcodes.jl` is generated by
-`tools/generate.py` alongside `common/opcodes.h` and `lib/wrapper/wrapper.cpp`
-switches on the same value — one numbering, nothing to keep in step. Do not edit
-`src/internal/opcodes.jl`.
-
-If a C++ `dpu_vector` operator already implements it: one `case` in the relevant
-`apply_*_op` switch plus a `Base` overload in `src/operations.jl`. If it is
-expressible as RPN, prefer `src/expr.jl` — no C++ change at all.
+Raw expression builders and launch helpers live in `PolymerPIM.Internal` and
+are not part of the supported public API.

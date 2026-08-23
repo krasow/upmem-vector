@@ -1,42 +1,80 @@
 # PolymerPIM
 
-please run to commit stuff
+PolymerPIM provides lazy C++ and Julia vector APIs for UPMEM DPUs. Operations
+are queued and fused before execution, while host scalar values are passed as
+runtime parameters so changing them does not require recompilation.
+
+## Build
 
 ```bash
-bash format.sh
+source /usr/upmem_env.sh
+make install BACKEND=hw PIPELINE=1 JIT=1
+make test PIPELINE=1 JIT=1
 ```
 
-to run the test suite, enable the upmem env
-```
-make test
-```
-
-`make` installs the repository-local dependencies on first use.
-
-The self-contained benchmark suite is documented in
-[`benchmarks/README.md`](benchmarks/README.md).
+`make` installs the repository-local dependencies on first use. Use
+`BACKEND=simulator` when DPU hardware is unavailable.
 
 ## C++ API
 
-Include `<polymerpim.h>`. Expressions are lazy, and host scalars become runtime
-parameters automatically:
+Include `<polymerpim.h>` and link against `libpolymerpim`:
 
 ```cpp
+#include <polymerpim.h>
+
 using namespace polymerpim;
 
-DPUVector<int32_t> x(host_x);
-auto distance = sqr(x - centroid);
-auto nearest = minimum(distance);
-sync();
+init(64);
+{
+  std::vector<int32_t> host_a{1, 2, 3, 4};
+  std::vector<int32_t> host_b{10, 10, 10, 10};
+  int32_t centroid = 3;
+
+  DPUVector<int32_t> a(host_a);
+  DPUVector<int32_t> b(host_b);
+  auto result = sqr(a - centroid) + b;
+  auto total = sum(result);             // lazy reduction
+
+  std::vector<int32_t> values = result.to_cpu();
+  auto scalar = total.get();
+}
+shutdown();
 ```
 
-Local reductions use indexed updates. They remain pending until `sync()` or
-`to_cpu()`:
+Expressions remain lazy until a read, `fence(vector)`, or `sync()`. Small indexed
+reductions can stay local to each DPU until read:
 
 ```cpp
 DPULocalVector<int32_t> bins(256);
-bins[index] += value;
-auto result = bins.to_cpu();
+bins[index] += 1;
+std::vector<int32_t> histogram = bins.to_cpu();
 ```
 
-The C++ API is installed under `include/polymerpim`.
+The public header is installed under `include/polymerpim`; implementation
+headers under `host/detail` are private.
+
+## Julia API
+
+PolymerPIM.jl provides the same lazy execution model through Julia arrays,
+broadcasts, reductions, and local accumulators:
+
+```julia
+using PolymerPIM
+
+a = DPUVector(Int32[1, 2, 3, 4])
+b = DPUVector(fill(Int32(10), 4))
+
+result = abs2.(a .- 3) .+ b
+total = sum(result)
+
+Array(result)
+total[]
+```
+
+See the [Julia API guide](julia/README.md) for installation, supported
+operations, synchronization, JIT inspection, and tests.
+
+## Benchmarks
+
+The self-contained benchmark suite and runner are documented in
+[benchmarks/README.md](benchmarks/README.md).
