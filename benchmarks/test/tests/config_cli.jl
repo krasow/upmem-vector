@@ -60,4 +60,12 @@
     @test "polymerpim-hybrid" in dynamic.defaults.variants
     @test "simplepim" ∉ only(dynamic.benchmarks["adaptive_image"]).variants
     @test "simplepim" ∈ only(dynamic.benchmarks["dynamic_query"]).variants
+    @test BenchmarkRunner.selected_variants(
+        only(dynamic.benchmarks["dynamic_query"]), String[]) ==
+          ["polymerpim-jit", "polymerpim-hybrid", "polymerpim-pipeline",
+           "simplepim"]
+    @test BenchmarkRunner.selected_variants(
+        only(dynamic.benchmarks["dynamic_query"]),
+        ["simplepim", "polymerpim-jit", "polymerpim-eager"]) ==
+          ["simplepim", "polymerpim-jit"]
 end

@@ -120,8 +120,7 @@ function resolve_selection(config::RunnerConfig, options::Options)
     unknown = setdiff(names, config.benchmark_names)
     isempty(unknown) || error("unknown benchmark(s): $(join(unknown, ", "))")
 
-    variants = isempty(options.variants) ? config.defaults.variants :
-               unique(options.variants)
+    variants = unique(options.variants)
     unknown = setdiff(variants, collect(keys(config.variants)))
     isempty(unknown) || error("unknown variant(s): $(join(unknown, ", "))")
     return names, variants

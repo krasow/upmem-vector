@@ -205,6 +205,7 @@ function resolved_case(spec::BenchmarkSpec, defaults::RunnerDefaults,
 end
 
 function selected_variants(spec::BenchmarkSpec, requested::Vector{String})
+    isempty(requested) && return spec.variants
     allowed = Set(spec.variants)
     return filter(in(allowed), requested)
 end
@@ -496,7 +497,9 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
     state = ExecutionState(run_state(options), String[], nothing, Set{String}())
 
     if config.defaults.group_by_variant
-        order = options.check ? unique(["cpu"; requested]) : requested
+        order = unique(reduce(vcat, (task.variants for task in tasks);
+                              init = String[]))
+        order = options.check ? unique(["cpu"; order]) : order
         for variant_name in order, task in tasks
             allowed = options.check && variant_name == "cpu" ||
                       variant_name in task.variants
