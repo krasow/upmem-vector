@@ -42,6 +42,8 @@ end
             BenchmarkRunner.run_record(
                 test_case(benchmark = "elementwise"), "baseline", nothing),
             BenchmarkRunner.run_record(
+                test_case(benchmark = "elementwise"), "julia", nothing),
+            BenchmarkRunner.run_record(
                 test_case(benchmark = "hist",
                           parameters = Dict{String,Any}("bins" => 16)),
                 "baseline", nothing),
@@ -50,23 +52,26 @@ end
             state_path, Set(BenchmarkRunner.run_key.(records)), records, true))
         write(csv_path,
               "timestamp,invocation,benchmark,variant\n" *
-              "now,1,elementwise,baseline\nnow,1,hist,baseline\n")
+              "now,1,elementwise,baseline\n" *
+              "now,1,elementwise,julia\nnow,1,hist,baseline\n")
         sections_path = BenchmarkRunner.sections_csv(csv_path)
         write(sections_path,
               "timestamp,invocation,benchmark,variant,section\n" *
               "now,1,elementwise,baseline,kernel\n" *
+              "now,1,elementwise,julia,kernel\n" *
               "now,1,hist,baseline,kernel\n")
 
         captured_output() do
-            BenchmarkRunner.reset_runs(["elementwise"], options)
+            BenchmarkRunner.reset_runs(["elementwise"], ["baseline"], options)
         end
 
         @test options.resume
         resumed = BenchmarkRunner.run_state(
             BenchmarkRunner.Options(state = state_path, resume = true))
-        @test getindex.(resumed.records, "benchmark") == ["hist"]
-        @test getindex.(csv_records(csv_path), "benchmark") == ["hist"]
-        @test getindex.(csv_records(sections_path), "benchmark") == ["hist"]
+        @test getindex.(resumed.records, "variant") == ["julia", "baseline"]
+        @test getindex.(csv_records(csv_path), "variant") == ["julia", "baseline"]
+        @test getindex.(csv_records(sections_path), "variant") ==
+              ["julia", "baseline"]
     end
 end
 
