@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
   }
 
   // Benchmark
+  auto start = std::chrono::high_resolution_clock::now();
   for (uint32_t iter = 0; iter < iterations; iter++) {
     std::fill(res.begin(), res.end(), 0);
 #pragma omp parallel
@@ -59,6 +60,10 @@ int main(int argc, char** argv) {
     }
     DoNotOptimize(res.data());
   }
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> elapsed = end - start;
+
+  std::cout << "cpu_baseline (ms): " << elapsed.count() << std::endl;
 
   std::cout << "Writing binary files to ./data/ ..." << std::endl;
   write_bin("data/ref_t1.bin", a.data(), N * sizeof(T));

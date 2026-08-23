@@ -1,0 +1,114 @@
+# Full benchmark correctness coverage is opt-in because it occupies 64 DPUs
+# substantially longer than the unit-test matrix.
+name: Benchmark regression
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  opt_in:
+    name: Check opt-in
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, PIM]
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          enabled=false
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            enabled=true
+          else
+            msg=$(printf '%s\n%s\n%s' "$(git log -1 --format=%B)" "$PR_TITLE" "$PR_BODY")
+            grep -qiF '[regression ci]' <<<"$msg" && enabled=true
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          if $enabled; then
+            echo 'Benchmark regression enabled'
+          fi
+
+  regression:
+    name: JIT benchmarks (64 DPUs)
+    needs: opt_in
+    if: needs.opt_in.outputs.enabled == 'true'
+    runs-on: [self-hosted, Linux, X64, PIM]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      JULIA_BIN_DIR: /scratch/david/julia-1.11.3/bin
+      UPMEM_NO_OS_WARNING: 1
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+
+      - name: Check out base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: base
+
+      - name: Set up the UPMEM environment
+        run: |
+          source /usr/upmem_env.sh
+          {
+            echo "UPMEM_HOME=$UPMEM_HOME"
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+            echo "PYTHONPATH=$PYTHONPATH"
+          } >> "$GITHUB_ENV"
+          echo "$UPMEM_HOME/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$JULIA_BIN_DIR" >> "$GITHUB_PATH"
+
+      - name: Run base benchmarks
+        working-directory: base/benchmarks
+        run: |
+          ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression.toml" \
+            --default-params --runner \
+            --state "$RUNNER_TEMP/benchmark-regression/base/state.toml" \
+            --csv "$RUNNER_TEMP/benchmark-regression/base/runs.csv"
+
+      - name: Run candidate benchmarks
+        working-directory: candidate/benchmarks
+        run: |
+          ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression.toml" \
+            --default-params --check --runner \
+            --state "$RUNNER_TEMP/benchmark-regression/candidate/state.toml" \
+            --csv "$RUNNER_TEMP/benchmark-regression/candidate/runs.csv"
+
+      - name: Compare performance
+        run: |
+          python3 candidate/.github/scripts/compare_regression.py \
+            "$RUNNER_TEMP/benchmark-regression/base/runs.csv" \
+            "$RUNNER_TEMP/benchmark-regression/candidate/runs.csv" \
+            --threshold 10
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-regression
+          path: ${{ runner.temp }}/benchmark-regression
+          if-no-files-found: ignore
