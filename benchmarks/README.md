@@ -1,96 +1,68 @@
 # Benchmarks
 
-[`main-benchmarks/benchmark.toml`](main-benchmarks/benchmark.toml) defines each
-workload's sizes, parameters, and backends. Regular workloads live in
-`main-benchmarks/`, dynamic workloads in `dynamic-benchmarks/`, and backend
-definitions in `backends/`. Pass `--config` to select another suite.
-
-`make` and `run.sh` install SimplePIM and Perfetto into `../opt/` on first use.
+Benchmark suites are TOML files. Workloads live in `main-benchmarks/` and
+`dynamic-benchmarks/`; backend definitions live in `backends/`. Dependencies
+are installed into `../opt/` on first use.
 
 ## Run
 
-Tune first, then run the suite:
+`run.sh` tunes fusion parameters, then runs the selected benchmarks:
 
 ```bash
 ./run.sh
 ./run.sh elementwise --resume
 ./run.sh elementwise --reset --default-params
-./run.sh elementwise --reset-tune
-./run.sh elementwise --default-params
-./run.sh elementwise --tune --passes 2 --runner --variant polymerpim,julia
 ./run.sh --config main-benchmarks/polymerpim-modes.toml --default-params
 ./run.sh --config dynamic-benchmarks/benchmark.toml --default-params
 ```
 
-Arguments before `--tune` or `--runner` apply to both phases. Arguments after a
-marker apply only to that phase. Set `JULIA` to choose the Julia executable.
-`--resume` resumes tuning first, then retries unfinished benchmark trials.
-`--default-params` skips tuning and ignores saved fusion profiles.
-`--reset` removes the selected benchmarks from run CSVs and checkpoints;
-`--reset-tune` discards their tuning checkpoints and profiles.
+- `--resume` continues tuning and retries unfinished trials.
+- `--reset` discards saved runs for the selection.
+- `--reset-tune` discards its tuning profile.
+- `--default-params` skips tuning and ignores profiles.
+- `--verbose` prints subprocess output.
 
-[`main-benchmarks/polymerpim-modes.toml`](main-benchmarks/polymerpim-modes.toml)
-compares JIT, interpreted pipeline, and eager PolymerPIM on elementwise, k-NN,
-and linear regression.
-The three variants reuse the same benchmark sources and appear separately in
-the CSV. `--default-params` keeps the comparison on Makefile defaults.
+Use `./run.sh --help` for runner options and `--help-all` for advanced options.
+Arguments after `--tune` or `--runner` apply only to that phase.
 
-[`dynamic-benchmarks/benchmark.toml`](dynamic-benchmarks/benchmark.toml) is the
-cold-start suite. `adaptive_image` changes its update graph after convergence
-checks. `dynamic_query` builds a new online query, then reuses it across five
-batches; its independent projections expose horizontal fusion. Both compare
-blocking JIT, hybrid fallback, interpreted pipeline, and eager execution
-without warmup. All implementations consume the same 50-query trace in
-[`dynamic-benchmarks/dynamic_query.csv`](dynamic-benchmarks/dynamic_query.csv);
-requesting more than 50 queries is an error.
+`ntrials` launches independent processes; `iterations` controls each process's
+workload loop.
 
-`dynamic-benchmarks/query_sweep.sh` compares PolymerPIM JIT, hybrid, pipeline,
-and SimplePIM on the first ten deterministic two-operation queries. It sweeps
-total input size, checks every result against the CPU implementation outside
-the timed region, resumes from its own checkpoint, and writes
-`results/query-sweep.svg` plus the boundary data in
-`results/query-sweep-summary.csv`.
+## Suites
+
+- `main-benchmarks/benchmark.toml`: standard benchmark suite.
+- `main-benchmarks/polymerpim-modes.toml`: JIT, Pipeline, and Eager comparison.
+- `dynamic-benchmarks/benchmark.toml`: cold-start `adaptive_image` and
+  `dynamic_query` workloads without warmup.
+
+Dynamic workloads keep independent results:
 
 ```bash
-./dynamic-benchmarks/query_sweep.sh
+./dynamic-benchmarks/adaptive_image.sh --reset
+./dynamic-benchmarks/query_sweep.sh --reset
 ```
 
-`ntrials` in a suite TOML launches each benchmark process independently;
-`iterations` remains the workload's in-process loop count. Override trials with
-`--ntrials`.
+Both write their CSV, sections, checkpoint, summary, and plot under
+`results/dynamic/`.
 
-Run either phase directly when needed:
+## Direct commands
 
 ```bash
 julia --project=. tune.jl elementwise --dpus 256 --passes 2 --check
-julia --project=. runner.jl elementwise --variant julia --dpus 2 \
-  --elements-per-dpu 4096 --warmup 1 --iterations 1 --check
-julia --project=. runner.jl --list
+julia --project=. runner.jl elementwise --variant julia --check
 julia --project=. test/runtests.jl
 ```
 
-Tuning resumes automatically and skips completed profiles. Use `--reset-tune`
-to retune the selected benchmarks. The runner prints and applies tuned values
-by default; use `--no-profile` to disable them. Tuning output is concise by
-default, as is the benchmark runner; pass `--verbose` for complete subprocess
-output.
-By default tuning uses the smallest configured problem size; pass
-`--elements-per-dpu` to tune against one or more explicit sizes.
+## Results
 
-## Outputs
+- `results/Manifest.toml`: resolved invocation and status.
+- `results/runs.csv`: run status and total timings.
+- `results/runs.sections.csv`: parsed timed sections.
+- `results/fusion/`: tuning profiles, measurements, and checkpoints.
 
-- `results/Manifest.toml`: resolved benchmark dimensions and run status
-- `results/runs.csv`: run status, parameters, and total timings
-- `results/runs.sections.csv`: printed stage timings in long form
-- `results/fusion/profiles/<benchmark>.toml`: best fusion parameters
-- `results/fusion/`: tuning manifest, measurements, trials, and resume state
+Runs use `/usr/bin/time`. Failures are recorded and do not stop the suite;
+`--resume` skips successes and retries missing trials. Generated results,
+parameters, binaries, and reference data are untracked.
 
-Benchmark commands run under `/usr/bin/time`. Generated parameters, binaries,
-reference data, profiles, and results are untracked.
-
-Build, timeout, runtime, timing, and verification failures have distinct CSV
-statuses. Failures do not stop the suite. Only successes enter the checkpoint,
-so `--resume` retries missing trials without repeating completed ones.
-
-The UPMEM SDK is loaded from `$UPMEM_ENV` or `/usr/upmem_env.sh`. `.localenv`
-points `SIMPLE_PIM_LIB` at the installed `opt/SimplePIM` checkout.
+The UPMEM SDK is loaded from `$UPMEM_ENV` or `/usr/upmem_env.sh`. Set `JULIA` to
+select the Julia executable.

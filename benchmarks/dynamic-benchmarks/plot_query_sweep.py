@@ -3,191 +3,235 @@
 import csv
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+
+from plot_common import (configure_axis, draw_series, legend_handles,
+                         load_pyplot, write_summary)
 
 
-ROOT = Path(__file__).resolve().parent.parent
-RUNS = ROOT / "results/query-sweep.csv"
-SECTIONS = ROOT / "results/query-sweep.sections.csv"
-SUMMARY = ROOT / "results/query-sweep-summary.csv"
-FIGURE = ROOT / "results/query-sweep.svg"
-MODELS = ("polymerpim-jit", "simplepim")
-QUERY_OPS = 2
+BENCHMARK = "dynamic_query"
+COMPILED_MODELS = ("polymerpim-jit", "simplepim")
+MODEL_ORDER = (
+    "polymerpim-jit",
+    "polymerpim-hybrid",
+    "polymerpim-pipeline",
+    "simplepim",
+)
+
+BENCHMARKS = Path(__file__).resolve().parent.parent
+RESULTS = BENCHMARKS / "results" / "dynamic"
+RUNS_CSV = RESULTS / "query-sweep.csv"
+SECTIONS_CSV = RESULTS / "query-sweep.sections.csv"
+SUMMARY_CSV = RESULTS / "query-sweep-summary.csv"
+FIGURE = RESULTS / "query-sweep.svg"
+
+RunKey = Tuple[str, str, str, str]
+MeasurementKey = Tuple[str, int, int]
 
 
-def parameters(value):
-    result = {}
-    for field in value.split(";"):
-        if "=" in field:
-            key, raw = field.split("=", 1)
-            result[key] = int(raw) if raw.isdigit() else raw
-    return result
+@dataclass(frozen=True)
+class Measurement:
+    model: str
+    total_elements: int
+    query_ops: int
+    first_ms: float
+    reuse_ms: float
+    query_ms: float
+    wall_s: Optional[float]
 
 
-def mean(values):
+@dataclass(frozen=True)
+class Boundary:
+    model: str
+    total_elements: int
+    query_ops: int
+    compile_ms: float
+    pipeline_batch_ms: float
+    compiled_batch_ms: float
+    break_even_batches: float
+    measured_query_ms: float
+    process_wall_s: float
+
+
+def parse_parameters(value: str) -> Dict[str, str]:
+    return dict(field.split("=", 1) for field in value.split(";") if "=" in field)
+
+
+def run_key(row: Mapping[str, str]) -> RunKey:
+    return row["timestamp"], row["invocation"], row["variant"], row["trial"]
+
+
+def average(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
 
-def load_measurements():
-    sections = {}
-    with SECTIONS.open(newline="") as file:
+def load_sections() -> Dict[RunKey, Dict[str, float]]:
+    sections = defaultdict(dict)
+    with SECTIONS_CSV.open(newline="") as file:
         for row in csv.DictReader(file):
-            if row["benchmark"] != "dynamic_query":
-                continue
-            key = (row["timestamp"], row["invocation"], row["variant"],
-                   row["trial"])
-            sections.setdefault(key, {})[row["section"]] = float(row["time_ms"])
+            if row["benchmark"] == BENCHMARK:
+                sections[run_key(row)][row["section"]] = float(row["time_ms"])
+    return dict(sections)
 
+
+def load_measurements() -> Dict[MeasurementKey, Measurement]:
+    sections = load_sections()
     grouped = defaultdict(lambda: defaultdict(list))
-    with RUNS.open(newline="") as file:
+
+    with RUNS_CSV.open(newline="") as file:
         for row in csv.DictReader(file):
-            if row["benchmark"] != "dynamic_query" or row["status"] != "complete":
+            if row["benchmark"] != BENCHMARK or row["status"] != "complete":
                 continue
-            params = parameters(row["parameters"])
-            if int(params["query_ops"]) != QUERY_OPS:
+
+            query_ops = int(parse_parameters(row["parameters"])["query_ops"])
+            measured = sections.get(run_key(row), {})
+            if not {"query_first", "query_reuse"} <= measured.keys():
                 continue
-            key = (row["timestamp"], row["invocation"], row["variant"],
-                   row["trial"])
-            measured = sections.get(key, {})
-            if "query_first" not in measured or "query_reuse" not in measured:
-                continue
-            group = (row["variant"], int(row["total_elements"]),
-                     int(params["query_ops"]))
-            grouped[group]["first"].append(measured["query_first"])
-            grouped[group]["reuse"].append(measured["query_reuse"])
-            grouped[group]["query"].append(float(row["time"]))
-    return {key: {name: mean(values) for name, values in metrics.items()}
-            for key, metrics in grouped.items()}
+
+            key = row["variant"], int(row["total_elements"]), query_ops
+            grouped[key]["first_ms"].append(measured["query_first"])
+            grouped[key]["reuse_ms"].append(measured["query_reuse"])
+            grouped[key]["query_ms"].append(float(row["time"]))
+            if row["real_s"]:
+                grouped[key]["wall_s"].append(float(row["real_s"]))
+
+    measurements = {}
+    for key, samples in grouped.items():
+        model, total_elements, query_ops = key
+        measurements[key] = Measurement(
+            model=model,
+            total_elements=total_elements,
+            query_ops=query_ops,
+            first_ms=average(samples["first_ms"]),
+            reuse_ms=average(samples["reuse_ms"]),
+            query_ms=average(samples["query_ms"]),
+            wall_s=average(samples["wall_s"]) if samples["wall_s"] else None,
+        )
+    return measurements
 
 
-def summarize(measurements):
+def calculate_boundaries(
+    measurements: Mapping[MeasurementKey, Measurement],
+) -> List[Boundary]:
     rows = []
-    points = sorted({(elements, ops) for _, elements, ops in measurements})
-    for elements, ops in points:
-        pipeline = measurements.get(("polymerpim-pipeline", elements, ops))
-        if not pipeline:
+    cases = sorted({(measurement.total_elements, measurement.query_ops)
+                    for measurement in measurements.values()})
+
+    for total_elements, query_ops in cases:
+        pipeline = measurements.get(("polymerpim-pipeline", total_elements, query_ops))
+        if pipeline is None:
             continue
-        pipeline_ms = pipeline["reuse"]
-        for model in MODELS:
-            result = measurements.get((model, elements, ops))
-            if not result:
+        for model in COMPILED_MODELS:
+            result = measurements.get((model, total_elements, query_ops))
+            if result is None:
                 continue
-            compile_ms = max(0.0, result["first"] - result["reuse"])
-            savings_ms = pipeline_ms - result["reuse"]
-            break_even = compile_ms / savings_ms if savings_ms > 0 else math.inf
-            rows.append({
-                "model": model,
-                "total_elements": elements,
-                "query_ops": ops,
-                "compile_ms": compile_ms,
-                "pipeline_batch_ms": pipeline_ms,
-                "compiled_batch_ms": result["reuse"],
-                "break_even_batches": break_even,
-                "measured_query_ms": result["query"],
-            })
+            compile_ms = max(0.0, result.first_ms - result.reuse_ms)
+            savings_ms = pipeline.reuse_ms - result.reuse_ms
+            rows.append(Boundary(
+                model=model,
+                total_elements=total_elements,
+                query_ops=query_ops,
+                compile_ms=compile_ms,
+                pipeline_batch_ms=pipeline.reuse_ms,
+                compiled_batch_ms=result.reuse_ms,
+                break_even_batches=(compile_ms / savings_ms
+                                    if savings_ms > 0 else math.inf),
+                measured_query_ms=result.query_ms,
+                process_wall_s=(result.wall_s
+                                if result.wall_s is not None else math.nan),
+            ))
     return rows
 
 
-def write_summary(rows):
-    SUMMARY.parent.mkdir(parents=True, exist_ok=True)
-    columns = list(rows[0])
-    with SUMMARY.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            formatted = {
-                key: f"{value:.3f}" if isinstance(value, float) else value
-                for key, value in row.items()
-            }
-            writer.writerow(formatted)
+def model_points(measurements, model, attribute):
+    return sorted(
+        (measurement.total_elements, getattr(measurement, attribute))
+        for measurement in measurements.values()
+        if measurement.model == model
+        and getattr(measurement, attribute) is not None
+    )
 
 
-def plot(rows, measurements):
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from matplotlib.lines import Line2D
-    except ImportError as error:
-        raise SystemExit(f"matplotlib is required to write {FIGURE}: {error}")
+def format_elements(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.3g}M"
+    return f"{value / 1_000:.3g}K"
 
-    models = {
-        "polymerpim-jit": ("Blocking JIT", "#3264a8", "o"),
-        "polymerpim-hybrid": ("Hybrid", "#dd7f27", "D"),
-        "polymerpim-pipeline": ("Pipeline", "#3b8f5a", "s"),
-        "simplepim": ("SimplePIM", "#b94a48", "^"),
-    }
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
 
-    def draw(axis, model, points):
-        label, color, marker = models[model]
-        points = sorted(points)
-        if points:
-            axis.plot(
-                [point[0] for point in points],
-                [point[1] for point in points],
-                color=color, marker=marker, linewidth=2.2, markersize=6,
-                label=label,
-            )
+def plot_results(boundaries, measurements):
+    plt = load_pyplot(FIGURE)
 
-    for model in ("polymerpim-jit", "simplepim"):
-        selected = [row for row in rows if row["model"] == model]
-        draw(axes[0], model,
-             [(row["total_elements"], row["compile_ms"])
-              for row in selected])
-        draw(axes[1], model,
-             [(row["total_elements"], row["break_even_batches"])
-              for row in selected if math.isfinite(row["break_even_batches"])])
+    figure, axes = plt.subplots(2, 2, figsize=(12, 9))
+    compile_axis, boundary_axis, query_axis, wall_axis = axes.ravel()
 
-    for model in models:
-        draw(axes[2], model,
-             [(key[1], value["query"])
-              for key, value in measurements.items() if key[0] == model])
+    for model in COMPILED_MODELS:
+        rows = [row for row in boundaries if row.model == model]
+        draw_series(compile_axis, model,
+                    sorted((row.total_elements, row.compile_ms) for row in rows))
+        draw_series(boundary_axis, model, sorted(
+            (row.total_elements, row.break_even_batches)
+            for row in rows if math.isfinite(row.break_even_batches)
+        ))
 
-    element_counts = sorted({key[1] for key in measurements})
-    tick_labels = [
-        f"{value / 1_000_000:.3g}M" if value >= 1_000_000
-        else f"{value / 1_000:.3g}K" for value in element_counts
-    ]
-    for axis in axes:
-        axis.set_xscale("log")
-        axis.set_xticks(element_counts)
-        axis.set_xticklabels(tick_labels)
-        axis.set_xlabel("Total elements")
-        axis.grid(True, which="major", color="#d8d8d8", linewidth=0.8)
-        axis.grid(True, which="minor", color="#eeeeee", linewidth=0.5)
+    for model in MODEL_ORDER:
+        draw_series(query_axis, model, model_points(measurements, model, "query_ms"))
+        draw_series(wall_axis, model, model_points(measurements, model, "wall_s"))
 
-    axes[0].set_title("Compilation overhead", fontweight="bold")
-    axes[0].set_ylabel("First-batch overhead (ms)")
-    axes[1].set_title("Break-even point", fontweight="bold")
-    axes[1].set_yscale("log")
-    axes[1].set_ylabel("Batches to beat pipeline")
-    axes[1].axhline(1, color="#777777", linewidth=1)
-    axes[2].set_title("Measured query latency", fontweight="bold")
-    axes[2].set_yscale("log")
-    axes[2].set_ylabel("Five-batch query latency (ms)")
-    legend = [Line2D(
-        [0], [0], color=color, marker=marker, linewidth=2.2,
-        markersize=6, label=label,
-    ) for label, color, marker in models.values()]
-    fig.suptitle("Dynamic query compilation trade-offs", fontsize=15,
-                 fontweight="bold")
-    fig.legend(handles=legend, loc="upper center", ncol=4, frameon=False,
-               bbox_to_anchor=(0.5, 0.955))
-    fig.tight_layout(rect=(0, 0, 1, 0.86), w_pad=1.5)
-    fig.savefig(FIGURE)
+    element_counts = sorted({measurement.total_elements
+                             for measurement in measurements.values()})
+    for axis in axes.ravel():
+        configure_axis(
+            axis, element_counts,
+            [format_elements(value) for value in element_counts],
+            "Total elements", minor_grid=True,
+        )
+
+    compile_axis.set_title("Compilation overhead\nfirst batch − reused batch",
+                           fontweight="bold")
+    compile_axis.set_ylabel("First-batch overhead (ms)")
+
+    boundary_axis.set_title("Batches until faster than Pipeline\n"
+                            "each compiler vs Pipeline", fontweight="bold")
+    boundary_axis.set_yscale("log")
+    boundary_axis.set_ylabel("Required batches (lower is better)")
+    boundary_axis.axhline(1, color="#777777", linewidth=1)
+
+    query_axis.set_title("Timed work per query\ncold first batch + four repeats",
+                         fontweight="bold")
+    query_axis.set_yscale("log")
+    query_axis.set_ylabel("Mean query time (ms)")
+
+    wall_axis.set_title("Whole process for 10 queries\n"
+                        "setup + checks + shutdown", fontweight="bold")
+    wall_axis.set_yscale("log")
+    wall_axis.set_ylabel("Wall time (s)")
+
+    figure.suptitle("Dynamic query compilation trade-offs", fontsize=15,
+                    fontweight="bold")
+    figure.legend(handles=legend_handles(MODEL_ORDER), loc="upper center",
+                  ncol=4, frameon=False,
+                  bbox_to_anchor=(0.5, 0.955))
+    figure.tight_layout(rect=(0, 0, 1, 0.89), h_pad=2.0, w_pad=1.5)
+    figure.savefig(FIGURE)
 
 
 def main():
-    if not RUNS.is_file() or not SECTIONS.is_file():
+    if not RUNS_CSV.is_file() or not SECTIONS_CSV.is_file():
         raise SystemExit("run query_sweep.sh before plotting")
+
     measurements = load_measurements()
-    rows = summarize(measurements)
-    if not rows:
+    query_ops = {measurement.query_ops for measurement in measurements.values()}
+    if len(query_ops) > 1:
+        raise SystemExit("results contain multiple query_ops values; rerun with --reset")
+    boundaries = calculate_boundaries(measurements)
+    if not boundaries:
         raise SystemExit("no complete dynamic_query measurements found")
-    write_summary(rows)
-    plot(rows, measurements)
-    print(f"Wrote {SUMMARY}")
+
+    write_summary(SUMMARY_CSV, boundaries)
+    plot_results(boundaries, measurements)
+    print(f"Wrote {SUMMARY_CSV}")
     print(f"Wrote {FIGURE}")
 
 
