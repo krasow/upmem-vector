@@ -85,7 +85,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("base")
     parser.add_argument("candidate")
-    parser.add_argument("--threshold", type=float, default=20.0)
+    parser.add_argument("--threshold", type=float, default=10.0)
     args = parser.parse_args()
     try:
         return report(args.base, args.candidate, args.threshold)

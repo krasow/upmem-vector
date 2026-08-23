@@ -103,7 +103,7 @@ jobs:
           python3 candidate/.github/scripts/compare_regression.py \
             "$RUNNER_TEMP/benchmark-regression/base/runs.csv" \
             "$RUNNER_TEMP/benchmark-regression/candidate/runs.csv" \
-            --threshold 20
+            --threshold 10
 
       - name: Upload results
         if: always()
