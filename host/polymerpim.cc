@@ -324,16 +324,12 @@ BackendVector materialize(const NodeRef& root) {
   const auto& inputs = compiler.inputs();
   if (inputs.empty()) throw std::logic_error("expression has no DPU input");
   std::vector<BackendVector> operands(inputs.begin() + 1, inputs.end());
-#if JIT
-  return const_cast<BackendVector&>(inputs[0])
-      .jit(ops, operands, compiler.scalars())
-      .vec;
-#else
+#if !JIT
   if (!can_interpret(ops)) return eager(root);
+#endif
   return const_cast<BackendVector&>(inputs[0])
       .pipeline(ops, operands, compiler.scalars())
       .vec;
-#endif
 #else
   return eager(root);
 #endif
