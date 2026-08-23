@@ -1,0 +1,49 @@
+[runner]
+benchmark_root = "main-benchmarks"
+dpus = [64]
+warmup = 0
+iterations = 20
+ntrials = 1
+seed = 1
+variants = ["polymerpim", "julia"]
+
+[setup]
+variants = ["polymerpim", "julia"]
+commands = [
+  "make -C \"{repo}\" install DESTDIR=\"{install}\" PIPELINE=1 JIT=1 LOGGING=3 TRACE=0 JULIA=\"{julia}\" {fusion_flags}",
+]
+
+[[elementwise]]
+elements_per_dpu = [2097152]
+operation = "-abs(((a) + (b)) - (a))"
+
+[[hist]]
+elements_per_dpu = [1048576]
+parameters = { depth = 12, bins = 256 }
+
+[[kmeans]]
+elements_per_dpu = [262144]
+iterations = 20
+parameters = { dim = 10, k = 10 }
+
+[[knn]]
+elements_per_dpu = [262144]
+iterations = 20
+parameters = { dim = 10, k = 1 }
+
+[[linreg]]
+elements_per_dpu = [524288]
+parameters = { dim = 10, scaling_shift = 12, learning_shift = 24, learning_rate = 1 }
+
+[[multitask_classifier]]
+elements_per_dpu = [262144]
+iterations = 10
+parameters = { features = 8, classes = 4 }
+
+[[red]]
+elements_per_dpu = [1048576]
+
+[[vector_search]]
+elements_per_dpu = [16384]
+iterations = 100
+parameters = { dim = 10 }
