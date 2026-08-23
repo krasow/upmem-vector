@@ -23,14 +23,18 @@
 #include <algorithm>
 #if JIT_PIPELINE_FALLBACK
 #include <atomic>
+#include <condition_variable>
 #endif
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <vector>
@@ -47,9 +51,33 @@ namespace {
 using CacheKey = std::vector<Signature>;
 std::map<CacheKey, std::string> g_jit_cache;
 std::map<Signature, std::string> g_kernel_obj_cache;
+std::map<Signature, std::shared_future<std::string>> g_kernel_obj_inflight;
 std::recursive_mutex g_jit_cache_mutex;
+std::mutex g_jit_link_mutex;
 #if JIT_PIPELINE_FALLBACK
 std::atomic<int> g_binary_counter{0};
+std::mutex g_jit_compile_mutex;
+std::condition_variable g_jit_compile_ready;
+size_t g_jit_compiles = 0;
+constexpr size_t kMaxJitCompiles = 2;
+
+class JitCompileSlot {
+ public:
+  JitCompileSlot() {
+    std::unique_lock<std::mutex> lock(g_jit_compile_mutex);
+    g_jit_compile_ready.wait(lock,
+                             [] { return g_jit_compiles < kMaxJitCompiles; });
+    ++g_jit_compiles;
+  }
+
+  ~JitCompileSlot() {
+    {
+      std::lock_guard<std::mutex> lock(g_jit_compile_mutex);
+      --g_jit_compiles;
+    }
+    g_jit_compile_ready.notify_one();
+  }
+};
 #else
 int g_binary_counter = 0;
 #endif
@@ -105,28 +133,9 @@ std::string jit_batch_hash(const std::vector<Signature>& kernels) {
   return std::string(buf);
 }
 
-// Only valid inside write_kernel_function
-// out, stack_type, res, s1, s2, rhs are in scope.
-
-static std::string compile_kernel_object(const Signature& sig,
-                                         const std::string& build_dir,
-                                         const std::string& include_flags) {
-  const std::string kernel_hash = jit_signature_hash(sig);
-  {
-    std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
-    auto it = g_kernel_obj_cache.find(sig);
-    if (it != g_kernel_obj_cache.end()) {
-      VECTORDPU_NOTE(jit_kernel_cache_hits);
-#if ENABLE_DPU_LOGGING >= 2
-      auto log = DpuRuntime::get().get_logger().lock(logcat::JIT_COMPILER, 2);
-      log.first() << "cache hit kernel object";
-      log.second() << "kernel_hash=" << kernel_hash << " type=" << sig.second
-                   << " path=" << it->second << std::endl;
-#endif
-      return it->second;
-    }
-  }
-
+static std::string compile_kernel_object_uncached(
+    const Signature& sig, const std::string& build_dir,
+    const std::string& include_flags, const std::string& kernel_hash) {
   VECTORDPU_NOTE(jit_kernel_compiles);
 #if ENABLE_DPU_LOGGING >= 1
   {
@@ -155,6 +164,9 @@ static std::string compile_kernel_object(const Signature& sig,
   }
 #endif
 
+#if JIT_PIPELINE_FALLBACK
+  JitCompileSlot compile_slot;
+#endif
   if (!compile_dpu_source(c_path, obj_path, true, include_flags)) {
     trace::jit_compile_end();
     throw std::runtime_error("JIT Compilation failed for " + c_path);
@@ -163,10 +175,61 @@ static std::string compile_kernel_object(const Signature& sig,
   DpuRuntime::get().get_logger().lock(logcat::JIT_DEBUG, 2)
       << "compiled " << obj_path << std::endl;
 #endif
-
-  std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
-  g_kernel_obj_cache[sig] = obj_path;
   return obj_path;
+}
+
+static std::string compile_kernel_object(const Signature& sig,
+                                         const std::string& build_dir,
+                                         const std::string& include_flags) {
+  const std::string kernel_hash = jit_signature_hash(sig);
+  std::shared_future<std::string> object_future;
+  std::shared_ptr<std::promise<std::string>> object_promise;
+  {
+    std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
+    auto cached = g_kernel_obj_cache.find(sig);
+    if (cached != g_kernel_obj_cache.end()) {
+      VECTORDPU_NOTE(jit_kernel_cache_hits);
+#if ENABLE_DPU_LOGGING >= 2
+      auto log = DpuRuntime::get().get_logger().lock(logcat::JIT_COMPILER, 2);
+      log.first() << "cache hit kernel object";
+      log.second() << "kernel_hash=" << kernel_hash << " type=" << sig.second
+                   << " path=" << cached->second << std::endl;
+#endif
+      return cached->second;
+    }
+
+    auto inflight = g_kernel_obj_inflight.find(sig);
+    if (inflight != g_kernel_obj_inflight.end()) {
+      VECTORDPU_NOTE(jit_kernel_cache_hits);
+      object_future = inflight->second;
+    } else {
+      object_promise = std::make_shared<std::promise<std::string>>();
+      object_future = object_promise->get_future().share();
+      g_kernel_obj_inflight[sig] = object_future;
+    }
+  }
+
+  if (!object_promise) return object_future.get();
+
+  try {
+    std::string obj_path = compile_kernel_object_uncached(
+        sig, build_dir, include_flags, kernel_hash);
+
+    {
+      std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
+      g_kernel_obj_cache[sig] = obj_path;
+      g_kernel_obj_inflight.erase(sig);
+    }
+    object_promise->set_value(obj_path);
+    return obj_path;
+  } catch (...) {
+    {
+      std::lock_guard<std::recursive_mutex> lock(g_jit_cache_mutex);
+      g_kernel_obj_inflight.erase(sig);
+    }
+    object_promise->set_exception(std::current_exception());
+    throw;
+  }
 }
 
 // Writes the batch's main(), which dispatches on args.kernel to the right
@@ -230,8 +293,13 @@ std::string jit_compile(
 
   write_dpu_main(main_c_path, kernels);
 
-  if (!link_dpu_objects(main_c_path, object_files, binpath, include_flags,
-                        batch_hash)) {
+  bool linked;
+  {
+    std::lock_guard<std::mutex> lock(g_jit_link_mutex);
+    linked = link_dpu_objects(main_c_path, object_files, binpath, include_flags,
+                              batch_hash);
+  }
+  if (!linked) {
     trace::jit_compile_end();
     throw std::runtime_error("JIT Linking failed for " + binpath);
   }
@@ -303,15 +371,6 @@ void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
   Signature sig = {e->rpn_ops, canonical_type};
   e->jit_kernel_hash = jit_signature_hash(sig);
 
-#if JIT_PIPELINE_FALLBACK
-  auto inflight = inflight_jit_kernels_.find(sig);
-  if (inflight != inflight_jit_kernels_.end()) {
-    e->jit_future = inflight->second.binary;
-    e->jit_sub_kernel_idx = inflight->second.slot;
-    return;
-  }
-#endif
-
   // Check if this signature already has a slot in the current batch.
   for (size_t i = 0; i < pending_unique_kernels_.size(); ++i) {
     if (pending_unique_kernels_[i] == sig) {
@@ -331,6 +390,17 @@ void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
       return;
     }
   }
+
+#if JIT_PIPELINE_FALLBACK
+  // Relink cached objects into an active batch to avoid binary ping-pong.
+  auto inflight = inflight_jit_kernels_.find(sig);
+  if (inflight != inflight_jit_kernels_.end() &&
+      pending_unique_kernels_.empty()) {
+    e->jit_future = inflight->second.binary;
+    e->jit_sub_kernel_idx = inflight->second.slot;
+    return;
+  }
+#endif
 
   if (pending_unique_kernels_.size() >= jit_link_batch_limit())
     flush_jit_batch();
