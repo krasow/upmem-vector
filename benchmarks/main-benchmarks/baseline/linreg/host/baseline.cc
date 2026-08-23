@@ -114,8 +114,9 @@ int main() {
     bench_stop(&warmup_timer, 0);
     bench_stats_update(&warmup_stats, warmup_timer.time[0]);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("baseline_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
@@ -154,7 +155,9 @@ int main() {
     bench_stats_update(&stats, timer.time[0]);
 
     bench_stage_begin(&stages, BENCH_STAGE_MERGE);
-    for (int j = 0; j < dim; j++) final_grads_accum[j] = 0;
+    for (int j = 0; j < dim; j++) {
+      final_grads_accum[j] = 0;
+    }
     for (int d = 0; d < nr_of_dpus; d++) {
       for (int t = 0; t < NR_TASKLETS; t++) {
         for (int j = 0; j < dim; j++) {

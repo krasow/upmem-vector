@@ -1,6 +1,6 @@
 #include <benchmark.h>
 #include <omp.h>
-#include <vectordpu.h>
+#include <polymerpim.h>
 
 #include <cstdlib>
 #include <ctime>
@@ -10,8 +10,10 @@
 
 #include "Param.h"
 
-void compare_results(const dpu_vector<T>::reduction_result_t& dpu_result) {
-  dpu_vector<T>::reduction_result_t cpu_result;
+using namespace polymerpim;
+
+void compare_results(const DPUVector<T>::reduction_result_t& dpu_result) {
+  DPUVector<T>::reduction_result_t cpu_result;
 
   if (load_ref) {
     std::cout << "Loading expected results from " << ref_path << "..."
@@ -43,7 +45,7 @@ int main() {
     bench_stages_init(&stages);
     bench_stages_init(&warm_stages);
     bench_stage_begin(&stages, BENCH_STAGE_INIT);
-    DpuRuntime::get().init(nr_dpus);
+    init(nr_dpus);
     bench_stage_end(&stages);
     {
       bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
@@ -69,20 +71,19 @@ int main() {
         bench_stage_end(&stages);
       }
 
-      dpu_vector<T>::reduction_result_t result{};
+      DPUVector<T>::reduction_result_t result{};
 
       // The runtime is async: from_cpu/sum only enqueue work. Fence at each
       // stage boundary so the timer captures that stage's real cost instead of
       // letting it all land in the read's blocking .get().
       auto run_round_trip = [&](BenchStages& stages) {
         bench_stage_begin(&stages, BENCH_STAGE_WRITE);
-        dpu_vector<T> da =
-            dpu_vector<T>::from_cpu(a, "a", VECTORDPU_SOURCE_LOCATION);
-        dpu_fence();
+        DPUVector<T> da(a, "a");
+        sync();
         bench_stage_end(&stages);
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
         auto pending = sum(da);
-        dpu_fence();
+        sync();
         bench_stage_end(&stages);
         bench_stage_begin(&stages, BENCH_STAGE_READ);
         result = pending.get();
@@ -98,8 +99,9 @@ int main() {
         bench_stop(&warmup_timer, 0);
         bench_stats_update(&warmup_stats, warmup_timer.time[0]);
       }
-      if (warmup_iterations > 0)
+      if (warmup_iterations > 0) {
         bench_stats_print("polymerpim_warmup", &warmup_stats);
+      }
 
       BenchStats stats;
       bench_stats_init(&stats);
@@ -119,7 +121,7 @@ int main() {
       }
     }
 
-    DpuRuntime::get().shutdown();
+    shutdown();
 
     return 0;
   } catch (const std::exception& e) {

@@ -1,6 +1,6 @@
 #include <benchmark.h>
 #include <omp.h>
-#include <vectordpu.h>
+#include <polymerpim.h>
 
 #include <cstdlib>
 #include <ctime>
@@ -10,7 +10,9 @@
 
 #include "Param.h"
 
-inline dpu_vector<T> compute(const dpu_vector<T>& a, const dpu_vector<T>& b) {
+using namespace polymerpim;
+
+inline DPUVector<T> compute(const DPUVector<T>& a, const DPUVector<T>& b) {
   return OPERATION(a, b);
 }
 
@@ -53,7 +55,7 @@ int main() {
     bench_stages_init(&stages);
     bench_stages_init(&warm_stages);
     bench_stage_begin(&stages, BENCH_STAGE_INIT);
-    DpuRuntime::get().init(nr_dpus);
+    init(nr_dpus);
     bench_stage_end(&stages);
     {
       bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
@@ -89,15 +91,13 @@ int main() {
       // stage instead of all landing in to_cpu()'s blocking read.
       auto run_round_trip = [&](BenchStages& stages) {
         bench_stage_begin(&stages, BENCH_STAGE_WRITE);
-        dpu_vector<T> da =
-            dpu_vector<T>::from_cpu(a, "a", VECTORDPU_SOURCE_LOCATION);
-        dpu_vector<T> db =
-            dpu_vector<T>::from_cpu(b, "b", VECTORDPU_SOURCE_LOCATION);
-        dpu_fence();
+        DPUVector<T> da(a, "a");
+        DPUVector<T> db(b, "b");
+        sync();
         bench_stage_end(&stages);
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-        dpu_vector<T> res = compute(da, db);
-        dpu_fence();
+        DPUVector<T> res = compute(da, db);
+        sync();
         bench_stage_end(&stages);
         bench_stage_begin(&stages, BENCH_STAGE_READ);
         result = res.to_cpu();  // implicit runtime fence
@@ -113,8 +113,9 @@ int main() {
         bench_stop(&warmup_timer, 0);
         bench_stats_update(&warmup_stats, warmup_timer.time[0]);
       }
-      if (warmup_iterations > 0)
+      if (warmup_iterations > 0) {
         bench_stats_print("polymerpim_warmup", &warmup_stats);
+      }
 
       BenchStats stats;
       bench_stats_init(&stats);
@@ -134,10 +135,10 @@ int main() {
       }
     }
 
-    DpuRuntime::get().shutdown();
+    shutdown();
 
     return 0;
-  } catch (const DpuOOMException& e) {
+  } catch (const OutOfMemory& e) {
     std::cerr << "DPU OOM: Not enough memory for requested size." << std::endl;
     return 1;
   } catch (const std::exception& e) {

@@ -75,8 +75,9 @@ void run() {
     init_input(elements);
     /* Initialise centroids to first k data points */
     for (int i = 0; i < k; i++) {
-      for (int j = 0; j < dim; j++)
+      for (int j = 0; j < dim; j++) {
         centroids[i * dim + j] = elements[i * dim + j];
+      }
     }
     bench_stage_end(&stages);
   }
@@ -105,7 +106,9 @@ void run() {
   // from steady state. Save/restore centroids so warmup doesn't advance the
   // real run.
   T* centroids_saved = (T*)calloc(k * dim, sizeof(T));
-  for (int i = 0; i < k * dim; i++) centroids_saved[i] = centroids[i];
+  for (int i = 0; i < k * dim; i++) {
+    centroids_saved[i] = centroids[i];
+  }
   BenchTimer warmup_timer;
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
@@ -127,9 +130,12 @@ void run() {
     free_table("t2", table_management);
     free(res);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("simplepim_warmup", &warmup_stats);
-  for (int i = 0; i < k * dim; i++) centroids[i] = centroids_saved[i];
+  }
+  for (int i = 0; i < k * dim; i++) {
+    centroids[i] = centroids_saved[i];
+  }
   free(centroids_saved);
 
   BenchStats stats;
@@ -159,8 +165,9 @@ void run() {
   if (print_info && load_ref) {
     printf("DPU Final centroids sampled:\n");
     for (int i = 0; i < (k < 5 ? k : 5); i++) {
-      for (int j = 0; j < (dim < 5 ? dim : 5); j++)
+      for (int j = 0; j < (dim < 5 ? dim : 5); j++) {
         printf("%d ", centroids[i * dim + j]);
+      }
       printf("...\n");
     }
   }
@@ -181,7 +188,9 @@ void run() {
         break;
       }
     }
-    if (correct) printf("the result is correct\n");
+    if (correct) {
+      printf("the result is correct\n");
+    }
     free(cpu_centroids);
   }
 }

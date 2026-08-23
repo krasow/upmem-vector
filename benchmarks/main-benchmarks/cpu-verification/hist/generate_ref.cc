@@ -55,7 +55,9 @@ int main(int argc, char** argv) {
       }
 #pragma omp critical
       {
-        for (int b = 0; b < bins; b++) res[b] += local_hist[b];
+        for (int b = 0; b < bins; b++) {
+          res[b] += local_hist[b];
+        }
       }
     }
     DoNotOptimize(res.data());

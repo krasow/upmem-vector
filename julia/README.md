@@ -1,6 +1,6 @@
 # PolymerPIM.jl
 
-Julia bindings for vectordpu: a 1-D `Int32` vector living in UPMEM DPU memory.
+Julia bindings for PolymerPIM: a 1-D `Int32` vector in UPMEM DPU memory.
 
 Requires the C++ library built with `PIPELINE=1 JIT=1`; the wrapper refuses to
 compile against anything else.
@@ -17,8 +17,8 @@ cd julia && make test
 ```
 
 It is skipped, with a message, under any other configuration or without `julia`
-on `PATH`. To build against a prefix elsewhere, pass `VECTORDPU_DIR` (defaults to
-the source tree's `../vectordpu`).
+on `PATH`. The default prefix is the repository's `install/`; override it with
+`POLYMERPIM_ROOT` for a packaged install.
 
 `lib/wrapper/` holds the wrapper source and its cmake tree; the finished library
 is installed to `lib/wrapper/PolymerPIM/`, next to the two stamps recording what
@@ -30,10 +30,10 @@ make config          # both stamps
 
 | file | contents |
 | --- | --- |
-| `build.config` | the flags `libvectordpu` was compiled with, copied from the prefix |
+| `build.config` | the flags `libpolymerpim` was compiled with, copied from the prefix |
 | `install.config` | where that prefix came from (git rev, date, host) and how the wrapper was configured against it |
 
-`build.config` is not just a record. The wrapper reaches its `libvectordpu`
+`build.config` is not just a record. The wrapper reaches its `libpolymerpim`
 through `RUNPATH`, so a later `make install` with different flags would swap the
 library out from under it; the package compares this stamp against what the
 loaded library reports for itself and refuses a mismatch instead of silently
@@ -42,7 +42,7 @@ running the wrong configuration. From Julia:
 ```julia
 PolymerPIM.versioninfo()   # all of it, printed
 installinfo()              # provenance, as recorded at wrapper build time
-configuration()            # what the loaded libvectordpu says it is -- ground truth
+configuration()            # what the loaded libpolymerpim says it is -- ground truth
 ndpus(), ntasklets()
 ```
 

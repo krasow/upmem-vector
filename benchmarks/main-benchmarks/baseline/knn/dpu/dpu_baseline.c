@@ -55,7 +55,9 @@ int main(void) {
         RED_T diff = (RED_T)row[d] - (RED_T)query[d];
         sq_dist += diff * diff;
       }
-      if (sq_dist < local_min) local_min = sq_dist;
+      if (sq_dist < local_min) {
+        local_min = sq_dist;
+      }
     }
   }
 

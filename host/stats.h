@@ -71,7 +71,8 @@ inline StatsSnapshot operator-(const StatsSnapshot& a, const StatsSnapshot& b) {
 
 class RuntimeStats {
  public:
-  // Lives in libvectordpu.so so the library and its clients share one instance.
+  // Lives in libpolymerpim.so so the library and its clients share one
+  // instance.
   static RuntimeStats& get();
 
   StatsSnapshot snapshot() const {

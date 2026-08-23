@@ -56,9 +56,8 @@ end
 """
     transform(f, v, operands...; scalars=Int32[]) -> DPUVector
 
-Call `f` with RPN leaves for `v` and each extra operand, then run the expression
-it returns. `scalars` supplies any `scalar_var(i)` leaves. Returns the
-device-resident vector result.
+Build and run one elementwise RPN expression. `f` receives the input and
+operand leaves; `scalars` supplies `scalar_var(i)` values.
 """
 function transform(f, v, operands...;
                    scalars::AbstractVector{<:Integer} = Int32[])
@@ -72,8 +71,7 @@ end
 """
     reduce_expr(f, v, operands...; scalars=Int32[]) -> DpuFuture
 
-As [`transform`](@ref), but `f` must return an expression ending in a reduction
-terminal. Returns an unread future.
+Build and run one RPN expression ending in a reduction terminal.
 """
 function reduce_expr(f, v, operands...;
                      scalars::AbstractVector{<:Integer} = Int32[])

@@ -55,7 +55,9 @@ int main() {
   } else {
     bench_stage_begin(&stages, BENCH_STAGE_LOAD);
     srand(seed);
-    for (uint64_t i = 0; i < N; i++) input[i] = rand() % 10;
+    for (uint64_t i = 0; i < N; i++) {
+      input[i] = rand() % 10;
+    }
     bench_stage_end(&stages);
   }
 
@@ -94,7 +96,9 @@ int main() {
 
     bench_stage_begin(&stages, BENCH_STAGE_MERGE);
     result = 0;
-    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++) result += partials[i];
+    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++) {
+      result += partials[i];
+    }
     bench_stage_end(&stages);
   };
 
@@ -108,8 +112,9 @@ int main() {
     bench_stop(&warmup_timer, 0);
     bench_stats_update(&warmup_stats, warmup_timer.time[0]);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("baseline_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
@@ -131,10 +136,11 @@ int main() {
     char path[512];
     snprintf(path, sizeof(path), "%s/ref_res.bin", ref_path);
     bench_load_bin(path, &expected, sizeof(RED_T));
-    if (result == (RED_T)expected)
+    if (result == (RED_T)expected) {
       printf("the result is correct\n");
-    else
+    } else {
       printf("Mismatch: got %d, expected %d\n", (int)result, (int)expected);
+    }
   }
 
   free(input);

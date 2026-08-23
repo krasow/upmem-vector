@@ -72,8 +72,9 @@ int main() {
     bench_load_bin(path, rows.data(), rows.size() * sizeof(T));
   } else {
     for (uint64_t i = 0; i < N; i++) {
-      for (uint32_t d = 0; d < FEATURES; d++)
+      for (uint32_t d = 0; d < FEATURES; d++) {
         rows[i * FLOW_ROW_WORDS + d] = (T)flow_feature_value(i, d);
+      }
       rows[i * FLOW_ROW_WORDS + FEATURES] = (T)flow_class_for_row(i);
       rows[i * FLOW_ROW_WORDS + FEATURES + 1] = 0;
     }
@@ -140,16 +141,18 @@ int main() {
       bench_stage_begin(&active_stages, BENCH_STAGE_MERGE);
       for (uint64_t i = 0; i < (uint64_t)nr_dpus * NR_TASKLETS; i++) {
         RED_T* partial = &partials[i * RESULT_WORDS];
-        for (uint32_t d = 0; d < FEATURES; d++)
+        for (uint32_t d = 0; d < FEATURES; d++) {
           gradients[(uint64_t)c * FEATURES + d] += partial[d];
+        }
         metrics.margin_violations += partial[FEATURES];
       }
       bench_stage_end(&active_stages);
     }
 
     bench_stage_begin(&active_stages, BENCH_STAGE_MERGE);
-    for (uint32_t i = 0; i < CLASSES * FEATURES; i++)
+    for (uint32_t i = 0; i < CLASSES * FEATURES; i++) {
       weights[i] = (T)svm_update_weight(weights[i], gradients[i], N);
+    }
     bench_stage_end(&active_stages);
 
     bench_stage_begin(&active_stages, BENCH_STAGE_WRITE);
@@ -172,8 +175,9 @@ int main() {
 
     bench_stage_begin(&active_stages, BENCH_STAGE_MERGE);
     metrics.correct_predictions = 0;
-    for (uint64_t i = 0; i < (uint64_t)nr_dpus * NR_TASKLETS; i++)
+    for (uint64_t i = 0; i < (uint64_t)nr_dpus * NR_TASKLETS; i++) {
       metrics.correct_predictions += partials[i * RESULT_WORDS];
+    }
     bench_stage_end(&active_stages);
   };
 
@@ -187,8 +191,9 @@ int main() {
     bench_stop(&warmup_timer, 0);
     bench_stats_update(&warmup_stats, warmup_timer.time[0]);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("baseline_warmup", &warmup_stats);
+  }
 
   std::fill(weights.begin(), weights.end(), 0);
   BenchStats stats;
@@ -221,12 +226,13 @@ int main() {
         weights == expected &&
         metrics.margin_violations == expected_metrics.margin_violations &&
         metrics.correct_predictions == expected_metrics.correct_predictions;
-    if (ok)
+    if (ok) {
       printf("the result is correct\n");
-    else
+    } else {
       printf("Mismatch: got violations=%llu accuracy=%llu\n",
              (unsigned long long)metrics.margin_violations,
              (unsigned long long)metrics.correct_predictions);
+    }
   }
 
   CHECK(dpu_free(dpu_set));

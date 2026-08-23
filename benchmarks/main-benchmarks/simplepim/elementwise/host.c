@@ -34,7 +34,9 @@ static void rescatter_to_existing(const char* table_id, void* elements,
 }
 
 static void free_handle(handle_t* handle) {
-  if (!handle) return;
+  if (!handle) {
+    return;
+  }
   free(handle->bin_location);
   free(handle->so_bin_location);
   free(handle);
@@ -136,14 +138,17 @@ void run() {
                                           (i == 0 ? create_handle_us : 0.0));
     free(tmp);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("simplepim_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
   BenchTimer timer;
   for (int i = 0; i < iterations; i++) {
-    if (res) free(res);
+    if (res) {
+      free(res);
+    }
     bench_start(&timer, 0);
     bench_stage_begin(&stages, BENCH_STAGE_WRITE);
     rescatter_to_existing("t1", A, table_management);
@@ -187,7 +192,9 @@ void run() {
     free(correct_res);
   }
 
-  if (res) free(res);
+  if (res) {
+    free(res);
+  }
   free(A);
   free(B);
   free_handle(add_handle);

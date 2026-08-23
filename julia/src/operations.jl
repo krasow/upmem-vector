@@ -587,45 +587,30 @@ function min_squared_distance(cols::AbstractVector{DPUVector},
     isempty(cols) && throw(ArgumentError("need at least one column"))
     length(cols) == length(query) || throw(ArgumentError(
         "$(length(cols)) columns but $(length(query)) query coordinates"))
-    rest = DPUVector[cols[j] for j in 2:length(cols)]
-    return Internal.reduce_expr(cols[1], rest...) do x
-        acc = sqr(x[1] - query[1])
-        for j in 2:length(x)
-            acc = acc + sqr(x[j] - query[j])
-        end
-        minimum(acc)
+    distance = abs2.(cols[1] .- query[1])
+    for j in 2:length(cols)
+        distance = distance .+ abs2.(cols[j] .- query[j])
     end
+    return minimum(distance)
 end
 
 export min_squared_distance
 
-# ---- elementwise comparisons, via RPN ----
-#
-# The opcodes exist in both backends but no C++ operator wraps them, so these go
-# through a two-operand RPN program.
+# ---- elementwise comparisons ----
 
-for (f, builder) in ((:>, :>), (:>=, :>=), (:<=, :<=))
+_materialize_broadcast(f, args...) =
+    DPUVector(Base.copy(Base.broadcasted(f, args...)))
+
+for f in (:>, :>=, :<=)
     @eval Base.$f(a::DPUVector, b::DPUVector) =
-        Internal.transform(a, b) do x
-            $builder(x[1], x[2])
-        end
+        _materialize_broadcast($f, a, b)
 end
 
-Base.:(==)(a::DPUVector, b::DPUVector) = Internal.transform(a, b) do x
-    x[1] == x[2]
-end
+Base.:(==)(a::DPUVector, b::DPUVector) = _materialize_broadcast(==, a, b)
 
-Base.:>(a::DPUVector, s::Integer) = Internal.transform(a) do x
-    x[1] > s
-end
-Base.:>=(a::DPUVector, s::Integer) = Internal.transform(a) do x
-    x[1] >= s
-end
-Base.:<=(a::DPUVector, s::Integer) = Internal.transform(a) do x
-    x[1] <= s
-end
-Base.:<(a::DPUVector, s::Integer) = Internal.transform(a) do x
-    x[1] < s
+for f in (:>, :>=, :<=, :<)
+    @eval Base.$f(a::DPUVector, s::Integer) =
+        _materialize_broadcast($f, a, s)
 end
 
 # ---- local (WRAM) scatter accumulators ----

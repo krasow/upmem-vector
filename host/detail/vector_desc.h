@@ -1,11 +1,11 @@
 #pragma once
 
-#include <common.h>
-#include <config.h>
-
 #include <cstdint>
 #include <memory>
 #include <vector>
+
+#include "common.h"
+#include "config.h"
 
 namespace detail {
 struct VectorSegment {
@@ -101,12 +101,7 @@ inline ShardLayout shard_layout(const VectorDesc& desc) {
   return out;
 }
 
-// Implemented in vectordpu.cc
+// Implemented in vector.cc.
 void vec_xfer_to_dpu(char* cpu, VectorDescRef desc);
-void vec_xfer_from_dpu(char* cpu, VectorDescRef desc);
 void vec_xfer_from_dpu_strided(char* cpu, VectorDescRef desc, size_t stride);
-void launch_binary(VectorDescRef out, VectorDescRef lhs, VectorDescRef rhs,
-                   KernelID kernel_id);
-void launch_unary(VectorDescRef out, VectorDescRef lhs, KernelID kernel_id);
-void launch_reduction(VectorDescRef buf, VectorDescRef rhs, KernelID kernel_id);
 }  // namespace detail

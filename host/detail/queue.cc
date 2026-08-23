@@ -7,12 +7,11 @@
 #include <detail/queue.h>
 #include <jit.h>
 #include <opinfo.h>
+#include <perfetto/detail/trace.h>
 #include <perfetto/trace.h>
-#include <perfetto/trace_internal.h>
 #include <queue.h>
 #include <runtime.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 #include <cassert>
 #include <filesystem>
@@ -21,6 +20,8 @@
 #include <ostream>
 #include <sstream>
 #include <thread>
+
+#include "vector.h"
 
 #ifndef DPURT
 #define DPURT

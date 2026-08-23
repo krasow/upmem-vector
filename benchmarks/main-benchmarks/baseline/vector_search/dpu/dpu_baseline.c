@@ -51,8 +51,9 @@ int main(void) {
 
     for (uint32_t r = 0; r < count; ++r) {
       int32_t score = 0;
-      for (uint32_t d = 0; d < DIM; ++d)
+      for (uint32_t d = 0; d < DIM; ++d) {
         score += rows[r * DIM + d] + query_buf[d];
+      }
       uint32_t global_index = args.base_index + first + r;
       vector_search_result_insert(
           &tasklet_best[tid],
@@ -62,8 +63,9 @@ int main(void) {
 
   barrier_wait(&vector_search_barrier);
   if (tid == 0) {
-    for (uint32_t t = 1; t < NR_TASKLETS; ++t)
+    for (uint32_t t = 1; t < NR_TASKLETS; ++t) {
       vector_search_result_merge(&tasklet_best[0], &tasklet_best[t]);
+    }
     mram_write(&tasklet_best[0],
                (__mram_ptr void *)(uintptr_t)args.result_offset,
                sizeof(vector_search_result_t));

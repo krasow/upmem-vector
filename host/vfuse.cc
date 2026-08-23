@@ -1,6 +1,6 @@
 #include <detail/fusion.h>
+#include <perfetto/detail/trace.h>
 #include <perfetto/trace.h>
-#include <perfetto/trace_internal.h>
 
 #include <algorithm>
 

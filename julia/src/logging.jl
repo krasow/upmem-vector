@@ -95,7 +95,7 @@ function _capture_level(level::Integer)
     ceiling = Int(log_max_level())
     if level > ceiling
         error("""
-              level $level needs libvectordpu compiled with ENABLE_DPU_LOGGING >= $level \
+              level $level needs libpolymerpim compiled with ENABLE_DPU_LOGGING >= $level \
               (this one has $ceiling); its level $level call sites are #if'd out.
 
               Rebuild the library and the wrapper against it:

@@ -1,4 +1,4 @@
-# upmem-vector
+# PolymerPIM
 
 please run to commit stuff
 
@@ -16,13 +16,27 @@ make test
 The self-contained benchmark suite is documented in
 [`benchmarks/README.md`](benchmarks/README.md).
 
-## Current limitation
+## C++ API
 
-The public API is intentionally kept stable, but the current JIT lowering does
-not yet compactly inline every JIT-produced intermediate into indirect local
-updates.
+Include `<polymerpim.h>`. Expressions are lazy, and host scalars become runtime
+parameters automatically:
 
-In practice, this means patterns like kmeans assignment followed by
-`dpu_local_vector::apply(...)` can still fall back to materializing the
-intermediate label vector and/or compiling a larger update kernel than fits in
-IRAM. That is a backend lowering limit, not a user-facing API requirement.
+```cpp
+using namespace polymerpim;
+
+DPUVector<int32_t> x(host_x);
+auto distance = sqr(x - centroid);
+auto nearest = minimum(distance);
+sync();
+```
+
+Local reductions use indexed updates. They remain pending until `sync()` or
+`to_cpu()`:
+
+```cpp
+DPULocalVector<int32_t> bins(256);
+bins[index] += value;
+auto result = bins.to_cpu();
+```
+
+The C++ API is installed under `include/polymerpim`.

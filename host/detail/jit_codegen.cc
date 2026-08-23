@@ -13,7 +13,6 @@
 #include <queue.h>
 #include <runtime.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 #include <algorithm>
 #include <cassert>
@@ -26,6 +25,8 @@
 #include <map>
 #include <mutex>
 #include <vector>
+
+#include "vector.h"
 
 namespace fs = std::filesystem;
 

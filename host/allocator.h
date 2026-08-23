@@ -14,7 +14,7 @@ using std::vector;
 
 #include <stdexcept>
 
-#include "vectordesc.h"
+#include "detail/vector_desc.h"
 
 class DpuOOMException : public std::runtime_error {
  public:

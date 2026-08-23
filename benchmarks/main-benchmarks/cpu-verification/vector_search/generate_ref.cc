@@ -22,8 +22,9 @@ int main() {
   auto begin = std::chrono::high_resolution_clock::now();
   for (uint32_t it = 0; it < rounds; ++it) {
     const uint64_t query_id = (uint64_t)warmup_iterations + it;
-    for (uint32_t d = 0; d < DIM; ++d)
+    for (uint32_t d = 0; d < DIM; ++d) {
       query[d] = vector_search_query_value(seed, query_id, d);
+    }
 
     vector_search_result_init(&answer);
 #pragma omp parallel
@@ -33,8 +34,9 @@ int main() {
 #pragma omp for nowait
       for (uint64_t i = 0; i < N; ++i) {
         int32_t score = 0;
-        for (uint32_t d = 0; d < DIM; ++d)
+        for (uint32_t d = 0; d < DIM; ++d) {
           score += vector_search_dataset_value(seed, i, d, DIM) + query[d];
+        }
         vector_search_result_insert(&local,
                                     vector_search_pack_key(score, i, N, DIM));
       }

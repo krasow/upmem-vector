@@ -58,14 +58,18 @@ int main() {
             << " K=" << K << std::endl;
 
   std::vector<T> query(DIM);
-  for (uint32_t d = 0; d < DIM; d++) query[d] = (T)(d * 17 % 128);
+  for (uint32_t d = 0; d < DIM; d++) {
+    query[d] = (T)(d * 17 % 128);
+  }
   write_bin("data/ref_query.bin", query.data(), DIM * sizeof(T));
 
   // Process one column at a time to avoid DIM*N host allocation
   std::vector<RED_T> sq_dists(N, 0);
   for (uint32_t d = 0; d < DIM; d++) {
     std::vector<T> col(N);
-    for (uint64_t i = 0; i < N; i++) col[i] = (T)((i * (DIM + 1) + d) % 256);
+    for (uint64_t i = 0; i < N; i++) {
+      col[i] = (T)((i * (DIM + 1) + d) % 256);
+    }
 
     RED_T qd = query[d];
 #pragma omp parallel for
@@ -111,11 +115,15 @@ int main() {
     result[0] = *std::min_element(sq_dists.begin(), sq_dists.end());
   } else {
     std::partial_sort(sq_dists.begin(), sq_dists.begin() + K, sq_dists.end());
-    for (uint32_t k = 0; k < K; k++) result[k] = sq_dists[k];
+    for (uint32_t k = 0; k < K; k++) {
+      result[k] = sq_dists[k];
+    }
   }
 
   std::cout << "K nearest squared distances:";
-  for (uint32_t k = 0; k < K; k++) std::cout << " " << result[k];
+  for (uint32_t k = 0; k < K; k++) {
+    std::cout << " " << result[k];
+  }
   std::cout << std::endl;
 
   write_bin("data/ref_res.bin", result.data(), K * sizeof(RED_T));

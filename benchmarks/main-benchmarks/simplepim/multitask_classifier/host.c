@@ -14,8 +14,9 @@
 
 static void fill_rows(T* rows) {
   for (uint64_t i = 0; i < nr_elements; i++) {
-    for (uint32_t d = 0; d < FEATURES; d++)
+    for (uint32_t d = 0; d < FEATURES; d++) {
       rows[i * FLOW_ROW_WORDS + d] = (T)flow_feature_value(i, d);
+    }
     rows[i * FLOW_ROW_WORDS + FEATURES] = (T)flow_class_for_row(i);
     rows[i * FLOW_ROW_WORDS + FEATURES + 1] = 0;
   }
@@ -33,8 +34,9 @@ static void run_epoch(BenchStages* stages, simplepim_management_t* management,
       state[0] = SVM_MODE_TRAIN;
       state[1] = (T)c;
       state[2] = (T)statistic;
-      for (uint32_t d = 0; d < FEATURES; d++)
+      for (uint32_t d = 0; d < FEATURES; d++) {
         state[3 + d] = weights[c * FEATURES + d];
+      }
 
       bench_stage_begin(stages, BENCH_STAGE_WRITE);
       simplepim_broadcast("state", state, 1, SVM_STATE_WORDS * sizeof(T),
@@ -47,22 +49,26 @@ static void run_epoch(BenchStages* stages, simplepim_management_t* management,
                                 management, state_offset);
       bench_stage_end(stages);
 
-      if (statistic < FEATURES)
+      if (statistic < FEATURES) {
         gradients[c * FEATURES + statistic] = (int64_t)result[0];
-      else
+      } else {
         metrics->margin_violations += (uint64_t)result[0];
+      }
       free(result);
     }
   }
 
   bench_stage_begin(stages, BENCH_STAGE_MERGE);
-  for (uint32_t i = 0; i < CLASSES * FEATURES; i++)
+  for (uint32_t i = 0; i < CLASSES * FEATURES; i++) {
     weights[i] = (T)svm_update_weight(weights[i], gradients[i], nr_elements);
+  }
   bench_stage_end(stages);
 
   memset(state, 0, SVM_STATE_WORDS * sizeof(T));
   state[0] = SVM_MODE_EVALUATE;
-  for (uint32_t i = 0; i < CLASSES * FEATURES; i++) state[3 + i] = weights[i];
+  for (uint32_t i = 0; i < CLASSES * FEATURES; i++) {
+    state[3 + i] = weights[i];
+  }
 
   bench_stage_begin(stages, BENCH_STAGE_WRITE);
   simplepim_broadcast("state", state, 1, SVM_STATE_WORDS * sizeof(T),
@@ -139,8 +145,9 @@ int main(void) {
     bench_stats_update(&warmup_stats,
                        warmup_timer.time[0] + (i == 0 ? create_handle_us : 0));
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("simplepim_warmup", &warmup_stats);
+  }
 
   memset(weights, 0, CLASSES * FEATURES * sizeof(T));
   BenchStats stats;
@@ -174,12 +181,13 @@ int main(void) {
         memcmp(weights, expected, sizeof(expected)) == 0 &&
         metrics.margin_violations == expected_metrics.margin_violations &&
         metrics.correct_predictions == expected_metrics.correct_predictions;
-    if (ok)
+    if (ok) {
       printf("the result is correct\n");
-    else
+    } else {
       printf("Mismatch: got violations=%llu accuracy=%llu\n",
              (unsigned long long)metrics.margin_violations,
              (unsigned long long)metrics.correct_predictions);
+    }
   }
 
   free(weights);

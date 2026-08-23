@@ -22,7 +22,9 @@ static vector_search_result_t cpu_best(const T *records, const T *query) {
     for (uint64_t i = 0; i < nr_elements; ++i) {
       const T *row = records + i * (DIM + 1);
       int32_t score = 0;
-      for (uint32_t d = 0; d < DIM; ++d) score += row[d] + query[d];
+      for (uint32_t d = 0; d < DIM; ++d) {
+        score += row[d] + query[d];
+      }
       vector_search_result_insert(
           &local,
           (int32_t)(((int64_t)score + 2 * DIM) * nr_elements + row[DIM]));
@@ -64,8 +66,9 @@ int main(void) {
   bench_stage_begin(&stages, BENCH_STAGE_LOAD);
 #pragma omp parallel for
   for (uint64_t i = 0; i < nr_elements; ++i) {
-    for (uint32_t d = 0; d < DIM; ++d)
+    for (uint32_t d = 0; d < DIM; ++d) {
       records[i * (DIM + 1) + d] = vector_search_dataset_value(seed, i, d, DIM);
+    }
     records[i * (DIM + 1) + DIM] = (T)(nr_elements - 1 - i);
   }
   bench_stage_end(&stages);
@@ -94,8 +97,9 @@ int main(void) {
 /* SimplePIM's reduction primitive performs local and host maxima. */
 #define RUN_QUERY(STAGE_SET, RESULT_LVALUE)                               \
   do {                                                                    \
-    for (uint32_t d = 0; d < DIM; ++d)                                    \
+    for (uint32_t d = 0; d < DIM; ++d) {                                  \
       query[d] = vector_search_query_value(seed, query_id, d);            \
+    }                                                                     \
     ++query_id;                                                           \
     bench_stage_begin(&(STAGE_SET), BENCH_STAGE_WRITE);                   \
     DPU_ASSERT(dpu_broadcast_to(mgmt->set, DPU_MRAM_HEAP_POINTER_NAME,    \
@@ -122,7 +126,9 @@ int main(void) {
     bench_stats_update(&warmup_stats,
                        timer.time[0] + (w == 0 ? pending_cold_us : 0.0));
   }
-  if (warmup_iterations) bench_stats_print("simplepim_warmup", &warmup_stats);
+  if (warmup_iterations) {
+    bench_stats_print("simplepim_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);
@@ -141,11 +147,12 @@ int main(void) {
   if (check_correctness && iterations) {
     vector_search_result_t expected = cpu_best(records, query);
     int ok = last_result.key == expected.key;
-    if (ok)
+    if (ok) {
       printf("the result is correct\n");
-    else
+    } else {
       printf("Mismatch: got key %d, expected %d\n", last_result.key,
              expected.key);
+    }
   }
 
   free(records);

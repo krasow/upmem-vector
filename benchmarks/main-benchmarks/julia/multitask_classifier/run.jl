@@ -2,9 +2,8 @@
 # class's hinge-loss factor, reduce it to a gradient per feature, update the
 # weights on the host, then evaluate accuracy with a single argmax reduction.
 #
-# Mirrors benchmarks/main-benchmarks/polymerpim/multitask_classifier/run.cc. The C++ version groups
-# each class's reductions with reduction_batch(); here they are independent
-# futures left unread, which the runtime fuses the same way.
+# Mirrors the C++ benchmark. Reductions remain independent until read, allowing
+# the runtime to fuse them.
 
 using PolymerPIM
 using Printf

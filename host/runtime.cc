@@ -46,11 +46,11 @@ std::string DpuRuntime::get_default_binary_path() const {
   return get_runtime_dpu_binary();
 }
 
-extern "C" void vectordpu_dladdr_anchor() {}
+extern "C" void polymerpim_dladdr_anchor() {}
 
 std::string get_runtime_dpu_binary() {
   Dl_info info;
-  void* fptr = (void*)&vectordpu_dladdr_anchor;
+  void* fptr = (void*)&polymerpim_dladdr_anchor;
   if (dladdr(fptr, &info) == 0) {
     throw std::runtime_error("Failed to get library path");
   }
@@ -58,7 +58,7 @@ std::string get_runtime_dpu_binary() {
   // Use std::filesystem to resolve path
   fs::path lib_path = fs::absolute(info.dli_fname);
 
-  // Try relative to library: lib/libvectordpu.so -> ../bin/runtime.dpu
+  // Try relative to library: lib/libpolymerpim.so -> ../bin/runtime.dpu
   fs::path bin_path =
       lib_path.parent_path().parent_path() / "bin" / "runtime.dpu";
 

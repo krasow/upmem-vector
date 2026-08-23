@@ -33,7 +33,9 @@ int main(void) {
     uint32_t cnt = (i + BLOCK_SIZE <= n) ? BLOCK_SIZE : (n - i);
     uint32_t bytes = ((cnt * sizeof(T)) + 7) & ~7u;
     mram_read((__mram_ptr void const *)(data + i), buf, bytes);
-    for (uint32_t j = 0; j < cnt; j++) local += buf[j];
+    for (uint32_t j = 0; j < cnt; j++) {
+      local += buf[j];
+    }
   }
 
   res[tid] = local;

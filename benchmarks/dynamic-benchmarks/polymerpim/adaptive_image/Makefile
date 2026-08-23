@@ -4,7 +4,7 @@ endif
 
 SRCS := $(wildcard ./*.cc)
 BENCHMARK_INCLUDE := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../../../main-benchmarks)
-INCLUDES := -I../../../../install/include/vectordpu -I$(BENCHMARK_INCLUDE)
+INCLUDES := -I../../../../install/include/polymerpim -I$(BENCHMARK_INCLUDE)
 LDFLAGS := -L../../../../install/lib
 CXXFLAGS := -std=c++17 -O3 -fopenmp $(INCLUDES) $(EXTRA_FLAGS)
 
@@ -14,7 +14,7 @@ all: run
 
 run: $(SRCS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -fopenmp \
-		-Wl,-rpath,../../../../install/lib -lvectordpu
+		-Wl,-rpath,../../../../install/lib -lpolymerpim
 
 clean:
 	rm -f run

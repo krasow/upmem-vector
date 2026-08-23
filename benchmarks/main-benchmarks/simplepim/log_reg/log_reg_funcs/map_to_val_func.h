@@ -31,9 +31,15 @@ void start_func(gen_red_arguments_t* args) {
    but kept for compatibility.  The log_reg Param.h uses float T so
    this will be compiled as float arithmetic on the DPU. */
 static inline T sigmoid_dpu(T x) {
-  if (x >= 15.0f) return 1.0f;
-  if (x <= -15.0f) return 0.0f;
-  if (x == 0.0f) return 0.5f;
+  if (x >= 15.0f) {
+    return 1.0f;
+  }
+  if (x <= -15.0f) {
+    return 0.0f;
+  }
+  if (x == 0.0f) {
+    return 0.5f;
+  }
 
   float sum = 1.0f;
   float temp = 1.0f;

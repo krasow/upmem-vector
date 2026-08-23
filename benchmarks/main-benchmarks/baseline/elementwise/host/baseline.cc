@@ -162,8 +162,9 @@ int main() {
     bench_stop(&warmup_timer, 0);
     bench_stats_update(&warmup_stats, warmup_timer.time[0]);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("baseline_warmup", &warmup_stats);
+  }
 
   BenchStats stats;
   bench_stats_init(&stats);

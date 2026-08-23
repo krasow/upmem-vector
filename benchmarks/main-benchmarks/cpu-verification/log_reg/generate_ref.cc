@@ -28,9 +28,15 @@ void write_bin(const std::string& filename, const void* data, size_t size) {
 }
 
 static inline T sigmoid_cpu(T x) {
-  if (x >= 15.0f) return 1.0f;
-  if (x <= -15.0f) return 0.0f;
-  if (x == 0.0f) return 0.5f;
+  if (x >= 15.0f) {
+    return 1.0f;
+  }
+  if (x <= -15.0f) {
+    return 0.0f;
+  }
+  if (x == 0.0f) {
+    return 0.5f;
+  }
 
   float sum = 1.0f;
   float temp = 1.0f;
@@ -83,7 +89,9 @@ int main(int argc, char** argv) {
       }
 #pragma omp critical
       {
-        for (uint32_t j = 0; j < dim; j++) grads[j] += local_grads[j];
+        for (uint32_t j = 0; j < dim; j++) {
+          grads[j] += local_grads[j];
+        }
       }
     }
     DoNotOptimize(grads.data());

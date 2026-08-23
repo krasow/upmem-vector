@@ -8,7 +8,9 @@
 
 void init_func(uint32_t size, void* ptr) {
   char* p = (char*)ptr;
-  for (uint32_t i = 0; i < size; i++) p[i] = 0;
+  for (uint32_t i = 0; i < size; i++) {
+    p[i] = 0;
+  }
 }
 
 void combine_func(void* dest, void* src) { *(RED_T*)dest += *(RED_T*)src; }

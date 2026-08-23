@@ -36,14 +36,18 @@ static inline int32_t svm_signed_label(int32_t class_id, uint32_t classifier) {
 }
 
 static inline int64_t svm_div_round_closest(int64_t value, int64_t divisor) {
-  if (value < 0) return -((-value + divisor / 2) / divisor);
+  if (value < 0) {
+    return -((-value + divisor / 2) / divisor);
+  }
   return (value + divisor / 2) / divisor;
 }
 
 static inline int32_t svm_update_weight(int32_t weight, int64_t gradient,
                                         uint64_t rows) {
   int64_t gradient_divisor = (int64_t)(rows / 2u);
-  if (gradient_divisor < 1) gradient_divisor = 1;
+  if (gradient_divisor < 1) {
+    gradient_divisor = 1;
+  }
 
   int64_t data_step = svm_div_round_closest(gradient, gradient_divisor);
   int64_t decay_step = svm_div_round_closest(weight, SVM_WEIGHT_DECAY);

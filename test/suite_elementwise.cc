@@ -81,7 +81,7 @@ TEST(elementwise, less_than) {
       [](T x, T y) { return (T)(x < y ? 1 : 0); }, -20, 20);
 }
 
-// OP_SELECT only exists on the pipeline/JIT path (vectordpu.inl
+// OP_SELECT only exists on the pipeline/JIT path (detail/vector.inl
 // static_asserts).
 #if PIPELINE || JIT
 TEST(elementwise, select) {

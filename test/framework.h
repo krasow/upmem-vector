@@ -6,9 +6,9 @@
 // testable.
 #pragma once
 
+#include <detail/vector.h>
 #include <runtime.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 #include <cmath>
 #include <cstdint>
@@ -221,6 +221,16 @@ constexpr size_t fusion_lookahead() { return (size_t)FUSION_LOOKAHEAD; }
 
 // Turns a limit into an expected kernel count.
 constexpr size_t ceil_div(size_t a, size_t b) { return (a + b - 1) / b; }
+
+template <typename T>
+std::vector<typename dpu_vector<T>::reduction_result_t> get_all(
+    std::vector<dpu_future<T>>& futures) {
+  std::vector<typename dpu_vector<T>::reduction_result_t> results;
+  results.reserve(futures.size());
+  if (!futures.empty()) dpu_fence();
+  for (auto& future : futures) results.push_back(future.get());
+  return results;
+}
 
 }  // namespace tf
 

@@ -13,7 +13,6 @@
 #include <queue.h>
 #include <runtime.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 #include <algorithm>
 #include <cctype>
@@ -26,28 +25,30 @@
 #include <mutex>
 #include <vector>
 
+#include "vector.h"
+
 namespace fs = std::filesystem;
 
 // Anchor for dladdr
-extern "C" void vectordpu_jit_dladdr_anchor() {}
+extern "C" void polymerpim_jit_dladdr_anchor() {}
 
 std::string detail::get_include_flags() {
   Dl_info dl_info;
-  void* fptr = (void*)&vectordpu_jit_dladdr_anchor;
+  void* fptr = (void*)&polymerpim_jit_dladdr_anchor;
   std::vector<std::string> include_dirs;
 
   if (dladdr(fptr, &dl_info) != 0) {
     fs::path lib_path = fs::absolute(dl_info.dli_fname);
     fs::path base = lib_path.parent_path().parent_path();
-    if (fs::exists(base / "include" / "vectordpu"))
-      include_dirs.push_back((base / "include" / "vectordpu").string());
+    if (fs::exists(base / "share" / "polymerpim" / "jit"))
+      include_dirs.push_back((base / "share" / "polymerpim" / "jit").string());
     if (fs::exists(base.parent_path() / "common"))
       include_dirs.push_back((base.parent_path() / "common").string());
     if (fs::exists(base / "common"))
       include_dirs.push_back((base / "common").string());
   }
 
-  if (include_dirs.empty()) include_dirs.push_back("include/vectordpu");
+  if (include_dirs.empty()) include_dirs.push_back("share/polymerpim/jit");
 
   std::string flags;
   for (const auto& dir : include_dirs) flags += " -I" + dir;

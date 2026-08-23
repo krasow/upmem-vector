@@ -5,9 +5,9 @@
 #include <memory>
 #include <string>
 
+#include "../../queue.h"
+#include "../trace.h"
 #include "config.h"
-#include "perfetto/trace.h"
-#include "queue.h"
 
 std::string operationtype_to_string(Event::OperationType op);
 

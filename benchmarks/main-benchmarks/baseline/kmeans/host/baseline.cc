@@ -23,7 +23,9 @@ typedef struct {
 static void div_round_closest_centroids(RED_T *sums, RED_T *counts,
                                         T *centroids_out) {
   for (uint32_t j = 0; j < K; j++) {
-    if (counts[j] <= 0) continue;
+    if (counts[j] <= 0) {
+      continue;
+    }
     for (uint32_t d = 0; d < DIM; d++) {
       int s = (int)sums[j * DIM + d];
       int c = (int)counts[j];
@@ -90,17 +92,23 @@ int main() {
   } else {
     bench_stage_begin(&stages, BENCH_STAGE_LOAD);
     srand(seed);
-    for (uint64_t i = 0; i < N; i++)
-      for (uint32_t d = 0; d < DIM; d++)
+    for (uint64_t i = 0; i < N; i++) {
+      for (uint32_t d = 0; d < DIM; d++) {
         row_data[i * DIM + d] = (T)((i + d) % 1000);
-    for (uint32_t j = 0; j < K; j++)
-      for (uint32_t d = 0; d < DIM; d++)
+      }
+    }
+    for (uint32_t j = 0; j < K; j++) {
+      for (uint32_t d = 0; d < DIM; d++) {
         centroids[j * DIM + d] = row_data[j * DIM + d];
+      }
+    }
     bench_stage_end(&stages);
   }
 
   T *centroids_init = (T *)calloc(K * DIM, sizeof(T));
-  for (uint32_t i = 0; i < K * DIM; i++) centroids_init[i] = centroids[i];
+  for (uint32_t i = 0; i < K * DIM; i++) {
+    centroids_init[i] = centroids[i];
+  }
 
   /* Upload row-major data once */
   bench_stage_begin(&stages, BENCH_STAGE_WRITE);
@@ -143,14 +151,17 @@ int main() {
     RED_T global_sum[K * DIM];
     RED_T global_count[K];
     for (uint32_t j = 0; j < K; j++) {
-      for (uint32_t d = 0; d < DIM; d++) global_sum[j * DIM + d] = 0;
+      for (uint32_t d = 0; d < DIM; d++) {
+        global_sum[j * DIM + d] = 0;
+      }
       global_count[j] = 0;
     }
     for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++) {
       RED_T *p = &partials[(uint64_t)i * K * (DIM + 1)];
       for (uint32_t j = 0; j < K; j++) {
-        for (uint32_t d = 0; d < DIM; d++)
+        for (uint32_t d = 0; d < DIM; d++) {
           global_sum[j * DIM + d] += p[j * (DIM + 1) + d];
+        }
         global_count[j] += p[j * (DIM + 1) + DIM];
       }
     }
@@ -162,16 +173,21 @@ int main() {
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (uint32_t w = 0; w < warmup_iterations; w++) {
-    for (uint32_t i = 0; i < K * DIM; i++) centroids[i] = centroids_init[i];
+    for (uint32_t i = 0; i < K * DIM; i++) {
+      centroids[i] = centroids_init[i];
+    }
     bench_start(&warmup_timer, 0);
     run_kmeans_iter(warm_stages);
     bench_stop(&warmup_timer, 0);
     bench_stats_update(&warmup_stats, warmup_timer.time[0]);
   }
-  if (warmup_iterations > 0)
+  if (warmup_iterations > 0) {
     bench_stats_print("baseline_warmup", &warmup_stats);
+  }
 
-  for (uint32_t i = 0; i < K * DIM; i++) centroids[i] = centroids_init[i];
+  for (uint32_t i = 0; i < K * DIM; i++) {
+    centroids[i] = centroids_init[i];
+  }
   BenchStats stats;
   bench_stats_init(&stats);
   BenchTimer timer;

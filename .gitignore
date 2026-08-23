@@ -4,6 +4,7 @@ bin/*
 *.so
 build/
 build/*
+polymerpim_test
 vectordpu_test
 .vscode/
 .vscode/*

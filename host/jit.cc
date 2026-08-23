@@ -11,6 +11,7 @@
 #include <detail/fusion.h>
 #include <detail/jit_codegen.h>
 #include <detail/jit_toolchain.h>
+#include <detail/vector.h>
 #include <dlfcn.h>
 #include <logger.h>
 #include <opcodes.h>
@@ -18,7 +19,6 @@
 #include <queue.h>
 #include <runtime.h>
 #include <stats.h>
-#include <vectordpu.h>
 
 #include <algorithm>
 #if JIT_PIPELINE_FALLBACK
