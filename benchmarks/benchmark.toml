@@ -28,13 +28,13 @@ variants = ["polymerpim", "julia", "baseline", "simplepim"]
 
 [[kmeans]]
 elements_per_dpu = [262144, 524288]
-iterations = 1
+iterations = 20
 parameters = { dim = 10, k = 10 }
 variants = ["polymerpim", "julia", "baseline", "simplepim"]
 
 [[knn]]
 elements_per_dpu = [262144, 524288]
-iterations = 1
+iterations = 20
 parameters = { dim = 10, k = 1 }
 variants = ["polymerpim", "julia", "baseline", "simplepim"]
 
@@ -55,6 +55,6 @@ variants = ["polymerpim", "julia", "baseline", "simplepim"]
 
 [[vector_search]]
 elements_per_dpu = [16384, 32768]
-iterations = 1
+iterations = 100
 parameters = { dim = 10 }
 variants = ["polymerpim", "julia", "baseline", "simplepim"]
