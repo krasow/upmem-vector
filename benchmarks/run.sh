@@ -8,6 +8,7 @@ shared=()
 tune=()
 runner=()
 phase=shared
+pending_scope=
 reset_run=false
 reset_tune=false
 resume_run=false
@@ -20,6 +21,7 @@ tune_options=(--passes --lookahead --hfuse-chains --jit-batch --vfuse-ops
               --workspace --checkpoints)
 runner_options=(--list --variant --ntrials --skip-setup --generate-only
                 --dry-run --state --csv --no-profile --help-all)
+runner_value_options=(--variant --ntrials --state --csv)
 
 contains() {
     local needle="$1"
@@ -44,6 +46,14 @@ validate_option() {
 }
 
 for arg in "$@"; do
+    if [[ -n "${pending_scope}" ]]; then
+        case "${pending_scope}" in
+            tune) tune+=("${arg}") ;;
+            runner) runner+=("${arg}") ;;
+        esac
+        pending_scope=
+        continue
+    fi
     case "${arg}" in
         --tune) phase=tune ;;
         --runner) phase=runner ;;
@@ -52,6 +62,19 @@ for arg in "$@"; do
         --resume) resume_run=true ;;
         --default-params) default_params=true ;;
         *)
+            if [[ "${phase}" == shared && "${arg}" == -* ]]; then
+                if contains "${arg}" "${runner_options[@]}"; then
+                    runner+=("${arg}")
+                    contains "${arg}" "${runner_value_options[@]}" &&
+                        pending_scope=runner
+                    continue
+                fi
+                if contains "${arg}" "${tune_options[@]}"; then
+                    tune+=("${arg}")
+                    pending_scope=tune
+                    continue
+                fi
+            fi
             [[ "${arg}" != -* ]] || validate_option "${phase}" "${arg}"
             case "${phase}" in
                 shared) shared+=("${arg}") ;;
@@ -61,6 +84,11 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+[[ -z "${pending_scope}" ]] || {
+    echo "${!#} needs a value" >&2
+    exit 2
+}
 
 if [[ "${reset_tune}" == true ]]; then
     [[ "${default_params}" == false ]] || {

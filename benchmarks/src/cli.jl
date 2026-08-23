@@ -173,9 +173,9 @@ function run_cli(args = ARGS)
     names, variants = resolve_selection(config, options)
     if options.reset
         if options.dry_run
-            println("[runner] would reset ", join(names, ", "))
+            println("[runner] would reset ", reset_scope(names, variants))
         else
-            reset_runs(names, options)
+            reset_runs(names, variants, options)
         end
     end
     if options.dry_run || options.generate_only

@@ -285,19 +285,28 @@ function run_key(record)
     return bytes2hex(sha256(take!(buffer)))
 end
 
-function remove_benchmark_rows(path::AbstractString, names)
+function remove_run_rows(path::AbstractString, names, variants = String[])
     isfile(path) || return 0
     lines = readlines(path)
     isempty(lines) && return 0
     columns = split(first(lines), ',')
     benchmark_column = findfirst(==("benchmark"), columns)
+    variant_column = findfirst(==("variant"), columns)
     benchmark_column === nothing && error("$path has no benchmark column")
+    variant_column === nothing && error("$path has no variant column")
     selected = Set(names)
+    selected_variants = Set(variants)
     kept = String[first(lines)]
     removed = 0
     for line in Iterators.drop(lines, 1)
-        fields = split(line, ','; limit = benchmark_column + 1)
-        if length(fields) >= benchmark_column && fields[benchmark_column] in selected
+        last_column = max(benchmark_column, variant_column)
+        fields = split(line, ','; limit = last_column + 1)
+        matches_benchmark = length(fields) >= benchmark_column &&
+                            fields[benchmark_column] in selected
+        matches_variant = isempty(selected_variants) ||
+                          (length(fields) >= variant_column &&
+                           fields[variant_column] in selected_variants)
+        if matches_benchmark && matches_variant
             removed += 1
         else
             push!(kept, line)
@@ -312,7 +321,13 @@ function remove_benchmark_rows(path::AbstractString, names)
     return removed
 end
 
-function reset_runs(names, options::Options)
+remove_benchmark_rows(path::AbstractString, names) =
+    remove_run_rows(path, names)
+
+reset_scope(names, variants) = isempty(variants) ? join(names, ", ") :
+    join(("$name/$(join(variants, ","))" for name in names), ", ")
+
+function reset_runs(names, variants, options::Options)
     records = Dict{String,Any}[]
     if isfile(options.state)
         raw = TOML.parsefile(options.state)
@@ -327,18 +342,26 @@ function reset_runs(names, options::Options)
         end
     end
     selected = Set(names)
+    selected_variants = Set(variants)
     before = length(records)
-    filter!(record -> !(get(record, "benchmark", "") in selected), records)
+    filter!(records) do record
+        matches_benchmark = get(record, "benchmark", "") in selected
+        matches_variant = isempty(selected_variants) ||
+                          get(record, "variant", "") in selected_variants
+        return !(matches_benchmark && matches_variant)
+    end
     state = RunState(options.state, Set(run_key.(records)), records, true)
     save_state(state)
     csv = results_csv(options)
-    rows = remove_benchmark_rows(csv, names)
-    sections = remove_benchmark_rows(sections_csv(csv), names)
+    rows = remove_run_rows(csv, names, variants)
+    sections = remove_run_rows(sections_csv(csv), names, variants)
     options.resume = true
-    println("[runner] reset ", join(names, ", "), ": ",
+    println("[runner] reset ", reset_scope(names, variants), ": ",
             before - length(records), " checkpoints, ", rows,
             " runs, ", sections, " sections")
 end
+
+reset_runs(names, options::Options) = reset_runs(names, String[], options)
 
 function trial_summary(timing, iterations::Int)
     metric(key) = get(timing, key, "") isa Number ?
