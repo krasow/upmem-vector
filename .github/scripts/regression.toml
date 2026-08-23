@@ -35,11 +35,6 @@ parameters = { dim = 10, k = 1 }
 elements_per_dpu = [524288]
 parameters = { dim = 10, scaling_shift = 12, learning_shift = 24, learning_rate = 1 }
 
-[[multitask_classifier]]
-elements_per_dpu = [262144]
-iterations = 10
-parameters = { features = 8, classes = 4 }
-
 [[red]]
 elements_per_dpu = [1048576]
 

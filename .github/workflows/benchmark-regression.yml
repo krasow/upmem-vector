@@ -58,7 +58,17 @@ jobs:
       JULIA_BIN_DIR: /scratch/david/julia-1.11.3/bin
       UPMEM_NO_OS_WARNING: 1
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+
+      - name: Check out base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: base
 
       - name: Set up the UPMEM environment
         run: |
@@ -72,13 +82,28 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$JULIA_BIN_DIR" >> "$GITHUB_PATH"
 
-      - name: Run regression benchmarks
-        working-directory: benchmarks
+      - name: Run base benchmarks
+        working-directory: base/benchmarks
         run: |
-          ./run.sh --config main-benchmarks/regression.toml \
+          ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression.toml" \
+            --default-params --runner \
+            --state "$RUNNER_TEMP/benchmark-regression/base/state.toml" \
+            --csv "$RUNNER_TEMP/benchmark-regression/base/runs.csv"
+
+      - name: Run candidate benchmarks
+        working-directory: candidate/benchmarks
+        run: |
+          ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression.toml" \
             --default-params --check --runner \
-            --state "$RUNNER_TEMP/benchmark-regression/state.toml" \
-            --csv "$RUNNER_TEMP/benchmark-regression/runs.csv"
+            --state "$RUNNER_TEMP/benchmark-regression/candidate/state.toml" \
+            --csv "$RUNNER_TEMP/benchmark-regression/candidate/runs.csv"
+
+      - name: Compare performance
+        run: |
+          python3 candidate/.github/scripts/compare_regression.py \
+            "$RUNNER_TEMP/benchmark-regression/base/runs.csv" \
+            "$RUNNER_TEMP/benchmark-regression/candidate/runs.csv" \
+            --threshold 20
 
       - name: Upload results
         if: always()
