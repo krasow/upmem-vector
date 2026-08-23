@@ -7,8 +7,8 @@ using Printf
 
 const BENCHMARK_DIR = dirname(@__DIR__)
 const REPO_ROOT = dirname(BENCHMARK_DIR)
-const VARIANT_DIR = joinpath(BENCHMARK_DIR, "variants")
-const DEFAULT_CONFIG = joinpath(BENCHMARK_DIR, "benchmark.toml")
+const BACKEND_DIR = joinpath(BENCHMARK_DIR, "backends")
+const DEFAULT_CONFIG = joinpath(BENCHMARK_DIR, "main-benchmarks", "benchmark.toml")
 const DEFAULT_ENV = joinpath(BENCHMARK_DIR, "env.sh")
 
 include("config.jl")

@@ -16,7 +16,7 @@ end
 @testset "variant failure recording" begin
     config = load_config()
     case = test_case(dpus = 1, elements_per_dpu = 1)
-    directory = "variants/baseline/elementwise"
+    directory = "main-benchmarks/baseline/elementwise"
     scenarios = [
         (
             BenchmarkRunner.VariantSpec(
@@ -64,9 +64,9 @@ end
             "--skip-setup", "--dry-run",
         ])
     end
-    @test occursin("skip cpu (not implemented)", text)
-    @test occursin("variants/baseline/elementwise-interpreter", text)
-    @test occursin("generate variants/baseline/elementwise-interpreter", text)
+    @test occursin("check = true", text)
+    @test occursin("main-benchmarks/baseline/elementwise-interpreter", text)
+    @test occursin("generate main-benchmarks/baseline/elementwise-interpreter", text)
     @test occursin("total_elements = 128", text)
     @test length(findall("trial ", text)) == 5
     @test length(findall("make clean", text)) == 1
@@ -76,7 +76,7 @@ end
     text = captured_output() do
         run_cli([
             "elementwise", "--config",
-            joinpath(BENCHMARKS, "polymerpim-modes.toml"),
+            joinpath(BENCHMARKS, "main-benchmarks", "polymerpim-modes.toml"),
             "--dpus", "2", "--elements-per-dpu", "64,128",
             "--warmup", "0", "--iterations", "1", "--ntrials", "1",
             "--dry-run", "--no-profile",

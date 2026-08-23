@@ -162,6 +162,7 @@ void print_usage(const char* argv0) {
 
 void print_build_config() {
   std::cout << "build: PIPELINE=" << PIPELINE << " JIT=" << JIT
+            << " JIT_PIPELINE_FALLBACK=" << JIT_PIPELINE_FALLBACK
             << " MAX_HFUSE_CHAINS=" << MAX_HFUSE_CHAINS
             << " MAX_SAFE_HFUSED_REDUCTION_CHAINS="
             << MAX_SAFE_HFUSED_REDUCTION_CHAINS

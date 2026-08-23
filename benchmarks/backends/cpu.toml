@@ -1,0 +1,6 @@
+name = "cpu"
+directory = "{benchmark_root}/cpu-verification/{benchmark}"
+parameter_file = "Param.h"
+prepare = ["data"]
+build = ["make clean", "make"]
+run = "./generate_ref"

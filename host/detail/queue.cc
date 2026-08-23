@@ -127,6 +127,12 @@ void name_event(const std::shared_ptr<Event>& e) {
 #endif
   if (!e->jit_binary_path.empty())
     e->slice_name += " (from " + e->jit_binary_path + ")";
+#if JIT_PIPELINE_FALLBACK
+  else if (e->jit_pipeline_fallback)
+    e->slice_name += " (pipeline while JIT compiles)";
+  else if (e->jit_eager_fallback)
+    e->slice_name += " (eager while JIT compiles)";
+#endif
 }
 
 // Its own JIT binary, the default one for a compute event, or whatever is
@@ -159,6 +165,12 @@ void compile_kernel_if_unbatched(const std::shared_ptr<Event>& e) {
 
 void launch_compute(const std::shared_ptr<Event>& e) {
 #if PIPELINE
+#if JIT_PIPELINE_FALLBACK
+  if (e->jit_eager_fallback) {
+    e->cb();
+    return;
+  }
+#endif
   if (e->rpn_ops.empty() && !e->is_locked_for_jit) {
     if (e->cb) e->cb();
     return;
@@ -166,10 +178,13 @@ void launch_compute(const std::shared_ptr<Event>& e) {
 
   // Batched kernels are addressed by their slot in the JIT binary, unbatched
   // ones by their static pipeline id.
+  bool use_jit = e->is_locked_for_jit;
+#if JIT_PIPELINE_FALLBACK
+  use_jit = use_jit && !e->jit_pipeline_fallback;
+#endif
   const KernelID kid =
-      e->is_locked_for_jit
-          ? (KernelID)(JIT_STATIC_KERNEL_COUNT + e->jit_sub_kernel_idx)
-          : e->pipeline_kid;
+      use_jit ? (KernelID)(JIT_STATIC_KERNEL_COUNT + e->jit_sub_kernel_idx)
+              : e->pipeline_kid;
   const std::vector<detail::VectorDescRef> operands =
       e->inputs.size() > 1 ? std::vector<detail::VectorDescRef>(
                                  e->inputs.begin() + 1, e->inputs.end())
@@ -464,6 +479,7 @@ void EventQueue::grow_fusion_batch(const std::shared_ptr<Event>& e) {
 
 #if JIT
   if (e->op != Event::OperationType::COMPUTE || JIT_BATCH_SIZE <= 0) return;
+  if (!e->jit_binary_path.empty()) return;
   if (!e->is_locked_for_jit) lock_for_jit(e);
   if (e->jit_future.valid()) return;
 
@@ -486,6 +502,21 @@ void EventQueue::grow_fusion_batch(const std::shared_ptr<Event>& e) {
 void EventQueue::await_jit_binary(const std::shared_ptr<Event>& e) {
 #if JIT
   if (e->op != Event::OperationType::COMPUTE || !e->jit_future.valid()) return;
+#if JIT_PIPELINE_FALLBACK
+  if (e->jit_future.wait_for(std::chrono::seconds(0)) !=
+      std::future_status::ready) {
+    if (detail::pipeline_can_interpret(e->rpn_ops)) {
+      e->jit_pipeline_fallback = true;
+      VECTORDPU_NOTE(jit_pipeline_fallbacks);
+      return;
+    }
+    if (e->cb) {
+      e->jit_eager_fallback = true;
+      VECTORDPU_NOTE(jit_eager_fallbacks);
+      return;
+    }
+  }
+#endif
   log_jit_wait(e);
   e->jit_binary_path = e->jit_future.get();
 #else

@@ -11,6 +11,14 @@
 #include <typeindex>
 #include <variant>
 
+#include "config.h"
+
+#if JIT_PIPELINE_FALLBACK
+#include <map>
+
+#include "jit.h"
+#endif
+
 #include "common.h"
 #include "vectordesc.h"
 
@@ -41,6 +49,10 @@ class Event : public std::enable_shared_from_this<Event> {
   std::string jit_binary_path;
   std::string jit_kernel_hash;
   bool is_locked_for_jit = false;
+#if JIT_PIPELINE_FALLBACK
+  bool jit_pipeline_fallback = false;
+  bool jit_eager_fallback = false;
+#endif
   // This event's output was inlined into a later consumer, so it may not need
   // to run.  Whether it does is decided later, once the vector's last handle
   // has gone: see EventQueue::output_still_needed.  `inlined_into` names the
@@ -85,6 +97,9 @@ class EventQueue {
   bool try_fuse(std::shared_ptr<Event> last, std::shared_ptr<Event> e);
   void lock_for_jit(std::shared_ptr<Event> e);
   void flush_jit_batch();
+#if JIT_PIPELINE_FALLBACK
+  void await_jit_compilations();
+#endif
 
   void submit(std::shared_ptr<Event> e);
   void set_max_queue_depth(size_t depth) { max_queue_depth_ = depth; }
@@ -169,6 +184,13 @@ class EventQueue {
   std::vector<std::pair<std::vector<uint8_t>, std::string>>
       pending_unique_kernels_;
   std::vector<std::shared_ptr<Event>> pending_jit_events_;
+#if JIT_PIPELINE_FALLBACK
+  struct InflightJitKernel {
+    std::shared_future<std::string> binary;
+    int slot;
+  };
+  std::map<Signature, InflightJitKernel> inflight_jit_kernels_;
+#endif
 
   std::string current_binary_path_;
 };

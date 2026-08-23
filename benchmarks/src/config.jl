@@ -3,13 +3,13 @@ const DEFAULT_RUN_TIMEOUT = 1800
 struct Paths
     benchmarks::String
     repo::String
-    variants::String
+    backends::String
     environment::String
     config::String
 end
 
 Paths(config::AbstractString = DEFAULT_CONFIG) = Paths(
-    BENCHMARK_DIR, REPO_ROOT, VARIANT_DIR, DEFAULT_ENV, abspath(config))
+    BENCHMARK_DIR, REPO_ROOT, BACKEND_DIR, DEFAULT_ENV, abspath(config))
 
 Base.@kwdef mutable struct Options
     benchmarks::Vector{String} = String[]
@@ -60,6 +60,7 @@ struct RunnerDefaults
     seed::Int
     variants::Vector{String}
     group_by_variant::Bool
+    benchmark_root::String
 end
 
 struct SetupSpec
@@ -172,11 +173,11 @@ function required(table, key::AbstractString, context::AbstractString)
 end
 
 function load_variants(paths::Paths)
-    isdir(paths.variants) || error("missing variants directory $(paths.variants)")
+    isdir(paths.backends) || error("missing backends directory $(paths.backends)")
     definitions = Dict{String,VariantSpec}()
-    files = sort(filter(isfile, joinpath.(readdir(paths.variants; join = true),
-                                         "variant.toml")))
-    isempty(files) && error("no variant.toml files found in $(paths.variants)")
+    files = sort(filter(path -> isfile(path) && endswith(path, ".toml"),
+                        readdir(paths.backends; join = true)))
+    isempty(files) && error("no backend TOML files found in $(paths.backends)")
     for file in files
         table = TOML.parsefile(file)
         name = string(required(table, "name", file))
@@ -214,7 +215,13 @@ function load_config(path::AbstractString = DEFAULT_CONFIG)
         default_dpus, default_warmup, default_iterations, default_ntrials,
         Int(get(runner, "seed", 1)),
         string_list(runner, "variants"; default = sort(collect(keys(variants)))),
-        Bool(get(runner, "group_by_variant", false)))
+        Bool(get(runner, "group_by_variant", false)),
+        string(get(runner, "benchmark_root", "main-benchmarks")))
+
+    benchmark_root = abspath(paths.benchmarks, defaults.benchmark_root)
+    startswith(benchmark_root, paths.benchmarks * "/") ||
+        error("runner.benchmark_root leaves the benchmark tree")
+    isdir(benchmark_root) || error("missing benchmark root $benchmark_root")
 
     unknown_defaults = setdiff(defaults.variants, collect(keys(variants)))
     isempty(unknown_defaults) || error(

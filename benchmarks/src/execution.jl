@@ -14,6 +14,7 @@ function variant_context(config::RunnerConfig, case::RunCase)
         "benchmarks" => config.paths.benchmarks,
         "install" => joinpath(config.paths.repo, "install"),
         "julia" => Base.julia_cmd().exec[1],
+        "benchmark_root" => config.defaults.benchmark_root,
         "benchmark" => case.benchmark,
         "dpus" => string(case.dpus),
         "elements" => string(total_elements(case)),
@@ -400,7 +401,7 @@ function announce_task!(config::RunnerConfig, task::BenchmarkTask,
         push!(state.announced_profiles, profile.path)
     end
     case = task.case
-    @info "Benchmark case" benchmark = task.name dpus = case.dpus elements_per_dpu = case.elements_per_dpu total_elements = total_elements(case) iterations = case.iterations ntrials = task.ntrials
+    @info "Benchmark case" benchmark = task.name dpus = case.dpus elements_per_dpu = case.elements_per_dpu total_elements = total_elements(case) iterations = case.iterations ntrials = task.ntrials check = case.check
 end
 
 function pending_trials(task::BenchmarkTask, variant::VariantSpec, profile,
@@ -500,6 +501,8 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
             allowed = options.check && variant_name == "cpu" ||
                       variant_name in task.variants
             allowed || continue
+            variant = config.variants[variant_name]
+            is_implemented(config, variant, task.case) || continue
             announce_task!(config, task, state)
             run_task!(config, task, variant_name, options, state; invocation)
         end
@@ -508,6 +511,8 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
             announce_task!(config, task, state)
             order = options.check ? unique(["cpu"; task.variants]) : task.variants
             for variant_name in order
+                variant = config.variants[variant_name]
+                is_implemented(config, variant, task.case) || continue
                 run_task!(config, task, variant_name, options, state; invocation)
             end
         end

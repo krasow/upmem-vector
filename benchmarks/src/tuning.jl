@@ -282,8 +282,9 @@ function tuning_source_fingerprint(config::RunnerConfig, spec::BenchmarkSpec)
         joinpath(config.paths.repo, "host"),
         joinpath(config.paths.repo, "tools"),
         joinpath(config.paths.benchmarks, "src"),
-        joinpath(config.paths.benchmarks, "variants", "polymerpim", "variant.toml"),
-        joinpath(config.paths.benchmarks, "variants", "polymerpim", spec.name),
+        joinpath(config.paths.backends, "polymerpim.toml"),
+        joinpath(config.paths.benchmarks, config.defaults.benchmark_root,
+                 "polymerpim", spec.name),
     ]
     extensions = Set((".c", ".cc", ".cpp", ".h", ".inl", ".jl", ".py", ".toml"))
     files = String[]

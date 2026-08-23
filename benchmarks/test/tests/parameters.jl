@@ -1,6 +1,6 @@
 @testset "parameter generation" begin
     c_source = joinpath(
-        BENCHMARKS, "variants", "baseline", "elementwise", "Param.h")
+        BENCHMARKS, "main-benchmarks", "baseline", "elementwise", "Param.h")
     c_params = generated_parameters(
         c_source; elements = 128, dpus = 2, warmup = 0, iterations = 1,
         check = true, seed = 7, fixed = Dict{String,Any}(),
@@ -10,7 +10,7 @@
     @test occursin("#define OPERATION(a, b) a + b", c_params)
 
     julia_source = joinpath(
-        BENCHMARKS, "variants", "julia", "elementwise", "Param.jl")
+        BENCHMARKS, "main-benchmarks", "julia", "elementwise", "Param.jl")
     julia_params = generated_parameters(
         julia_source; elements = 128, dpus = 2, warmup = 0, iterations = 1,
         check = false, seed = 7, fixed = Dict{String,Any}(),

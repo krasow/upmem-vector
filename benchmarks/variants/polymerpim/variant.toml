@@ -1,5 +1,0 @@
-name = "polymerpim"
-directory = "variants/polymerpim/{benchmark}"
-parameter_file = "Param.h"
-build = ["make clean", "make"]
-run = "./run"

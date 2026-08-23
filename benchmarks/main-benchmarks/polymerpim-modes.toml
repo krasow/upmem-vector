@@ -1,0 +1,22 @@
+[runner]
+benchmark_root = "main-benchmarks"
+dpus = [64, 128, 256, 512, 1024, 2048]
+warmup = 5
+iterations = 20
+ntrials = 5
+seed = 1
+variants = ["polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"]
+group_by_variant = true
+
+[[elementwise]]
+elements_per_dpu = [2097152, 3145728]
+operation = "-abs(((a) + (b)) - (a))"
+
+[[knn]]
+elements_per_dpu = [262144, 524288]
+iterations = 1
+parameters = { dim = 10, k = 1 }
+
+[[linreg]]
+elements_per_dpu = [524288, 1048576]
+parameters = { dim = 10, scaling_shift = 12, learning_shift = 24, learning_rate = 1 }

@@ -3,7 +3,7 @@
 # For the whitespace hooks as well, use: pre-commit run --all-files
 set -euo pipefail
 
-find common dpu host test julia benchmarks/variants -type f \
+find common dpu host test julia benchmarks/main-benchmarks benchmarks/dynamic-benchmarks -type f \
     \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' \
        -o -name '*.h' -o -name '*.hpp' -o -name '*.inl' \) \
     -not -path '*/build/*' \

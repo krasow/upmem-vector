@@ -1,4 +1,0 @@
-name = "julia"
-directory = "variants/julia/{benchmark}"
-parameter_file = "Param.jl"
-run = "\"{julia}\" --project=\"{repo}/julia\" run.jl"

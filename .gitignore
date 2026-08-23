@@ -23,6 +23,8 @@ config.h
 .envrc
 opcodes.h
 *.perfetto-trace
+__pycache__/
+*.pyc
 
 # Julia
 julia/Manifest.toml
