@@ -2,7 +2,6 @@ bin
 bin/*
 *.dpu
 *.so
-.localenv
 build/
 build/*
 vectordpu_test
@@ -13,8 +12,10 @@ vectordpu_test
 *.txt
 *.config
 *.old
-install/*
 install
+install/**
+opt
+opt/**
 kernelids.h
 opinfo.h
 kernels.h
@@ -25,5 +26,13 @@ opcodes.h
 
 # Julia
 julia/Manifest.toml
-julia/src/opcodes.jl
 julia/lib/wrapper/PolymerPIM/*
+
+# Benchmarks
+benchmarks/**/Param.generated.h
+benchmarks/**/Param.generated.jl
+benchmarks/**/bin/
+benchmarks/**/data/
+benchmarks/**/generate_ref
+benchmarks/**/run
+benchmarks/results/

@@ -131,6 +131,10 @@ jobs:
         if: matrix.julia
         run: make -C julia test
 
+      - name: Benchmark runner tests
+        if: matrix.julia
+        run: julia benchmarks/test/runtests.jl
+
       - name: Installed configuration
         if: always()
         run: cat "$DESTDIR/share/vectordpu/build.config" 2>/dev/null || echo "nothing installed"

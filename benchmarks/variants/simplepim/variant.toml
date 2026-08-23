@@ -1,0 +1,5 @@
+name = "simplepim"
+directory = "variants/simplepim/{benchmark}"
+parameter_file = "Param.h"
+build = ["make clean", "make"]
+run = "./bin/host"

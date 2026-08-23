@@ -11,6 +11,11 @@ to run the test suite, enable the upmem env
 make test
 ```
 
+`make` installs the repository-local dependencies on first use.
+
+The self-contained benchmark suite is documented in
+[`benchmarks/README.md`](benchmarks/README.md).
+
 ## Current limitation
 
 The public API is intentionally kept stable, but the current JIT lowering does
