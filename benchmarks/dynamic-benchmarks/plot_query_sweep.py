@@ -188,27 +188,31 @@ def plot_results(boundaries, measurements):
             "Total elements", minor_grid=True,
         )
 
-    compile_axis.set_title("Compilation overhead\nfirst batch − reused batch",
+    compile_axis.set_title("Compilation overhead\n"
+                           "Cold first batch minus reused batch",
                            fontweight="bold")
-    compile_axis.set_ylabel("First-batch overhead (ms)")
+    compile_axis.set_ylabel("Cold-start overhead (ms)")
 
-    boundary_axis.set_title("Batches until faster than Pipeline\n"
-                            "each compiler vs Pipeline", fontweight="bold")
+    boundary_axis.set_title("Break-even vs Pipeline\n"
+                            "Batches needed to recover compile time",
+                            fontweight="bold")
     boundary_axis.set_yscale("log")
-    boundary_axis.set_ylabel("Required batches (lower is better)")
+    boundary_axis.set_ylabel("Batches to break even")
     boundary_axis.axhline(1, color="#777777", linewidth=1)
 
-    query_axis.set_title("Timed work per query\ncold first batch + four repeats",
+    query_axis.set_title("Query latency\n"
+                         "Cold first batch plus four reused batches",
                          fontweight="bold")
     query_axis.set_yscale("log")
     query_axis.set_ylabel("Mean query time (ms)")
 
-    wall_axis.set_title("Whole process for 10 queries\n"
-                        "setup + checks + shutdown", fontweight="bold")
+    wall_axis.set_title("End-to-end runtime\n"
+                        "Ten queries including setup and validation",
+                        fontweight="bold")
     wall_axis.set_yscale("log")
-    wall_axis.set_ylabel("Wall time (s)")
+    wall_axis.set_ylabel("Process time (s)")
 
-    figure.suptitle("Dynamic query compilation trade-offs", fontsize=15,
+    figure.suptitle("Dynamic query performance", fontsize=15,
                     fontweight="bold")
     figure.legend(handles=legend_handles(MODEL_ORDER), loc="upper center",
                   ncol=4, frameon=False,
