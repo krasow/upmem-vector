@@ -70,7 +70,8 @@ end
 
 function generated_parameters(source::AbstractString; elements::Int, dpus::Int,
                               warmup::Int, iterations::Int, check::Bool,
-                              seed::Int, fixed, operation = nothing)
+                              load_ref::Bool, seed::Int, fixed,
+                              operation = nothing)
     julia = endswith(source, ".jl")
     text = defaults_only(read(source, String), source)
     values = (
@@ -79,7 +80,10 @@ function generated_parameters(source::AbstractString; elements::Int, dpus::Int,
         (("iterations", "iter"), iterations),
         (("warmup_iterations",), warmup),
         (("check_correctness",), Int(check)),
-        (("load_ref",), Int(check)),
+        # Independent of check_correctness: the sweep loads inputs from the
+        # reference files so every variant's load stage is the same read,
+        # whether or not results are verified afterwards.
+        (("load_ref",), Int(load_ref || check)),
         (("seed",), seed),
     )
     for (names, value) in values

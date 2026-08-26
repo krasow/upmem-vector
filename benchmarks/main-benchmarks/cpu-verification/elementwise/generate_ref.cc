@@ -1,3 +1,4 @@
+#include <benchmark.h>
 #include <omp.h>
 
 #include <chrono>
@@ -27,6 +28,7 @@ void write_bin(const std::string& filename, const void* data, size_t size) {
 }
 
 int main(int argc, char** argv) {
+  system("mkdir -p data");
   std::srand(seed);  // Use seed from Param.h
 
   std::cout << "Generating reference data for N=" << N << " using seed=" << seed
@@ -34,7 +36,6 @@ int main(int argc, char** argv) {
 
   std::vector<T> a(N);
   std::vector<T> b(N);
-  std::vector<T> res(N);
 
   // Deterministic per-index RNG so the values do not depend on the
   // OpenMP partitioning of the parallel loop. Earlier code used a
@@ -55,6 +56,16 @@ int main(int argc, char** argv) {
     a[i] = (T)(splitmix64((uint64_t)seed * 2 + (i << 1)) % 10);
     b[i] = (T)(splitmix64((uint64_t)seed * 2 + (i << 1) + 1) % 10);
   }
+
+  if (bench_ref_data_only()) {
+    std::cout << "Writing input files to ./data/ ..." << std::endl;
+    write_bin("data/ref_a.bin", a.data(), N * sizeof(T));
+    write_bin("data/ref_b.bin", b.data(), N * sizeof(T));
+    std::cout << "Reference input generation complete." << std::endl;
+    return 0;
+  }
+
+  std::vector<T> res(N);
 
   std::cout << "Starting warmup..." << std::endl;
   for (uint32_t iter = 0; iter < warmup_iterations; iter++) {

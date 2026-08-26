@@ -16,6 +16,12 @@ include(isfile(_gen) ? _gen : joinpath(@__DIR__, "Param.jl"))
 
 const LABEL = "julia"
 
+# Bound as constants, not locals in main(): a local holding Param.T is only a
+# DataType to inference, which makes every host array abstractly typed and
+# turns each element store into a dynamic dispatch.
+const T = Param.T
+const N = Param.N
+
 # `result` is assigned inside round_trip, so Julia boxes it and indexing it from
 # a closure dispatches per element -- 42x slower over N.  Compare in a typed
 # function instead.
@@ -27,8 +33,6 @@ function first_mismatch(got::Vector{T}, want::Vector{T}) where {T}
 end
 
 function main()
-    T = Param.T
-    N = Param.N
 
     stages = BenchStages()
     warm_stages = BenchStages()
@@ -55,7 +59,7 @@ function main()
             load_bin!(joinpath(Param.ref_path, "ref_res.bin"), expected)
         end
     else
-        for i in 1:N
+        @inbounds for i in 1:N
             a[i] = T((i - 1) % 10)
             b[i] = T((i * 2) % 10)
         end

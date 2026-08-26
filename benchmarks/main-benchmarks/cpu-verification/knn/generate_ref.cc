@@ -1,3 +1,4 @@
+#include <benchmark.h>
 #include <omp.h>
 
 #include <algorithm>
@@ -63,25 +64,37 @@ int main() {
   }
   write_bin("data/ref_query.bin", query.data(), DIM * sizeof(T));
 
+  const bool data_only = bench_ref_data_only();
+
   // Process one column at a time to avoid DIM*N host allocation
-  std::vector<RED_T> sq_dists(N, 0);
+  std::vector<RED_T> sq_dists;
+  if (!data_only) {
+    sq_dists.assign(N, 0);
+  }
   for (uint32_t d = 0; d < DIM; d++) {
     std::vector<T> col(N);
     for (uint64_t i = 0; i < N; i++) {
       col[i] = (T)((i * (DIM + 1) + d) % 256);
     }
 
-    RED_T qd = query[d];
+    if (!data_only) {
+      RED_T qd = query[d];
 #pragma omp parallel for
-    for (uint64_t i = 0; i < N; i++) {
-      RED_T diff = (RED_T)col[i] - qd;
-      sq_dists[i] += diff * diff;
+      for (uint64_t i = 0; i < N; i++) {
+        RED_T diff = (RED_T)col[i] - qd;
+        sq_dists[i] += diff * diff;
+      }
     }
 
     write_bin("data/SoA/col_" + std::to_string(d) + ".bin", col.data(),
               N * sizeof(T));
   }
   write_row_major_data();
+
+  if (data_only) {
+    std::cout << "Reference input generation complete." << std::endl;
+    return 0;
+  }
 
   // Benchmark (time only the distance+selection computation, not data init)
   auto t0 = std::chrono::high_resolution_clock::now();

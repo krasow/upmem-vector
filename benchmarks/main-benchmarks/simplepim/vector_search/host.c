@@ -62,12 +62,21 @@ int main(void) {
   bench_stage_end(&stages);
 
   bench_stage_begin(&stages, BENCH_STAGE_LOAD);
+  if (load_ref) {
+    /* records.bin carries the same (DIM + 1)-word stride, trailing row index
+     * included, so the scatter buffer is filled by one sequential read. */
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/AoS/records.bin", ref_path);
+    bench_load_bin(path, records, (size_t)nr_elements * (DIM + 1) * sizeof(T));
+  } else {
 #pragma omp parallel for
-  for (uint64_t i = 0; i < nr_elements; ++i) {
-    for (uint32_t d = 0; d < DIM; ++d) {
-      records[i * (DIM + 1) + d] = vector_search_dataset_value(seed, i, d, DIM);
+    for (uint64_t i = 0; i < nr_elements; ++i) {
+      for (uint32_t d = 0; d < DIM; ++d) {
+        records[i * (DIM + 1) + d] =
+            vector_search_dataset_value(seed, i, d, DIM);
+      }
+      records[i * (DIM + 1) + DIM] = (T)i;
     }
-    records[i * (DIM + 1) + DIM] = (T)i;
   }
   bench_stage_end(&stages);
 

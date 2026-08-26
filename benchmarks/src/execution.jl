@@ -76,7 +76,7 @@ function prepare_variant(config::RunnerConfig, variant::VariantSpec,
         generated = generated_parameters(
             source; elements = total_elements(case), dpus = case.dpus,
             warmup = case.warmup, iterations = case.iterations,
-            check = case.check, seed = case.seed,
+            check = case.check, load_ref = case.load_ref, seed = case.seed,
             fixed = case.parameters, operation = case.operation)
         write_parameters(config, source, generated; dry_run)
     end
@@ -200,7 +200,8 @@ function resolved_case(spec::BenchmarkSpec, defaults::RunnerDefaults,
         spec.name, dpus, elements_per_dpu,
         something(options.warmup, spec.warmup, defaults.warmup),
         something(options.iterations, spec.iterations, defaults.iterations),
-        options.check, something(spec.seed, defaults.seed), spec.parameters,
+        options.check, options.load_ref,
+        something(spec.seed, defaults.seed), spec.parameters,
         spec.operation)
 end
 
@@ -271,6 +272,7 @@ function run_record(case::RunCase, variant::AbstractString, profile,
         "iterations" => case.iterations,
         "trial" => trial,
         "check" => case.check,
+        "load_ref" => case.load_ref,
         "seed" => case.seed,
     )
     isempty(case.parameters) || (record["parameters"] = case.parameters)
@@ -513,6 +515,89 @@ function run_task!(config::RunnerConfig, task::BenchmarkTask,
     end
 end
 
+# Reference inputs ————————————————————————————————————————————————————————
+#
+# Every variant of a case reads the same files, so they are materialized once
+# per case and removed as soon as that case's variants are done: at sweep sizes
+# a single benchmark's reference set runs to tens of gigabytes, and keeping all
+# of them would need several hundred.
+
+const REFERENCE_VARIANT = "cpu"
+
+function reference_variant(config::RunnerConfig)
+    return get(config.variants, REFERENCE_VARIANT, nothing)
+end
+
+needs_reference_data(options::Options) =
+    (options.load_ref || options.check) && !options.generate_only
+
+function reference_data_directory(config::RunnerConfig, case::RunCase)
+    variant = reference_variant(config)
+    variant === nothing && return nothing
+    return joinpath(variant_directory(config, variant, case), "data")
+end
+
+function ensure_reference_data!(config::RunnerConfig, task::BenchmarkTask,
+                                options::Options)
+    needs_reference_data(options) || return true
+    variant = reference_variant(config)
+    variant === nothing &&
+        error("loading inputs from file needs a \"$REFERENCE_VARIANT\" backend")
+    case = task.case
+    # A benchmark with no CPU generator has no reference files to read; its
+    # variants keep synthesizing inputs in-process.
+    is_implemented(config, variant, case) || return true
+
+    if options.dry_run
+        println("  reference data for $(case.benchmark) " *
+                "(N=$(total_elements(case)))")
+        return true
+    end
+
+    directory, context = prepare_variant(config, variant, case)
+    for raw in variant.build
+        result = execute_command(
+            config, render_template(raw, context), directory, case.dpus;
+            timeout = options.build_timeout, echo = options.verbose)
+        successful(result) || return false
+    end
+
+    # A correctness run needs the expected outputs, so only a plain perf sweep
+    # skips the CPU reference computation and writes inputs alone.
+    env = options.check ? Pair{String,String}[] : ["REF_DATA_ONLY" => "1"]
+    println("-- reference data ($(case.benchmark), N=$(total_elements(case)))")
+    result = execute_command(
+        config, render_template(variant.run, context), directory, case.dpus;
+        timeout = options.timeout, echo = options.verbose, env)
+    return successful(result)
+end
+
+function discard_reference_data!(config::RunnerConfig, task::BenchmarkTask,
+                                 options::Options)
+    (options.keep_ref_data || options.dry_run) && return
+    needs_reference_data(options) || return
+    directory = reference_data_directory(config, task.case)
+    (directory === nothing || !ispath(directory)) && return
+    rm(directory; recursive = true, force = true)
+end
+
+# Regenerating is expensive, so a case whose trials are all checkpointed is
+# skipped before any data is written.
+function task_is_complete(config::RunnerConfig, task::BenchmarkTask,
+                          options::Options, state::ExecutionState)
+    options.resume || return false
+    for variant_name in task.variants
+        variant = config.variants[variant_name]
+        is_implemented(config, variant, task.case) || continue
+        profile = variant.use_profile ? task.profile : nothing
+        for trial in 1:task.ntrials
+            key = run_key(run_record(task.case, variant.name, profile, trial))
+            key in state.runs.completed || return false
+        end
+    end
+    return true
+end
+
 function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
                         requested::Vector{String}, options::Options;
                         invocation::Int = 0)
@@ -520,26 +605,48 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
     state = ExecutionState(run_state(options), String[], nothing, Set{String}())
 
     if config.defaults.group_by_variant
+        needs_reference_data(options) && @warn(
+            "group_by_variant regenerates each benchmark's reference data " *
+            "once per variant; task-major ordering avoids that")
         order = unique(reduce(vcat, (task.variants for task in tasks);
                               init = String[]))
-        order = options.check ? unique(["cpu"; order]) : order
         for variant_name in order, task in tasks
-            allowed = options.check && variant_name == "cpu" ||
-                      variant_name in task.variants
-            allowed || continue
+            variant_name in task.variants || continue
             variant = config.variants[variant_name]
             is_implemented(config, variant, task.case) || continue
             announce_task!(config, task, state)
-            run_task!(config, task, variant_name, options, state; invocation)
+            if !ensure_reference_data!(config, task, options)
+                push!(state.failures,
+                      "$(task.name)/reference-data: generation failed")
+                continue
+            end
+            try
+                run_task!(config, task, variant_name, options, state; invocation)
+            finally
+                discard_reference_data!(config, task, options)
+            end
         end
     else
         for task in tasks
+            if task_is_complete(config, task, options, state)
+                println("skip $(task.name) @ $(task.case.dpus) DPUs (completed)")
+                continue
+            end
             announce_task!(config, task, state)
-            order = options.check ? unique(["cpu"; task.variants]) : task.variants
-            for variant_name in order
-                variant = config.variants[variant_name]
-                is_implemented(config, variant, task.case) || continue
-                run_task!(config, task, variant_name, options, state; invocation)
+            if !ensure_reference_data!(config, task, options)
+                push!(state.failures,
+                      "$(task.name)/reference-data: generation failed")
+                continue
+            end
+            try
+                for variant_name in task.variants
+                    variant = config.variants[variant_name]
+                    is_implemented(config, variant, task.case) || continue
+                    run_task!(config, task, variant_name, options, state;
+                              invocation)
+                end
+            finally
+                discard_reference_data!(config, task, options)
             end
         end
     end

@@ -1,5 +1,7 @@
-CXX = g++
-CXXFLAGS = -O3 -fopenmp -I. $(EXTRA_FLAGS)
+CXX ?= g++
+CXXFLAGS := -std=c++17 -O3 -fopenmp -I. -I../.. $(EXTRA_FLAGS)
+
+.PHONY: all clean
 
 all: generate_ref
 
