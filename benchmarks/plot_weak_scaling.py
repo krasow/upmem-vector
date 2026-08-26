@@ -2,65 +2,24 @@
 
 import csv
 import math
-from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 
-try:
-    import tomllib
-except ImportError:  # Python < 3.11
-    import tomli as tomllib
+from _plot_common import (
+    BENCHMARK_ORDER,
+    RESULTS,
+    VARIANT_ORDER,
+    VARIANT_STYLES,
+    average,
+    benchmark_title,
+    complete_trial_rows,
+    grid_shape,
+    load_trials,
+    sample_stddev,
+)
 
-BENCHMARKS = Path(__file__).resolve().parent
-CONFIG = BENCHMARKS / "main-benchmarks" / "benchmark.toml"
-RUNS_CSV = BENCHMARKS / "results" / "runs.csv"
-RESULTS = BENCHMARKS / "results"
 SUMMARY_CSV = RESULTS / "weak-scaling-summary.csv"
 ITERATION_FIGURE = RESULTS / "weak-scaling-mean-iteration.pdf"
 RUNTIME_FIGURE = RESULTS / "weak-scaling-total-runtime.pdf"
-
-BENCHMARK_ORDER = (
-    "elementwise",
-    "hist",
-    "red",
-    "kmeans",
-    "knn",
-    "linreg",
-    "multitask_classifier",
-    "vector_search",
-)
-
-EXCLUDED_BENCHMARKS = {"multitask_classifier"}
-
-BENCHMARK_LABELS = {
-    "elementwise": "Elementwise",
-    "hist": "Histogram",
-    "kmeans": "K-Means",
-    "knn": "KNN",
-    "linreg": "Linear Regression",
-    "multitask_classifier": "Multitask Classifier",
-    "red": "Reduction",
-    "vector_search": "Vector Search",
-}
-
-VARIANT_ORDER = ("polymerpim", "julia", "baseline", "simplepim")
-VARIANT_STYLES = {
-    "polymerpim": ("PolymerPIM", "#3264a8", "o", "-"),
-    "julia": ("Julia", "#dd7f27", "D", "-"),
-    "baseline": ("Hand-tuned baseline", "#3b8f5a", "s", "-"),
-    "simplepim": ("SimplePIM", "#b94a48", "^", "-"),
-}
-
-
-@dataclass(frozen=True)
-class BenchmarkSelection:
-    name: str
-    elements_per_dpu: int
-    dpus: tuple
-    variants: tuple
-    warmup: int
-    iterations: int
-    ntrials: int
 
 
 @dataclass(frozen=True)
@@ -76,91 +35,7 @@ class Point:
     runtime_stddev_s: float
 
 
-def load_selections():
-    with CONFIG.open("rb") as file:
-        config = tomllib.load(file)
-
-    defaults = config["runner"]
-    selections = []
-    for name in BENCHMARK_ORDER:
-        if name in EXCLUDED_BENCHMARKS:
-            continue
-        specs = config.get(name, [])
-        if not specs:
-            continue
-        target_size = min(
-            int(size)
-            for spec in specs
-            for size in spec["elements_per_dpu"]
-        )
-        spec = next(
-            spec for spec in specs if target_size in spec["elements_per_dpu"]
-        )
-        selections.append(BenchmarkSelection(
-            name=name,
-            elements_per_dpu=target_size,
-            dpus=tuple(int(value) for value in spec.get("dpus", defaults["dpus"])),
-            variants=tuple(spec.get("variants", defaults["variants"])),
-            warmup=int(spec.get("warmup", defaults["warmup"])),
-            iterations=int(spec.get("iterations", defaults["iterations"])),
-            ntrials=int(defaults["ntrials"]),
-        ))
-    return selections
-
-
-def load_successful_rows():
-    rows = []
-    malformed = 0
-    with RUNS_CSV.open(newline="") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            if None in row:
-                malformed += 1
-                continue
-            if row["status"] != "complete" or row["command_status"] != "success":
-                continue
-            if row["check"].lower() != "false":
-                continue
-            try:
-                row["dpus"] = int(row["dpus"])
-                row["elements_per_dpu"] = int(row["elements_per_dpu"])
-                row["warmup"] = int(row["warmup"])
-                row["iterations"] = int(row["iterations"])
-                row["trial"] = int(row["trial"])
-                row["time"] = float(row["time"])
-                row["real_s"] = float(row["real_s"])
-            except (KeyError, TypeError, ValueError):
-                malformed += 1
-                continue
-            rows.append(row)
-    if malformed:
-        print(f"Ignored {malformed} malformed/incomplete CSV row(s)")
-    return rows
-
-
-def aggregate(rows, selections):
-    selections_by_name = {selection.name: selection for selection in selections}
-    latest_trials = {}
-    for row in rows:
-        selection = selections_by_name.get(row["benchmark"])
-        if selection is None:
-            continue
-        if (row["elements_per_dpu"] != selection.elements_per_dpu
-                or row["dpus"] not in selection.dpus
-                or row["variant"] not in selection.variants
-                or row["warmup"] != selection.warmup
-                or row["iterations"] != selection.iterations
-                or not 1 <= row["trial"] <= selection.ntrials):
-            continue
-        key = (row["benchmark"], row["variant"], row["dpus"], row["trial"])
-        previous = latest_trials.get(key)
-        if previous is None or row["timestamp"] > previous["timestamp"]:
-            latest_trials[key] = row
-
-    grouped = defaultdict(list)
-    for (benchmark, variant, dpus, _trial), row in latest_trials.items():
-        grouped[(benchmark, variant, dpus)].append(row)
-
+def aggregate(latest, selections):
     points = []
     complete_benchmarks = []
     for selection in selections:
@@ -168,8 +43,8 @@ def aggregate(rows, selections):
         complete = True
         for variant in selection.variants:
             for dpus in selection.dpus:
-                trials = grouped.get((selection.name, variant, dpus), [])
-                if len(trials) != selection.ntrials:
+                trials = complete_trial_rows(latest, selection, variant, dpus)
+                if not trials:
                     complete = False
                     continue
                 iteration_values = [row["time"] for row in trials]
@@ -191,19 +66,6 @@ def aggregate(rows, selections):
         else:
             print(f"Omitting incomplete benchmark: {selection.name}")
     return points, complete_benchmarks
-
-
-def average(values):
-    return sum(values) / len(values)
-
-
-def sample_stddev(values):
-    if len(values) < 2:
-        return 0.0
-    mean = average(values)
-    return math.sqrt(
-        sum((value - mean) ** 2 for value in values) / (len(values) - 1)
-    )
 
 
 def geomean(values):
@@ -263,14 +125,6 @@ def print_speedups(points, value, heading):
               + ", ".join(comparisons))
 
 
-def format_elements(value):
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.3g}M"
-    if value >= 1_000:
-        return f"{value / 1_000:.3g}K"
-    return str(value)
-
-
 def configure_dpu_axis(axis, dpus):
     try:
         axis.set_xscale("log", base=2)
@@ -288,8 +142,7 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
-    columns = 3
-    rows = math.ceil(len(benchmarks) / columns)
+    rows, columns = grid_shape(len(benchmarks))
     figure, axes = plt.subplots(rows, columns, figsize=(10, rows * 2.75),
                                 squeeze=False)
     flat_axes = axes.ravel()
@@ -320,11 +173,8 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
                 capsize=2.5, label=label,
             )
 
-        axis.set_title(
-            f"{BENCHMARK_LABELS[benchmark]}\n"
-            f"{format_elements(elements_per_dpu)} elements/DPU",
-            fontsize=11, fontweight="bold",
-        )
+        axis.set_title(benchmark_title(benchmark, elements_per_dpu),
+                       fontsize=11, fontweight="bold")
         configure_dpu_axis(axis, dpus)
         axis.set_xlabel("DPUs")
         if index % columns == 0:
@@ -371,10 +221,9 @@ def write_summary(points):
 
 
 def main():
-    if not RUNS_CSV.is_file():
-        raise SystemExit(f"missing benchmark results: {RUNS_CSV}")
     RESULTS.mkdir(parents=True, exist_ok=True)
-    points, benchmarks = aggregate(load_successful_rows(), load_selections())
+    selections, latest = load_trials()
+    points, benchmarks = aggregate(latest, selections)
     if not benchmarks:
         raise SystemExit("no complete benchmark grids found")
 

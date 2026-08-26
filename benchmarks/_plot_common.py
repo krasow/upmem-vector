@@ -1,0 +1,182 @@
+"""Shared configuration and trial loading for benchmark plots."""
+
+import csv
+import math
+from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+
+BENCHMARKS = Path(__file__).resolve().parent
+CONFIG = BENCHMARKS / "main-benchmarks" / "benchmark.toml"
+RESULTS = BENCHMARKS / "results"
+RUNS_CSV = RESULTS / "runs.csv"
+
+BENCHMARK_ORDER = (
+    "elementwise",
+    "hist",
+    "red",
+    "kmeans",
+    "knn",
+    "linreg",
+    "multitask_classifier",
+    "vector_search",
+)
+EXCLUDED_BENCHMARKS = {"multitask_classifier"}
+BENCHMARK_LABELS = {
+    "elementwise": "Elementwise",
+    "hist": "Histogram",
+    "kmeans": "K-Means",
+    "knn": "KNN",
+    "linreg": "Linear Regression",
+    "multitask_classifier": "Multitask Classifier",
+    "red": "Reduction",
+    "vector_search": "Vector Search",
+}
+
+VARIANT_ORDER = ("polymerpim", "julia", "baseline", "simplepim")
+VARIANT_STYLES = {
+    "polymerpim": ("PolymerPIM", "#3264a8", "o", "-"),
+    "julia": ("Julia", "#dd7f27", "D", "-"),
+    "baseline": ("Hand-tuned baseline", "#3b8f5a", "s", "-"),
+    "simplepim": ("SimplePIM", "#b94a48", "^", "-"),
+}
+
+
+@dataclass(frozen=True)
+class BenchmarkSelection:
+    name: str
+    elements_per_dpu: int
+    dpus: tuple
+    variants: tuple
+    warmup: int
+    iterations: int
+    ntrials: int
+
+
+def load_selections():
+    with CONFIG.open("rb") as file:
+        config = tomllib.load(file)
+
+    defaults = config["runner"]
+    selections = []
+    for name in BENCHMARK_ORDER:
+        if name in EXCLUDED_BENCHMARKS:
+            continue
+        specs = config.get(name, [])
+        if not specs:
+            continue
+        target_size = min(
+            int(size) for spec in specs for size in spec["elements_per_dpu"]
+        )
+        spec = next(
+            spec for spec in specs if target_size in spec["elements_per_dpu"]
+        )
+        selections.append(BenchmarkSelection(
+            name=name,
+            elements_per_dpu=target_size,
+            dpus=tuple(int(value) for value in spec.get("dpus", defaults["dpus"])),
+            variants=tuple(spec.get("variants", defaults["variants"])),
+            warmup=int(spec.get("warmup", defaults["warmup"])),
+            iterations=int(spec.get("iterations", defaults["iterations"])),
+            ntrials=int(defaults["ntrials"]),
+        ))
+    return selections
+
+
+def load_successful_rows():
+    rows = []
+    malformed = 0
+    with RUNS_CSV.open(newline="") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            if None in row or any(value is None for value in row.values()):
+                malformed += 1
+                continue
+            if row.get("status") != "complete" or row.get("command_status") != "success":
+                continue
+            if row.get("check", "").lower() != "false":
+                continue
+            try:
+                for field in ("dpus", "elements_per_dpu", "warmup", "iterations", "trial"):
+                    row[field] = int(row[field])
+                row["time"] = float(row["time"])
+                row["real_s"] = float(row["real_s"])
+            except (KeyError, TypeError, ValueError):
+                malformed += 1
+                continue
+            rows.append(row)
+    if malformed:
+        print(f"Ignored {malformed} malformed/incomplete CSV row(s)")
+    return rows
+
+
+def select_latest_trials(rows, selections):
+    """Return the newest configured row for each benchmark/variant/DPU/trial."""
+    selected = {}
+    by_name = {selection.name: selection for selection in selections}
+    for row in rows:
+        selection = by_name.get(row["benchmark"])
+        if selection is None:
+            continue
+        if (row["elements_per_dpu"] != selection.elements_per_dpu
+                or row["dpus"] not in selection.dpus
+                or row["variant"] not in selection.variants
+                or row["warmup"] != selection.warmup
+                or row["iterations"] != selection.iterations
+                or not 1 <= row["trial"] <= selection.ntrials):
+            continue
+        key = (row["benchmark"], row["variant"], row["dpus"], row["trial"])
+        previous = selected.get(key)
+        if previous is None or row["timestamp"] > previous["timestamp"]:
+            selected[key] = row
+    return selected
+
+
+def load_trials():
+    if not RUNS_CSV.is_file():
+        raise SystemExit(f"missing benchmark results: {RUNS_CSV}")
+    selections = load_selections()
+    return selections, select_latest_trials(load_successful_rows(), selections)
+
+
+def complete_trial_rows(latest, selection, variant, dpus):
+    rows = [
+        latest.get((selection.name, variant, dpus, trial))
+        for trial in range(1, selection.ntrials + 1)
+    ]
+    return [] if any(row is None for row in rows) else rows
+
+
+def average(values):
+    return sum(values) / len(values)
+
+
+def sample_stddev(values):
+    if len(values) < 2:
+        return 0.0
+    mean = average(values)
+    return math.sqrt(
+        sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    )
+
+
+def format_elements(value):
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.3g}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.3g}K"
+    return str(value)
+
+
+def benchmark_title(name, elements_per_dpu):
+    return (f"{BENCHMARK_LABELS[name]}\n"
+            f"{format_elements(elements_per_dpu)} elements/DPU")
+
+
+def grid_shape(count, max_columns=3):
+    columns = min(max_columns, count)
+    return math.ceil(count / columns), columns
