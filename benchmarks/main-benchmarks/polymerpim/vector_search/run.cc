@@ -65,9 +65,16 @@ int main() {
       bench_stage_end(&stages);
 
       bench_stage_begin(&stages, BENCH_STAGE_LOAD);
+      if (load_ref) {
+        bench_load_bin(
+            (std::string(ref_path) + "/SoA/col_" + std::to_string(d) + ".bin")
+                .c_str(),
+            host_column.data(), N * sizeof(T));
+      } else {
 #pragma omp parallel for
-      for (uint64_t i = 0; i < N; ++i) {
-        host_column[i] = vector_search_dataset_value(seed, i, d, DIM);
+        for (uint64_t i = 0; i < N; ++i) {
+          host_column[i] = vector_search_dataset_value(seed, i, d, DIM);
+        }
       }
       bench_stage_end(&stages);
 

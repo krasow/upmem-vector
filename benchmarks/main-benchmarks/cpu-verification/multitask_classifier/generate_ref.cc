@@ -127,6 +127,11 @@ int main() {
     return 1;
   }
 
+  if (bench_ref_data_only()) {
+    std::cout << "Reference input generation complete." << std::endl;
+    return 0;
+  }
+
   std::vector<T> weights((uint64_t)CLASSES * FEATURES);
   auto start = std::chrono::high_resolution_clock::now();
   svm_metrics_t metrics = run_classifier(rows, weights);

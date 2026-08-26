@@ -15,6 +15,14 @@ include(isfile(_gen) ? _gen : joinpath(@__DIR__, "Param.jl"))
 
 const LABEL = "julia"
 
+# Bound as constants, not locals in main(): a local holding Param.T is only a
+# DataType to inference, which makes every host array abstractly typed and
+# turns each element store into a dynamic dispatch.
+const T = Param.T
+const N = Param.N
+const FEATURES = Param.FEATURES
+const CLASSES = Param.CLASSES
+
 # Ports of multitask_classifier_common.h.
 const SVM_MARGIN = 12
 const SVM_WEIGHT_DECAY = 8
@@ -43,10 +51,6 @@ function svm_update_weight(weight::Int32, gradient::Int64, rows::Integer)
 end
 
 function main()
-    T = Param.T
-    N = Param.N
-    FEATURES = Param.FEATURES
-    CLASSES = Param.CLASSES
 
     stages = BenchStages()
     warm_stages = BenchStages()
@@ -64,10 +68,19 @@ function main()
     stage_end!(stages)
 
     stage_begin!(stages, :load)
-    for i in 0:(N - 1)
-        host_classes[i + 1] = flow_class_for_row(i, CLASSES)
+    if Param.load_ref != 0
+        @printf("Loading reference data from %s...\n", Param.ref_path)
         for d in 0:(FEATURES - 1)
-            host_features[d + 1][i + 1] = flow_feature_value(i, d, CLASSES)
+            load_bin!(joinpath(Param.ref_path, "SoA", "col_$(d).bin"),
+                      host_features[d + 1])
+        end
+        load_bin!(joinpath(Param.ref_path, "SoA", "class_ids.bin"), host_classes)
+    else
+        @inbounds for i in 0:(N - 1)
+            host_classes[i + 1] = flow_class_for_row(i, CLASSES)
+            for d in 0:(FEATURES - 1)
+                host_features[d + 1][i + 1] = flow_feature_value(i, d, CLASSES)
+            end
         end
     end
     stage_end!(stages)

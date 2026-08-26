@@ -76,10 +76,16 @@ int main() {
   bench_stage_end(&stages);
 
   bench_stage_begin(&stages, BENCH_STAGE_LOAD);
+  if (load_ref) {
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s/AoS/rows.bin", ref_path);
+    bench_load_bin(path, data.data(), (size_t)N * DIM * sizeof(T));
+  } else {
 #pragma omp parallel for
-  for (uint64_t i = 0; i < N; ++i) {
-    for (uint32_t d = 0; d < DIM; ++d) {
-      data[i * DIM + d] = vector_search_dataset_value(seed, i, d, DIM);
+    for (uint64_t i = 0; i < N; ++i) {
+      for (uint32_t d = 0; d < DIM; ++d) {
+        data[i * DIM + d] = vector_search_dataset_value(seed, i, d, DIM);
+      }
     }
   }
   bench_stage_end(&stages);

@@ -17,10 +17,14 @@ include(isfile(_gen) ? _gen : joinpath(@__DIR__, "Param.jl"))
 
 const LABEL = "julia"
 
+# Bound as constants, not locals in main(): a local holding Param.T is only a
+# DataType to inference, which makes every host array abstractly typed and
+# turns each element store into a dynamic dispatch.
+const T = Param.T
+const N = Param.N
+const DIM = Param.DIM
+
 function main()
-    T = Param.T
-    N = Param.N
-    DIM = Param.DIM
     scaling_shift = Int32(Param.scaling_shift)
     s_half = scaling_shift ÷ 2
 
@@ -52,10 +56,14 @@ function main()
         end
     else
         # Same synthetic pattern as the C++ variant, so the two agree.
-        for i in 0:(N - 1)
-            for j in 0:(DIM - 1)
-                host_x[j + 1][i + 1] = T((i * (DIM + 1) + j) % 256)
+        # Column outer so each pass writes one array front to back.
+        @inbounds for j in 0:(DIM - 1)
+            column = host_x[j + 1]
+            for i in 0:(N - 1)
+                column[i + 1] = T((i * (DIM + 1) + j) % 256)
             end
+        end
+        @inbounds for i in 0:(N - 1)
             host_y[i + 1] = T((i * (DIM + 1) + DIM) % 256)
         end
     end

@@ -1,10 +1,10 @@
 function test_case(; benchmark = "elementwise", dpus = 2,
                    elements_per_dpu = 64, warmup = 0, iterations = 1,
-                   check = false, seed = 1, parameters = Dict{String,Any}(),
-                   operation = nothing)
+                   check = false, load_ref = true, seed = 1,
+                   parameters = Dict{String,Any}(), operation = nothing)
     return BenchmarkRunner.RunCase(
-        benchmark, dpus, elements_per_dpu, warmup, iterations, check, seed,
-        parameters, operation)
+        benchmark, dpus, elements_per_dpu, warmup, iterations, check,
+        load_ref, seed, parameters, operation)
 end
 
 function csv_records(path)

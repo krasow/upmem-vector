@@ -9,6 +9,12 @@ function usage(io::IO = stdout; advanced::Bool = false)
       --dpus N[,N...]              Override configured DPU counts
       --elements-per-dpu N[,N...] Override configured problem sizes
       --check                      Generate CPU references and verify results
+      --no-load-ref                Synthesize inputs in-process instead of
+                                   reading the shared reference files (fast,
+                                   but load stages are NOT comparable across
+                                   variants)
+      --keep-ref-data              Do not delete reference data after each
+                                   benchmark completes
       --resume                     Skip successes and retry missing trials
       --reset                      Discard selected benchmarks' saved runs
       --verbose                    Print subprocess output
@@ -62,6 +68,10 @@ function parse_args(args)
             setproperty!(options, Symbol(replace(arg[3:end], '-' => '_')), true)
         elseif arg == "--no-profile"
             options.use_profiles = false
+        elseif arg == "--no-load-ref"
+            options.load_ref = false
+        elseif arg == "--keep-ref-data"
+            options.keep_ref_data = true
         elseif arg in ("--variant", "--dpus", "--elements-per-dpu",
                        "--warmup", "--iterations", "--timeout", "--build-timeout",
                        "--ntrials", "--config", "--profiles", "--csv")

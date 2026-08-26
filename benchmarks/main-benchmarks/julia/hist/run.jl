@@ -14,11 +14,15 @@ include(isfile(_gen) ? _gen : joinpath(@__DIR__, "Param.jl"))
 
 const LABEL = "julia"
 
+# Bound as constants, not locals in main(): a local holding Param.T is only a
+# DataType to inference, which makes every host array abstractly typed and
+# turns each element store into a dynamic dispatch.
+const T = Param.T
+const N = Param.N
+const BINS = Param.BINS
+const DEPTH = Param.DEPTH
+
 function main()
-    T = Param.T
-    N = Param.N
-    BINS = Param.BINS
-    DEPTH = Param.DEPTH
 
     stages = BenchStages()
     warm_stages = BenchStages()
@@ -38,7 +42,7 @@ function main()
         @printf("Loading reference data from %s...\n", Param.ref_path)
         load_bin!(joinpath(Param.ref_path, "ref_t1.bin"), a)
     else
-        for i in 0:(N - 1)
+        @inbounds for i in 0:(N - 1)
             a[i + 1] = T(i % (1 << DEPTH))
         end
     end

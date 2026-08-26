@@ -10,7 +10,8 @@ const RUN_COLUMNS = [
     "timestamp", "invocation", "benchmark", "variant", "phase", "status",
     "command_status", "exit_code", "elapsed_s", "detail",
     "elements_per_dpu", "total_elements", "dpus", "warmup", "iterations",
-    "trial", "check", "seed", "operation", "parameters", FUSION_BUILD_KNOBS...,
+    "trial", "check", "load_ref", "seed", "operation", "parameters",
+    FUSION_BUILD_KNOBS...,
     MEASURE_COLUMNS...,
 ]
 const SECTION_COLUMNS = [
@@ -47,7 +48,8 @@ end
 function execute_command(config::RunnerConfig, command::AbstractString,
                          directory::AbstractString, dpus::Int;
                          timeout::Union{Nothing,Int} = nothing,
-                         timed::Bool = false, echo::Bool = false)
+                         timed::Bool = false, echo::Bool = false,
+                         env = Pair{String,String}[])
     executable = timed ? "/usr/bin/time -f '$APP_TIME_FORMAT' $command" : command
     wrapped = "source \"$(config.paths.environment)\" && $executable"
     cmd = `/bin/bash -lc $wrapped`
@@ -57,7 +59,7 @@ function execute_command(config::RunnerConfig, command::AbstractString,
     process = nothing
     started = time_ns()
     status, exit_code, detail = try
-        process = run(pipeline(addenv(cmd, "NR_DPUS" => string(dpus));
+        process = run(pipeline(addenv(cmd, "NR_DPUS" => string(dpus), env...);
                                stdout = output, stderr = errors); wait = false)
         wait(process)
         code = process.exitcode
@@ -226,6 +228,7 @@ function record_timing(path::AbstractString, case::RunCase, variant::AbstractStr
         "iterations" => case.iterations,
         "trial" => trial,
         "check" => case.check,
+        "load_ref" => case.load_ref,
         "seed" => case.seed,
         "operation" => something(case.operation, ""),
         "parameters" => format_parameters(case.parameters),

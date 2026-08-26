@@ -22,6 +22,8 @@ Base.@kwdef mutable struct Options
     timeout::Int = DEFAULT_RUN_TIMEOUT
     build_timeout::Int = 120
     check::Bool = false
+    load_ref::Bool = true
+    keep_ref_data::Bool = false
     skip_setup::Bool = false
     generate_only::Bool = false
     dry_run::Bool = false
@@ -96,6 +98,7 @@ struct RunCase
     warmup::Int
     iterations::Int
     check::Bool
+    load_ref::Bool
     seed::Int
     parameters::Dict{String,Any}
     operation::Union{Nothing,String}
