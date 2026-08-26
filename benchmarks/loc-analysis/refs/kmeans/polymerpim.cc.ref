@@ -1,0 +1,35 @@
+static int divRoundClosest(int n, int d) {
+    return ((n < 0) ^ (d < 0)) ? ((n - d / 2) / d) : ((n + d / 2) / d);
+}
+
+void run_kmeans(const std::vector<DPUVector<T> >& da,
+                std::vector<T>& centroids) {
+    using ReductionResult = typename DPUVector<T>::reduction_result_t;
+    DPULocalVector<T> local_stats(K * (DIM + 1));
+
+    std::vector<DpuLazy<T> > distances;
+    distances.reserve(K);
+    for (uint32_t j = 0; j < K; ++j) {
+        auto distance = sqr(da[0] - centroids[j * DIM]);
+        for (uint32_t d = 1; d < DIM; ++d) {
+            distance = distance + sqr(da[d] - centroids[j * DIM + d]);
+        }
+        distances.push_back(std::move(distance));
+    }
+
+    auto base = argmin(distances) * (T)(DIM + 1);
+    local_stats[base] += (T)1;
+    for (uint32_t d = 0; d < DIM; ++d) {
+        local_stats[base + (T)(d + 1)] += da[d];
+    }
+
+    std::vector<ReductionResult> stats = local_stats.to_cpu();
+    for (uint32_t j = 0; j < K; j++) {
+        ReductionResult count_j = stats[j * (DIM + 1)];
+        if (count_j <= 0) continue;
+        for (uint32_t d = 0; d < DIM; d++) {
+            ReductionResult s = stats[j * (DIM + 1) + d + 1];
+            centroids[j * DIM + d] = (T)divRoundClosest((int)s, (int)count_j);
+        }
+    }
+}

@@ -1,0 +1,65 @@
+typedef struct {
+    uint32_t lhs_offset;
+    uint32_t rhs_offset;
+    uint32_t res_offset;
+    uint32_t num_elements;
+} DPU_LAUNCH_ARGS;
+
+void vec_xfer_from_dpu(dpu_set_t dpu_set, char* cpu, DPU_LAUNCH_ARGS* args) {
+    dpu_set_t dpu;
+    uint32_t idx = 0;
+    size_t element = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &cpu[element]));
+        element += args[idx].num_elements * sizeof(T);
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, args[0].res_offset,
+                             args[0].num_elements * sizeof(T),
+                             DPU_XFER_DEFAULT));
+}
+
+void run_elementwise(dpu_set_t dpu_set, T* a, T* b, T* res,
+                     DPU_LAUNCH_ARGS* args, uint32_t elements_per_dpu) {
+    uint32_t slice_bytes = elements_per_dpu * sizeof(T);
+    dpu_set_t dpu;
+    uint32_t idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &a[idx * elements_per_dpu]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, 0,
+                             slice_bytes, DPU_XFER_DEFAULT));
+    idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &b[idx * elements_per_dpu]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, slice_bytes,
+                             slice_bytes, DPU_XFER_DEFAULT));
+    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+    vec_xfer_from_dpu(dpu_set, (char*)res, args);
+}
+
+int dpu_main(void) {
+    uint32_t tasklet_id = me();
+    __mram_ptr T* lhs_ptr = (__mram_ptr T*)args.lhs_offset;
+    __mram_ptr T* rhs_ptr = (__mram_ptr T*)args.rhs_offset;
+    __mram_ptr T* res_ptr = (__mram_ptr T*)args.res_offset;
+    __dma_aligned T lhs_block[BLOCK_SIZE];
+    __dma_aligned T rhs_block[BLOCK_SIZE];
+    __dma_aligned T res_block[BLOCK_SIZE];
+    for (uint32_t block = tasklet_id * BLOCK_SIZE;
+         block < args.num_elements;
+         block += NR_TASKLETS * BLOCK_SIZE) {
+        uint32_t elems = min(BLOCK_SIZE, args.num_elements - block);
+        uint32_t bytes = elems * sizeof(T);
+        mram_read(lhs_ptr + block, lhs_block, bytes);
+        mram_read(rhs_ptr + block, rhs_block, bytes);
+        for (uint32_t i = 0; i < elems; i++) {
+            res_block[i] = OPERATION(lhs_block[i], rhs_block[i]);
+        }
+        mram_write(res_block, res_ptr + block, bytes);
+    }
+    return 0;
+}

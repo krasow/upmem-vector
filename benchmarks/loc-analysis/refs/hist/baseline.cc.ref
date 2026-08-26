@@ -1,0 +1,53 @@
+typedef struct {
+    uint32_t data_offset;
+    uint32_t result_offset;
+    uint32_t num_elements;
+} DPU_LAUNCH_ARGS;
+
+void run_histogram(dpu_set_t dpu_set, T* input, uint32_t* partials,
+                   uint32_t* result_hist, uint32_t elems_per_dpu,
+                   uint32_t result_offset) {
+    uint32_t data_bytes = elems_per_dpu * sizeof(T);
+    dpu_set_t dpu;
+    uint32_t idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &input[idx * elems_per_dpu]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, 0,
+                             data_bytes, DPU_XFER_DEFAULT));
+    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+    idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &partials[idx * NR_TASKLETS * BINS]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, result_offset,
+                             NR_TASKLETS * BINS * sizeof(uint32_t),
+                             DPU_XFER_DEFAULT));
+    for (uint32_t b = 0; b < BINS; b++) result_hist[b] = 0;
+    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++)
+        for (uint32_t b = 0; b < BINS; b++)
+            result_hist[b] += partials[i * BINS + b];
+}
+
+int dpu_main(void) {
+    uint32_t tid = me();
+    __mram_ptr T* data = (__mram_ptr T*)args.data_offset;
+    __mram_ptr uint32_t* res =
+        (__mram_ptr uint32_t*)(args.result_offset + tid * BINS * sizeof(uint32_t));
+    __dma_aligned T buf[BLOCK_SIZE];
+    __dma_aligned uint32_t local_hist[BINS];
+    for (uint32_t b = 0; b < BINS; b++) local_hist[b] = 0;
+    for (uint32_t i = tid * BLOCK_SIZE;
+         i < args.num_elements;
+         i += NR_TASKLETS * BLOCK_SIZE) {
+        uint32_t cnt = min(BLOCK_SIZE, args.num_elements - i);
+        mram_read(data + i, buf, align8(cnt * sizeof(T)));
+        for (uint32_t j = 0; j < cnt; j++) {
+            local_hist[((uint32_t)buf[j] * BINS) >> DEPTH]++;
+        }
+    }
+    mram_write(local_hist, res, BINS * sizeof(uint32_t));
+    return 0;
+}

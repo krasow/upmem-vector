@@ -1,0 +1,47 @@
+__dma_aligned T query_buf[QUERY_WORDS];
+BARRIER_INIT(barrier_vector_search, NR_TASKLETS);
+
+void start_func(gen_red_arguments_t* args) {
+    if (me() == 0) {
+        mram_read((__mram_ptr void const*)(DPU_MRAM_HEAP_POINTER + args->info),
+                  query_buf, QUERY_WORDS * sizeof(T));
+    }
+    barrier_wait(&barrier_vector_search);
+}
+
+void map_to_val_func(void* input, void* output, uint32_t* key) {
+    *key = 0;
+    T* record = (T*)input;
+    int32_t score = 0;
+    for (uint32_t d = 0; d < DIM; ++d) {
+        score += record[d] + query_buf[d];
+    }
+    vector_search_result_t* candidate = (vector_search_result_t*)output;
+    vector_search_result_init(candidate);
+    candidate->score = score;
+    candidate->index = (uint32_t)record[DIM];
+}
+
+void init_func(uint32_t size, void* ptr) {
+    vector_search_result_init((vector_search_result_t*)ptr);
+}
+
+void combine_func(void* dest, void* src) {
+    vector_search_result_merge((vector_search_result_t*)dest,
+                               (const vector_search_result_t*)src);
+}
+
+vector_search_result_t run_query(T* query, uint32_t query_offset,
+                                 uint32_t query_bytes,
+                                 simplepim_management_t* mgmt,
+                                 handle_t* handle) {
+    DPU_ASSERT(dpu_broadcast_to(mgmt->set, DPU_MRAM_HEAP_POINTER_NAME,
+                                query_offset, query, query_bytes,
+                                DPU_XFER_DEFAULT));
+    vector_search_result_t* result = (vector_search_result_t*)table_gen_red(
+        "dataset", "best", sizeof(vector_search_result_t), 1, handle, mgmt,
+        query_offset);
+    vector_search_result_t best = *result;
+    free(result);
+    return best;
+}

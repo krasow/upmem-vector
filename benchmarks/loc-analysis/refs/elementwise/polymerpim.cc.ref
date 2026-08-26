@@ -1,0 +1,11 @@
+DPUVector<T> compute(const DPUVector<T>& a, const DPUVector<T>& b) {
+    return OPERATION(a, b);
+}
+
+std::vector<T> run_elementwise(const std::vector<T>& a,
+                               const std::vector<T>& b) {
+    DPUVector<T> da(a, "a");
+    DPUVector<T> db(b, "b");
+    DPUVector<T> res = compute(da, db);
+    return res.to_cpu();
+}

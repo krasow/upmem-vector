@@ -1,0 +1,5 @@
+function run_reduction(a)
+    da = DPUVector(a)
+    pending = sum(da)
+    return pending[]
+end

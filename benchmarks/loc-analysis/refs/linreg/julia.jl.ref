@@ -1,0 +1,15 @@
+function compute_error(dy, dx, weights)
+    bc = .-dy
+    for j in 1:DIM
+        bc = bc .+ dx[j] .* weights[j]
+    end
+    return bc
+end
+
+function run_linreg(dy, dx, weights)
+    s_half = scaling_shift ÷ 2
+    err_shifted = DPUVector(compute_error(dy, dx, weights) .>>
+                            (scaling_shift - s_half))
+    pending = [sum((dx[j] .>> s_half) .* err_shifted) for j in 1:DIM]
+    return [p[] for p in pending]
+end

@@ -1,0 +1,31 @@
+div_round_closest(n, d) =
+    n < 0 ? -div(-n + div(d, 2), d) : div(n + div(d, 2), d)
+
+function run_kmeans(cols, centroids)
+    local_stats = DPULocalVector(K * (DIM + 1))
+
+    dists = Vector{Any}(undef, K)
+    for j in 0:(K - 1)
+        acc = abs2.(cols[1] .- centroids[j * DIM + 1])
+        for d in 2:DIM
+            acc = acc .+ abs2.(cols[d] .- centroids[j * DIM + d])
+        end
+        dists[j + 1] = acc
+    end
+
+    base = (argmin.(zip(dists...)) .- 1) .* T(DIM + 1)
+    local_stats[base] .+= 1
+    for d in 1:DIM
+        local_stats[base .+ T(d)] .+= cols[d]
+    end
+
+    flat = Array(local_stats)
+    for j in 0:(K - 1)
+        count = Int64(flat[j * (DIM + 1) + 1])
+        count <= 0 && continue
+        for d in 1:DIM
+            s = Int64(flat[j * (DIM + 1) + d + 1])
+            centroids[j * DIM + d] = T(div_round_closest(s, count))
+        end
+    end
+end

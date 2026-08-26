@@ -1,0 +1,24 @@
+DpuLazy<T> compute_error(const DPUVector<T>& dy,
+                         const std::vector<DPUVector<T> >& dx_cols,
+                         const std::vector<T>& weights) {
+    auto error = -dy;
+    for (uint32_t j = 0; j < DIM; j++) {
+        error = error + dx_cols[j] * weights[j];
+    }
+    return error;
+}
+
+std::vector<int64_t> run_linreg(const DPUVector<T>& dy,
+                                const std::vector<DPUVector<T> >& dx_cols,
+                                const std::vector<T>& weights) {
+    DPUVector<T> error_shifted = compute_error(dy, dx_cols, weights) >>
+                                 (T)(scaling_shift - scaling_shift / 2);
+    DpuFuture<T> lazy_grads[DIM];
+    for (uint32_t j = 0; j < DIM; j++) {
+        lazy_grads[j] =
+            sum((dx_cols[j] >> (T)(scaling_shift / 2)) * error_shifted);
+    }
+    std::vector<int64_t> grads(DIM);
+    for (uint32_t j = 0; j < DIM; j++) grads[j] = lazy_grads[j].get();
+    return grads;
+}

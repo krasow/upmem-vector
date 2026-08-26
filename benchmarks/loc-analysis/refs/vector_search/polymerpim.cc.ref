@@ -1,0 +1,8 @@
+DpuFuture<ArgResult> run_query(const std::vector<DPUVector<T> >& columns,
+                               const std::vector<T>& query) {
+    auto score = columns[0] + query[0];
+    for (uint32_t d = 1; d < DIM; ++d) {
+        score = score + columns[d] + query[d];
+    }
+    return argmax(score);
+}

@@ -1,0 +1,50 @@
+void start_func(gen_red_arguments_t* args) {
+    uint32_t bytes = align8(args->table_len * args->output_type_size);
+    if (me() == 0) {
+        centroids_data = fsb_get(fsb_alloc(bytes, 1));
+        mram_read(DPU_MRAM_HEAP_POINTER + args->info, centroids_data, bytes);
+    }
+    barrier_wait(&barrier_maptoval);
+}
+
+void map_to_val_func(void* input_point, void* intermediate, uint32_t* key) {
+    int32_t* count = (int32_t*)intermediate;
+    T* sums = (T*)((char*)intermediate + sizeof(int32_t));
+    T* point = (T*)input_point;
+    T* centroids = (T*)centroids_data;
+    *count = 1;
+    for (uint32_t d = 0; d < dim; d++) sums[d] = point[d];
+    uint32_t best = 0;
+    uint64_t best_dist = UINT64_MAX;
+    for (uint32_t j = 0; j < k; j++) {
+        uint64_t dist = 0;
+        for (uint32_t d = 0; d < dim; d++) {
+            T tmp = point[d] - centroids[j * dim + d];
+            dist += (uint64_t)(tmp * tmp);
+        }
+        if (dist < best_dist) {
+            best = j;
+            best_dist = dist;
+        }
+    }
+    *key = best;
+}
+
+void combine_func(void* a, void* b) {
+    int32_t* count_a = (int32_t*)a;
+    int32_t* count_b = (int32_t*)b;
+    T* sum_a = (T*)((char*)a + sizeof(int32_t));
+    T* sum_b = (T*)((char*)b + sizeof(int32_t));
+    *count_a += *count_b;
+    for (uint32_t d = 0; d < dim; d++) sum_a[d] += sum_b[d];
+}
+
+void run_kmeans(T* elements, T* centroids, simplepim_management_t* mgmt,
+                handle_t* handle) {
+    simplepim_scatter("t1", elements, num_elements, dim * sizeof(T), mgmt);
+    uint32_t info = lookup_table("t1", mgmt)->end;
+    simplepim_broadcast("t2", centroids, k, dim * sizeof(T), mgmt);
+    void* res = table_gen_red("t1", "t3", dim * sizeof(T) + sizeof(int32_t),
+                              k, handle, mgmt, info);
+    average_table_entries_to_arr(res, centroids);
+}

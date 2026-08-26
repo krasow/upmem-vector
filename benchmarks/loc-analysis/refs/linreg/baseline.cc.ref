@@ -1,0 +1,60 @@
+typedef struct {
+    uint32_t data_offset;
+    uint32_t weights_offset;
+    uint32_t results_offset;
+    uint32_t num_elements;
+} DPU_LAUNCH_ARGS;
+
+std::vector<RED_T> run_linreg(dpu_set_t dpu_set, RED_T* tasklet_grads,
+                              uint32_t results_offset) {
+    dpu_set_t dpu;
+    uint32_t idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &args[idx]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
+                             sizeof(DPU_LAUNCH_ARGS), DPU_XFER_DEFAULT));
+    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+    idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(
+            dpu, &tasklet_grads[idx * NR_TASKLETS * dim]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, results_offset,
+                             NR_TASKLETS * dim * sizeof(RED_T),
+                             DPU_XFER_DEFAULT));
+    std::vector<RED_T> grads(dim, 0);
+    for (uint32_t dpu_id = 0; dpu_id < nr_dpus; dpu_id++)
+        for (uint32_t t = 0; t < NR_TASKLETS; t++)
+            for (uint32_t j = 0; j < dim; j++)
+                grads[j] += tasklet_grads[(dpu_id * NR_TASKLETS + t) * dim + j];
+    return grads;
+}
+
+int dpu_main(void) {
+    uint32_t tid = me();
+    __dma_aligned T weights[dim];
+    __dma_aligned RED_T local_grads[dim];
+    __dma_aligned T row[(padded_row_size + sizeof(T) - 1) / sizeof(T)];
+    mram_read(weights_ptr, weights, dim * sizeof(T));
+    for (uint32_t j = 0; j < dim; j++) local_grads[j] = 0;
+    for (uint32_t i = tid; i < args.num_elements; i += NR_TASKLETS) {
+        mram_read(data_ptr + i * padded_row_size, row, padded_row_size);
+        RED_T dot_prod = 0;
+        for (uint32_t j = 0; j < dim; j++) {
+            dot_prod += (RED_T)row[j] * weights[j];
+        }
+        RED_T e = (dot_prod >> shift_amount) -
+                  ((RED_T)row[dim] << shift_amount);
+        for (uint32_t j = 0; j < dim; j++) {
+            local_grads[j] +=
+                (row[j] >> (prevent_overflow_shift_amount / 2)) *
+                (e >> (prevent_overflow_shift_amount -
+                       prevent_overflow_shift_amount / 2));
+        }
+    }
+    mram_write(local_grads, results_ptr + tid * dim * sizeof(RED_T),
+               dim * sizeof(RED_T));
+    return 0;
+}

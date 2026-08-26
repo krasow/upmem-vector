@@ -1,0 +1,79 @@
+typedef struct {
+    uint32_t data_offset;
+    uint32_t query_offset;
+    uint32_t result_offset;
+    uint32_t num_elements;
+    uint32_t base_index;
+    uint32_t reserved;
+} DPU_LAUNCH_ARGS;
+
+vector_search_result_t run_query(dpu_set_t dpu_set, const T* query,
+                                 std::vector<vector_search_result_t>& locals,
+                                 uint32_t query_offset, uint32_t query_bytes,
+                                 uint32_t result_offset) {
+    dpu_set_t dpu;
+    uint32_t dpu_index = 0;
+    DPU_ASSERT(dpu_broadcast_to(dpu_set, DPU_MRAM_HEAP_POINTER_NAME,
+                                query_offset, query, query_bytes,
+                                DPU_XFER_DEFAULT));
+    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+    DPU_FOREACH(dpu_set, dpu, dpu_index) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &locals[dpu_index]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, result_offset,
+                             sizeof(vector_search_result_t),
+                             DPU_XFER_DEFAULT));
+    vector_search_result_t global;
+    vector_search_result_init(&global);
+    for (const auto& local : locals) {
+        vector_search_result_merge(&global, &local);
+    }
+    return global;
+}
+
+__host DPU_LAUNCH_ARGS args;
+BARRIER_INIT(vector_search_barrier, NR_TASKLETS);
+
+__dma_aligned T query_buf[QUERY_WORDS];
+__dma_aligned vector_search_result_t tasklet_best[NR_TASKLETS];
+__dma_aligned T row_buffers[NR_TASKLETS][BLOCK_ROWS * DIM];
+
+int dpu_main(void) {
+    const uint32_t tid = me();
+    __mram_ptr uint8_t* data = (__mram_ptr uint8_t*)args.data_offset;
+    if (tid == 0) {
+        mram_read((__mram_ptr void const*)args.query_offset, query_buf,
+                  QUERY_WORDS * sizeof(T));
+    }
+    vector_search_result_init(&tasklet_best[tid]);
+    barrier_wait(&vector_search_barrier);
+
+    T* rows = row_buffers[tid];
+    for (uint32_t first = tid * BLOCK_ROWS; first < args.num_elements;
+         first += NR_TASKLETS * BLOCK_ROWS) {
+        uint32_t count = first + BLOCK_ROWS <= args.num_elements
+                             ? BLOCK_ROWS
+                             : args.num_elements - first;
+        mram_read((__mram_ptr void const*)(data + (uint64_t)first * ROW_BYTES),
+                  rows, count * ROW_BYTES);
+        for (uint32_t r = 0; r < count; ++r) {
+            int32_t score = 0;
+            for (uint32_t d = 0; d < DIM; ++d) {
+                score += rows[r * DIM + d] + query_buf[d];
+            }
+            vector_search_result_insert(&tasklet_best[tid], score,
+                                        args.base_index + first + r);
+        }
+    }
+
+    barrier_wait(&vector_search_barrier);
+    if (tid == 0) {
+        for (uint32_t t = 1; t < NR_TASKLETS; ++t) {
+            vector_search_result_merge(&tasklet_best[0], &tasklet_best[t]);
+        }
+        mram_write(&tasklet_best[0], (__mram_ptr void*)args.result_offset,
+                   sizeof(vector_search_result_t));
+    }
+    return 0;
+}
