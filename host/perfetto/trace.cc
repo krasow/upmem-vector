@@ -104,6 +104,10 @@ std::string opcode_to_string(uint8_t op) {
       return "SUM";
     case OP_PRODUCT:
       return "PRODUCT";
+    case OP_ARGMIN_REDUCE:
+      return "ARGMIN_REDUCE";
+    case OP_ARGMAX_REDUCE:
+      return "ARGMAX_REDUCE";
     case OP_SELECT:
       return "SELECT";
     case OP_DUP:

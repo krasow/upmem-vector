@@ -146,6 +146,12 @@ struct KernelPlan {
     return std::any_of(chains.begin(), chains.end(),
                        [](const Chain& c) { return c.is_reduction; });
   }
+  bool any_promotable_reduction() const {
+    return std::any_of(chains.begin(), chains.end(), [](const Chain& c) {
+      return c.is_reduction &&
+             (c.reduction_op == OP_SUM || c.reduction_op == OP_PRODUCT);
+    });
+  }
 };
 
 KernelPlan analyze_rpn(const std::vector<uint8_t>& rpn_ops) {
@@ -402,6 +408,20 @@ class ChainCompiler {
 
   void apply_reduction(uint8_t op) {
     Value v = pop();
+    if (op == OP_ARGMIN_REDUCE || op == OP_ARGMAX_REDUCE) {
+      const std::string c = std::to_string(chain_index_);
+      const std::string cmp = op == OP_ARGMAX_REDUCE ? ">" : "<";
+      out_ << "            int32_t arg_v_" << c << " = (int32_t)(" << v.expr
+           << ");\n"
+           << "            uint32_t arg_i_" << c
+           << " = args.pipeline.index_base + blk + i;\n"
+           << "            if (arg_v_" << c << " " << cmp << " acc_" << c
+           << ".value || (arg_v_" << c << " == acc_" << c << ".value && arg_i_"
+           << c << " < acc_" << c << ".index)) "
+           << "acc_" << c << " = (arg_result_t){arg_v_" << c << ", arg_i_" << c
+           << "};\n";
+      return;
+    }
     out_ << "            "
          << fold_statement(op, "acc_" + std::to_string(chain_index_), v.expr)
          << "\n";
@@ -481,7 +501,8 @@ __dma_aligned uint8_t dpu_workspace[NR_TASKLETS][TASKLET_WORKSPACE_SIZE];
 static std::string select_stack_type(const KernelPlan& plan,
                                      const std::string& type_name) {
 #if ENABLE_PROMOTION_REDUCTIONS == 1
-  if (plan.any_reduction() && type_name == "int32_t") return "int64_t";
+  if (plan.any_promotable_reduction() && type_name == "int32_t")
+    return "int64_t";
 #else
   (void)plan;
 #endif
@@ -521,6 +542,11 @@ static void write_kernel_prologue(std::ostream& out,
 #include "common.h"
 extern barrier_t my_barrier;
 extern uint64_t reduction_scratchpad[NR_TASKLETS * 16];
+
+typedef struct {
+    int32_t value;
+    uint32_t index;
+} arg_result_t;
 
 )";
 
@@ -608,8 +634,18 @@ static void write_kernel_declarations(std::ostream& out, const KernelPlan& plan,
 
   for (size_t c_idx = 0; c_idx < chains.size(); ++c_idx) {
     if (!chains[c_idx].is_reduction) continue;
-    out << "    " << stack_type << " acc_" << c_idx << " = "
-        << reduction_identity(chains[c_idx].reduction_op, stack_type) << ";\n";
+    if (chains[c_idx].reduction_op == OP_ARGMIN_REDUCE ||
+        chains[c_idx].reduction_op == OP_ARGMAX_REDUCE) {
+      const char* identity = chains[c_idx].reduction_op == OP_ARGMAX_REDUCE
+                                 ? "INT32_MIN"
+                                 : "INT32_MAX";
+      out << "    arg_result_t acc_" << c_idx << " = {" << identity
+          << ", UINT32_MAX};\n";
+    } else {
+      out << "    " << stack_type << " acc_" << c_idx << " = "
+          << reduction_identity(chains[c_idx].reduction_op, stack_type)
+          << ";\n";
+    }
   }
 
   int nscalars = 0;
@@ -756,8 +792,11 @@ static void write_kernel_epilogue(std::ostream& out, const KernelPlan& plan,
   for (size_t c_idx = 0; c_idx < chains.size(); ++c_idx) {
     if (!chains[c_idx].is_reduction) continue;
     has_reduction_chain = true;
+    const bool is_arg = chains[c_idx].reduction_op == OP_ARGMIN_REDUCE ||
+                        chains[c_idx].reduction_op == OP_ARGMAX_REDUCE;
     out << fill(kParkAccumulatorTemplate,
-                {{"T", stack_type}, {"c", std::to_string(c_idx)}});
+                {{"T", is_arg ? "arg_result_t" : stack_type},
+                 {"c", std::to_string(c_idx)}});
   }
 
   if (has_reduction_chain) {
@@ -766,11 +805,29 @@ static void write_kernel_epilogue(std::ostream& out, const KernelPlan& plan,
     for (size_t c_idx = 0; c_idx < chains.size(); ++c_idx) {
       if (!chains[c_idx].is_reduction) continue;
       const std::string c = std::to_string(c_idx);
-      out << fill(kMergeAccumulatorTemplate,
-                  {{"T", stack_type},
-                   {"c", c},
-                   {"fold", fold_statement(chains[c_idx].reduction_op,
-                                           "tot_" + c, "v_" + c)}});
+      const uint8_t op = chains[c_idx].reduction_op;
+      if (op == OP_ARGMIN_REDUCE || op == OP_ARGMAX_REDUCE) {
+        const std::string cmp = op == OP_ARGMAX_REDUCE ? ">" : "<";
+        out << fill(R"C(        if (res_ptrs[$c]) {
+            arg_result_t tot_$c;
+            memcpy(&tot_$c, &reduction_scratchpad[$c], sizeof(tot_$c));
+            for (uint32_t t = 1; t < NR_TASKLETS; ++t) {
+                arg_result_t v_$c;
+                memcpy(&v_$c, &reduction_scratchpad[t * 16 + $c], sizeof(v_$c));
+                if (v_$c.value $cmp tot_$c.value ||
+                    (v_$c.value == tot_$c.value && v_$c.index < tot_$c.index))
+                    tot_$c = v_$c;
+            }
+            mram_write(&tot_$c, (__mram_ptr void *)res_ptrs[$c], MINIMUM_WRITE_SIZE);
+        }
+)C",
+                    {{"c", c}, {"cmp", cmp}});
+      } else {
+        out << fill(kMergeAccumulatorTemplate,
+                    {{"T", stack_type},
+                     {"c", c},
+                     {"fold", fold_statement(op, "tot_" + c, "v_" + c)}});
+      }
     }
     out << "    }\n"
         << "    barrier_wait(&my_barrier);\n";

@@ -32,8 +32,7 @@ static vector_search_result_t cpu_best(const T *data, const T *query) {
       for (uint32_t d = 0; d < DIM; ++d) {
         score += data[i * DIM + d] + query[d];
       }
-      vector_search_result_insert(&local,
-                                  vector_search_pack_key(score, i, N, DIM));
+      vector_search_result_insert(&local, score, (uint32_t)i);
     }
 #pragma omp critical
     vector_search_result_merge(&result, &local);
@@ -46,7 +45,7 @@ int main() {
     std::fprintf(
         stderr,
         "Invalid Vector search configuration: require N divisible by DPUs "
-        "and (4*DIM+1)*N <= INT32_MAX\n");
+        "and N <= UINT32_MAX\n");
     return 2;
   }
 
@@ -166,12 +165,12 @@ int main() {
 
   if (check_correctness && iterations) {
     vector_search_result_t expected = cpu_best(data.data(), query.data());
-    bool ok = result.key == expected.key;
+    bool ok = result.score == expected.score && result.index == expected.index;
     if (ok) {
       std::printf("the result is correct\n");
     } else {
-      std::printf("Mismatch: got key %d, expected %d\n", result.key,
-                  expected.key);
+      std::printf("Mismatch: got (%d, %u), expected (%d, %u)\n", result.score,
+                  result.index, expected.score, expected.index);
     }
   }
 

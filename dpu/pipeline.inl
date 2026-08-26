@@ -6,6 +6,11 @@
 
 // STACK_DEPTH and MINIMUM_WRITE_SIZE are defined in common.h
 
+typedef struct {
+  int32_t value;
+  uint32_t index;
+} pipeline_arg_result_t;
+
 #define DEFINE_UNIVERSAL_PIPELINE_KERNEL(TYPE)                                 \
   int universal_##TYPE##_pipeline(void) {                                      \
     unsigned int id = me();                                                    \
@@ -31,6 +36,7 @@
                                                                                \
     int64_t acc_64[MAX_HFUSE_CHAINS];                                          \
     TYPE acc[MAX_HFUSE_CHAINS];                                                \
+    pipeline_arg_result_t arg_acc[MAX_HFUSE_CHAINS];                           \
     bool has_r[MAX_HFUSE_CHAINS] = {false};                                    \
     uint8_t r_op[MAX_HFUSE_CHAINS] = {0};                                      \
     uint32_t blk, i, b_e, b_b, oi;                                             \
@@ -98,6 +104,12 @@
           break;                                                               \
         case OP_MAX:                                                           \
           acc[c] = (TYPE)INT32_MIN;                                            \
+          break;                                                               \
+        case OP_ARGMIN_REDUCE:                                                 \
+          arg_acc[c] = (pipeline_arg_result_t){INT32_MAX, UINT32_MAX};         \
+          break;                                                               \
+        case OP_ARGMAX_REDUCE:                                                 \
+          arg_acc[c] = (pipeline_arg_result_t){INT32_MIN, UINT32_MAX};         \
           break;                                                               \
       }                                                                        \
     }                                                                          \
@@ -510,6 +522,19 @@
               for (i = 0; i < b_e; i++)                                        \
                 if (s[i] > acc[chain_idx]) acc[chain_idx] = s[i];              \
               break;                                                           \
+            case OP_ARGMIN_REDUCE:                                             \
+            case OP_ARGMAX_REDUCE:                                             \
+              for (i = 0; i < b_e; i++) {                                      \
+                int32_t value = (int32_t)s[i];                                 \
+                uint32_t index = args.pipeline.index_base + blk + i;           \
+                bool wins = op == OP_ARGMAX_REDUCE                             \
+                                ? value > arg_acc[chain_idx].value             \
+                                : value < arg_acc[chain_idx].value;            \
+                if (wins || (value == arg_acc[chain_idx].value &&              \
+                             index < arg_acc[chain_idx].index))                \
+                  arg_acc[chain_idx] = (pipeline_arg_result_t){value, index};  \
+              }                                                                \
+              break;                                                           \
           }                                                                    \
         }                                                                      \
         oi++;                                                                  \
@@ -523,11 +548,15 @@
     for (uint32_t c = 0; c < MAX_HFUSE_CHAINS; c++) {                          \
       if (!has_r[c] || !res_ptrs[c]) continue;                                 \
       bool is_promotable = (r_op[c] == OP_SUM || r_op[c] == OP_PRODUCT);       \
+      bool is_arg =                                                            \
+          (r_op[c] == OP_ARGMIN_REDUCE || r_op[c] == OP_ARGMAX_REDUCE);        \
       bool is_sum32 =                                                          \
           (is_promotable && sizeof(TYPE) == 4 && ENABLE_PROMOTION_REDUCTIONS); \
       enum { sd = (MINIMUM_WRITE_SIZE / sizeof(TYPE)) };                       \
       uint64_t bf = 0;                                                         \
-      if (is_sum32) {                                                          \
+      if (is_arg) {                                                            \
+        memcpy(&bf, &arg_acc[c], sizeof(pipeline_arg_result_t));               \
+      } else if (is_sum32) {                                                   \
         bf = (uint64_t)acc_64[c];                                              \
       } else {                                                                 \
         memcpy(&bf, &acc[c], sizeof(TYPE));                                    \
@@ -536,7 +565,19 @@
       reduction_scratchpad[id] = bf;                                           \
       barrier_wait(&my_barrier);                                               \
       if (id == 0) {                                                           \
-        if (is_sum32) {                                                        \
+        if (is_arg) {                                                          \
+          pipeline_arg_result_t total;                                         \
+          memcpy(&total, &reduction_scratchpad[0], sizeof(total));             \
+          for (uint32_t t = 1; t < NR_TASKLETS; t++) {                         \
+            pipeline_arg_result_t v;                                           \
+            memcpy(&v, &reduction_scratchpad[t], sizeof(v));                   \
+            bool wins = r_op[c] == OP_ARGMAX_REDUCE ? v.value > total.value    \
+                                                    : v.value < total.value;   \
+            if (wins || (v.value == total.value && v.index < total.index))     \
+              total = v;                                                       \
+          }                                                                    \
+          memcpy(&bf, &total, sizeof(total));                                  \
+        } else if (is_sum32) {                                                 \
           int64_t tot_64 = (r_op[c] == OP_SUM) ? 0 : 1;                        \
           uint32_t i;                                                          \
           for (i = 0; i < NR_TASKLETS; i++) {                                  \

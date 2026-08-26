@@ -37,21 +37,19 @@ int main() {
         for (uint32_t d = 0; d < DIM; ++d) {
           score += vector_search_dataset_value(seed, i, d, DIM) + query[d];
         }
-        vector_search_result_insert(&local,
-                                    vector_search_pack_key(score, i, N, DIM));
+        vector_search_result_insert(&local, score, (uint32_t)i);
       }
 #pragma omp critical
       vector_search_result_merge(&answer, &local);
     }
-    DoNotOptimize(answer.key);
+    DoNotOptimize(answer.score);
   }
   auto end = std::chrono::high_resolution_clock::now();
   const double ms =
       std::chrono::duration<double, std::milli>(end - begin).count() / rounds;
   std::cout << "cpu_baseline (ms): " << ms << '\n';
 
-  vector_search_match_t match = vector_search_unpack_key(answer.key, N, DIM);
-  std::cout << "best additive match: (id=" << match.index
-            << ", score=" << match.score << "/" << DIM << ")" << std::endl;
+  std::cout << "best additive match: (id=" << answer.index
+            << ", score=" << answer.score << "/" << DIM << ")" << std::endl;
   return 0;
 }

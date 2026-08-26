@@ -55,7 +55,8 @@ elements_per_dpu = [1048576, 2097152]
 variants = ["polymerpim", "julia", "baseline", "simplepim"]
 
 [[vector_search]]
-elements_per_dpu = [16384, 32768]
-iterations = 100
+elements_per_dpu = [262144, 524288]
+warmup = 10
+iterations = 50
 parameters = { dim = 10 }
 variants = ["polymerpim", "julia", "baseline", "simplepim"]

@@ -389,6 +389,14 @@ struct DpuFuture<T>::Impl {
   ::dpu_future<T> value;
 };
 
+struct DpuFuture<ArgResult>::Impl {
+  explicit Impl(::dpu_arg_future<T> value) : value(std::move(value)) {}
+  explicit Impl(ArgResult result) : cached(result), ready(true) {}
+  ::dpu_arg_future<T> value;
+  ArgResult cached{};
+  bool ready = false;
+};
+
 struct DPULocalVector<T>::Impl {
   struct Update {
     NodeRef index;
@@ -583,6 +591,21 @@ DpuFuture<T>::result_type DpuFuture<T>::get() {
   return translate_oom([&] { return impl_->value.get(); });
 }
 
+DpuFuture<ArgResult>::DpuFuture(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+DpuFuture<ArgResult>::result_type DpuFuture<ArgResult>::get() {
+  if (!impl_) throw std::logic_error("empty arg-reduction future");
+  return translate_oom([&] {
+    if (!impl_->ready) {
+      const auto result = impl_->value.get();
+      impl_->cached = {result.value, result.index};
+      impl_->ready = true;
+    }
+    return impl_->cached;
+  });
+}
+
 namespace {
 std::shared_ptr<DpuFuture<T>::Impl> reduce(const NodeRef& root, uint8_t op) {
   return translate_oom([&] {
@@ -618,6 +641,34 @@ std::shared_ptr<DpuFuture<T>::Impl> reduce(const NodeRef& root, uint8_t op) {
 #endif
   });
 }
+
+std::shared_ptr<DpuFuture<ArgResult>::Impl> arg_reduce(const NodeRef& root,
+                                                       uint8_t op) {
+  return translate_oom([&] {
+#if PIPELINE
+    Compiler compiler;
+    auto ops = compiler.expression(root);
+    ops.push_back(op);
+    const auto& inputs = compiler.inputs();
+    if (inputs.empty())
+      throw std::logic_error("arg-reduction has no DPU input");
+    std::vector<BackendVector> operands(inputs.begin() + 1, inputs.end());
+    auto future = const_cast<BackendVector&>(inputs[0]).pipeline_argreduce(
+        ops, operands, compiler.scalars());
+    return std::make_shared<DpuFuture<ArgResult>::Impl>(std::move(future));
+#else
+    auto values = eager(root).to_cpu();
+    if (values.empty()) throw std::logic_error("arg-reduction of empty vector");
+    ArgResult best{values[0], 0};
+    for (uint32_t i = 1; i < values.size(); ++i) {
+      if ((op == OP_ARGMAX_REDUCE ? values[i] > best.value
+                                  : values[i] < best.value))
+        best = {values[i], i};
+    }
+    return std::make_shared<DpuFuture<ArgResult>::Impl>(best);
+#endif
+  });
+}
 }  // namespace
 
 DpuFuture<T> sum(const DpuLazy<T>& expression) {
@@ -631,6 +682,22 @@ DpuFuture<T> minimum(const DpuLazy<T>& expression) {
 }
 DpuFuture<T> maximum(const DpuLazy<T>& expression) {
   return DpuFuture<T>(reduce(expression.impl_->root, OP_MAX));
+}
+
+DpuFuture<ArgResult> argmin(const DpuLazy<T>& expression) {
+  if (!expression.impl_) throw std::logic_error("empty expression");
+  if (expression.size() == 0)
+    throw std::logic_error("argmin of empty expression");
+  return DpuFuture<ArgResult>(
+      arg_reduce(expression.impl_->root, OP_ARGMIN_REDUCE));
+}
+
+DpuFuture<ArgResult> argmax(const DpuLazy<T>& expression) {
+  if (!expression.impl_) throw std::logic_error("empty expression");
+  if (expression.size() == 0)
+    throw std::logic_error("argmax of empty expression");
+  return DpuFuture<ArgResult>(
+      arg_reduce(expression.impl_->root, OP_ARGMAX_REDUCE));
 }
 
 DPULocalVector<T>::Reference::Reference(DPULocalVector& owner, DpuLazy<T> index)

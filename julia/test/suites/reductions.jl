@@ -39,8 +39,9 @@ end
     after = PolymerPIM.stat_compute_launches()
 
     @test totals == [1024 * i for i in 1:8]
-    # Without fusion this would be 8 passes.
-    @test after - before <= 2
+    # Respect the configured horizontal-chain capacity.  With one chain this
+    # is necessarily eight passes; wider builds should collapse the batch.
+    @test after - before <= max(2, cld(length(vectors), MAX_CHAINS))
 end
 
 # `sum(f, v)` takes f as an argument, so unlike `sum(f.(v))` there is no
@@ -65,7 +66,7 @@ end
     @test_throws MethodError sum(sqrt, a)
 end
 
-# Two DPU passes, the value then its first index: has to match Base, ties too.
+# One pair-valued DPU pass; values, indices, and first-index ties match Base.
 @testset "index reductions match Base" begin
     a = DPUVector(Int32.([4, 7, 1, 7, -3, 0]))
     host = Array(a)
@@ -94,14 +95,17 @@ end
     @test argmax(DPUVector(ragged)) == argmax(ragged)
     @test findmin(DPUVector(ragged)) == (Int64(1), 1)
 
-    # A pass for the value and a pass for the index.
+    # The value and index are produced together.
     sync(); before = PolymerPIM.stat_compute_launches()
     argmax(a); sync()
-    @test PolymerPIM.stat_compute_launches() - before == 2
+    @test PolymerPIM.stat_compute_launches() - before == 1
 
-    # Runtime scalars, so length does not change the program: one kernel.
+    # Length does not change the program: one pair terminal.
     @test (@code_jitted argmax(a)).hash == (@code_jitted argmax(up)).hash
-    @test PolymerPIM.Internal.Opcodes.OP_PUSH_GLOBAL_INDEX in (@code_jitted argmax(a)).ops
+    @test (@code_jitted argmax(a)).ops[end] ==
+          PolymerPIM.Internal.Opcodes.OP_ARGMAX_REDUCE
+    @test (@code_jitted argmin(a)).ops[end] ==
+          PolymerPIM.Internal.Opcodes.OP_ARGMIN_REDUCE
 end
 
 # An unrun expression reduces in one pass: the terminal joins the program rather
@@ -119,6 +123,11 @@ end
 
     @test maximum(a .* b)[] == maximum(Int64.(av) .* Int64.(bv))
     @test minimum(-(a .+ b))[] == -maximum(Int64.(av) .+ Int64.(bv))
+
+    # Pair-valued index reductions preserve the first winning index without
+    # packing the value and index into a widened scalar.
+    @test findmax(a .+ b) == findmax(av .+ bv)
+    @test argmax(a .+ b) == argmax(av .+ bv)
 
     # Forcing without a transfer, then reducing, is two passes.
     sync(); before = PolymerPIM.stat_compute_launches()

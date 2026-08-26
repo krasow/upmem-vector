@@ -26,6 +26,11 @@ class DpuFuture;
 template <typename T>
 class DPULocalVector;
 
+struct ArgResult {
+  int32_t value;
+  uint32_t index;
+};
+
 template <>
 class DpuLazy<int32_t> {
  public:
@@ -62,6 +67,8 @@ class DpuLazy<int32_t> {
   friend DpuLazy select(const DpuLazy&, const DpuLazy&, const DpuLazy&);
   friend DpuLazy argmin(const std::vector<DpuLazy>&);
   friend DpuLazy argmax(const std::vector<DpuLazy>&);
+  friend DpuFuture<ArgResult> argmin(const DpuLazy&);
+  friend DpuFuture<ArgResult> argmax(const DpuLazy&);
   friend DpuFuture<int32_t> sum(const DpuLazy&);
   friend DpuFuture<int32_t> product(const DpuLazy&);
   friend DpuFuture<int32_t> minimum(const DpuLazy&);
@@ -137,6 +144,8 @@ DpuLazy<int32_t> select(const DpuLazy<int32_t>& condition,
                         const DpuLazy<int32_t>& else_value);
 DpuLazy<int32_t> argmin(const std::vector<DpuLazy<int32_t>>& lanes);
 DpuLazy<int32_t> argmax(const std::vector<DpuLazy<int32_t>>& lanes);
+DpuFuture<ArgResult> argmin(const DpuLazy<int32_t>& expression);
+DpuFuture<ArgResult> argmax(const DpuLazy<int32_t>& expression);
 
 template <>
 class DpuFuture<int32_t> {
@@ -156,6 +165,24 @@ class DpuFuture<int32_t> {
   friend DpuFuture product(const DpuLazy<int32_t>&);
   friend DpuFuture minimum(const DpuLazy<int32_t>&);
   friend DpuFuture maximum(const DpuLazy<int32_t>&);
+};
+
+template <>
+class DpuFuture<ArgResult> {
+ public:
+  using result_type = ArgResult;
+  struct Impl;
+
+  DpuFuture() = default;
+  result_type get();
+  operator result_type() { return get(); }
+
+ private:
+  explicit DpuFuture(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+
+  friend DpuFuture argmin(const DpuLazy<int32_t>&);
+  friend DpuFuture argmax(const DpuLazy<int32_t>&);
 };
 
 DpuFuture<int32_t> sum(const DpuLazy<int32_t>& expression);

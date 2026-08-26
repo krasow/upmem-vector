@@ -215,6 +215,8 @@ Base.sum(a::DpuExpr) = _append(a, Opcodes.OP_SUM)
 Base.prod(a::DpuExpr) = _append(a, Opcodes.OP_PRODUCT)
 Base.minimum(a::DpuExpr) = _append(a, Opcodes.OP_MIN)
 Base.maximum(a::DpuExpr) = _append(a, Opcodes.OP_MAX)
+_argmin_terminal(a::DpuExpr) = _append(a, Opcodes.OP_ARGMIN_REDUCE)
+_argmax_terminal(a::DpuExpr) = _append(a, Opcodes.OP_ARGMAX_REDUCE)
 
 function _arg_k(lanes::AbstractVector{DpuExpr}, op::UInt8)
     isempty(lanes) && throw(ArgumentError("need at least one lane"))

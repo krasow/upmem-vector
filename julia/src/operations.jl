@@ -69,21 +69,11 @@ const MAPREDUCE_TERMINALS = Dict{Any,Function}(
     (+) => sum, (*) => prod, min => minimum, max => maximum)
 
 # ---- Base overloads: which element won ----
-#
-# Two DPU passes: the extreme value, then the lowest index holding it, which
-# needs `global_index` -- a kernel's own index restarts on every shard.
-
-# Non-winners take a sentinel above every index, so the min is the first winner,
-# as Base's tie is.  Runtime scalars, so one compiled kernel serves every call.
-_arg_index_program() =
-    minimum(select(eq_var(input(), 1), global_index(), scalar_var(2)))
-
+# One pair-valued terminal carries the Int32 value and UInt32 global index.
 function _arg_reduce(v::DPUVector, want_max::Bool)
     length(v) > 0 || throw(ArgumentError("collection must be non-empty"))
-    best = (want_max ? maximum(v) : minimum(v))[]
-    index = get(Internal.dpu_pipeline_reduce(
-        v, _arg_index_program(); scalars = Int32[best, length(v)]))
-    return best, Int(index) + 1   # the kernel counts from 0
+    terminal = want_max ? Internal._argmax_terminal : Internal._argmin_terminal
+    return Internal._dpu_argreduce(v, terminal(Internal.input()))
 end
 
 """
@@ -93,8 +83,7 @@ end
 The extreme value and the first index holding it, as Base's do. The value is an
 `Int64`, the type a DPU reduction returns, not the vector's `Int32`.
 
-Two DPU passes; only scalars come back, the vector stays put. [`maximum`](@ref)
-is one pass, so prefer it when the position is not needed.
+One DPU pass; only the value/index pair comes back and the vector stays put.
 """
 Base.findmax(v::DPUVector) = _arg_reduce(v, true)
 Base.findmin(v::DPUVector) = _arg_reduce(v, false)
@@ -465,6 +454,23 @@ Base.sum(f, x::DpuLazy) = sum(Base.broadcasted(f, x))
 Base.prod(f, x::DpuLazy) = prod(Base.broadcasted(f, x))
 Base.minimum(f, x::DpuLazy) = minimum(Base.broadcasted(f, x))
 Base.maximum(f, x::DpuLazy) = maximum(Base.broadcasted(f, x))
+
+# Fuse a lazy score expression directly into the native pair terminal.
+function _arg_reduce(x::DpuLazy, want_max::Bool)
+    x.forced === nothing || return _arg_reduce(x.forced, want_max)
+    length(x) > 0 || throw(ArgumentError("collection must be non-empty"))
+    e, primary, operands, scalars = _lower_tree(x.bc)
+    x.consumed = true
+    x.uses += 1
+    terminal = want_max ? Internal._argmax_terminal : Internal._argmin_terminal
+    return Internal._dpu_argreduce(
+        primary, terminal(e); operands = operands, scalars = scalars)
+end
+
+Base.findmin(x::DpuLazy) = _arg_reduce(x, false)
+Base.findmax(x::DpuLazy) = _arg_reduce(x, true)
+Base.argmin(x::DpuLazy) = findmin(x)[2]
+Base.argmax(x::DpuLazy) = findmax(x)[2]
 
 """
     dest .= expr

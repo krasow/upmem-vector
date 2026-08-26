@@ -166,7 +166,7 @@ const MAX_CHAINS = Int(PolymerPIM.limit_chains())
 include("types.jl")
 include("internal/Internal.jl")
 using .Internal: DpuExpr, input, operand, constant, scalar_var
-using .Internal: sqr, select, global_index
+using .Internal: sqr, select
 using .Internal: add_var, sub_var, mul_var, divide_var, shr_var
 using .Internal: eq_var, lt_var, gt_var, ge_var, le_var
 using .Internal: _DpuScalar, LOCAL_REDUCE_OPS, _LocalReduce

@@ -33,54 +33,34 @@ static inline int32_t vector_search_query_value(uint32_t seed,
 }
 
 typedef struct {
-  int32_t key;
-  uint32_t reserved;
-} vector_search_result_t;
-
-typedef struct {
   int32_t score;
   uint32_t index;
-} vector_search_match_t;
+} vector_search_result_t;
 
 static inline void vector_search_result_init(vector_search_result_t *result) {
-  result->key = -1;
-  result->reserved = 0;
+  result->score = INT32_MIN;
+  result->index = UINT32_MAX;
 }
 
-/* Retain the single best packed score/ID key. */
+/* Retain the best score and use the lowest global row index for ties. */
 static inline void vector_search_result_insert(vector_search_result_t *result,
-                                               int32_t key) {
-  if (key > result->key) {
-    result->key = key;
+                                               int32_t score, uint32_t index) {
+  if (score > result->score ||
+      (score == result->score && index < result->index)) {
+    result->score = score;
+    result->index = index;
   }
 }
 
 static inline void vector_search_result_merge(
     vector_search_result_t *dest, const vector_search_result_t *src) {
-  vector_search_result_insert(dest, src->key);
-}
-
-/*
- * Pack score and ID into one signed 32-bit reduction key.  Larger is better;
- * ties in additive score choose the smaller global dataset index.
- */
-static inline int32_t vector_search_pack_key(int32_t score, uint32_t index,
-                                             uint64_t n, uint32_t dimensions) {
-  return (int32_t)(((int64_t)score + 2 * dimensions) * (int64_t)n +
-                   ((int64_t)n - 1 - index));
-}
-
-static inline vector_search_match_t vector_search_unpack_key(
-    int32_t key, uint64_t n, uint32_t dimensions) {
-  vector_search_match_t match;
-  match.score = key / (int64_t)n - 2 * (int32_t)dimensions;
-  match.index = (uint32_t)((int64_t)n - 1 - (key % (int64_t)n));
-  return match;
+  vector_search_result_insert(dest, src->score, src->index);
 }
 
 static inline int vector_search_key_range_is_valid(uint64_t n,
                                                    uint32_t dimensions) {
-  return n > 0 && (((uint64_t)4 * dimensions + 1) * n - 1) <= INT32_MAX;
+  (void)dimensions;
+  return n > 0 && n <= UINT32_MAX;
 }
 
 #endif

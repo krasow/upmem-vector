@@ -53,6 +53,24 @@ function dpu_pipeline_reduce(v, e::DpuExpr;
     return Parent.DpuFuture(handle)
 end
 
+# Internal bridge for the native 8-byte {Int32 value, UInt32 index} terminal.
+# The wrapper transports those bytes as a UInt64 only after the DPU reduction;
+# this is not scalar packing in the kernel.
+function _dpu_argreduce(v, e::DpuExpr;
+                        operands::AbstractVector{Parent.DPUVector} = Parent.DPUVector[],
+                        scalars::AbstractVector{<:Integer} = Int32[])
+    _check_program(e, operands)
+    isempty(e.ops) && throw(ArgumentError("empty program"))
+    e.ops[end] in (Opcodes.OP_ARGMIN_REDUCE, Opcodes.OP_ARGMAX_REDUCE) ||
+        throw(ArgumentError("program must end in an arg-reduction terminal"))
+    sc = Int32.(collect(scalars))
+    bits = Parent.retry_on_oom(() -> Parent._argreduce(
+        Parent._force(v).handle, e.ops, Parent._veclist(operands), sc))
+    value = reinterpret(Int32, UInt32(bits & typemax(UInt32)))
+    index = UInt32(bits >> 32)
+    return Int64(value), Int(index) + 1
+end
+
 """
     transform(f, v, operands...; scalars=Int32[]) -> DPUVector
 
