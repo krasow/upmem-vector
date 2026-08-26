@@ -64,5 +64,11 @@ Runs use `/usr/bin/time`. Failures are recorded and do not stop the suite;
 `--resume` skips successes and retries missing trials. Generated results,
 parameters, binaries, and reference data are untracked.
 
+Generate the completed-benchmark weak-scaling grids and their averaged CSV:
+
+```bash
+python3 plot_weak_scaling.py
+```
+
 The UPMEM SDK is loaded from `$UPMEM_ENV` or `/usr/upmem_env.sh`. Set `JULIA` to
 select the Julia executable.
