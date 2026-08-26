@@ -1,12 +1,14 @@
 # Focused LOC analysis
 
+How many lines each programming model needs to express the same benchmark, as
+a measure of programmer effort.
+
 ```bash
 python3 analyze_model_loc.py                       # all 8 benchmarks
 python3 analyze_model_loc.py --benchmarks red knn  # a subset
 ```
 
-Writes `summary.csv`, `file_breakdown.csv`, `overall_metrics.csv`,
-`overall_metrics_legacy_six.csv`, and `report.md` to `../results/loc-analysis/`.
+Results are written to `../results/loc-analysis/`.
 
 ## Results
 
@@ -24,14 +26,13 @@ Writes `summary.csv`, `file_breakdown.csv`, `overall_metrics.csv`,
 | *Mean reduction vs SimplePIM* | *70.3%* | *62.3%* | -- | -- |
 | *Mean reduction vs baseline* | *81.9%* | *77.0%* | *40.3%* | -- |
 
-Over the original six benchmarks only: Julia 69.0% / 81.5%, PolymerPIM
-60.7% / 76.5% against SimplePIM / baseline.
+## Method
 
-## What is counted
-
-`refs/<benchmark>/<variant>.<ext>.ref` is a hand-curated excerpt of that
-variant's implementation, kept in sync with `../main-benchmarks`. Logical LOC
+`refs/<benchmark>/<variant>.<ext>.ref` holds a hand-curated excerpt of each
+implementation, tracking the sources under `../main-benchmarks`. Logical LOC
 excludes blank lines and comments.
+
+An excerpt contains everything the programmer must write for that model:
 
 | Model | Covered by the excerpt |
 | --- | --- |
@@ -40,18 +41,12 @@ excludes blank lines and comments.
 | `polymerpim` | host-level expression only |
 | `julia` | host-level expression only |
 
-Excluded because all four pay it equally: parameter plumbing, timing
-instrumentation, DPU set allocation and teardown, host input synthesis and
-reference loading, result verification, and headers shared verbatim across
-variants.
+It excludes what every model pays equally: parameter plumbing, timing
+instrumentation, DPU allocation and teardown, input synthesis and reference
+loading, result verification, and headers shared verbatim across variants.
 
-## Curation rules
-
-- **Function signatures count.** Defining `map_to_val_func` or `dpu_main` with
-  an exact signature is the burden SimplePIM and the baseline impose.
-- **Closing delimiters count.** Excluding bare `}` / `end` removes 14--21% of
-  every variant's lines and moves each reduction by at most 1.6 points.
-- **Scope-exit cleanup is excluded.** C++ frees a `DPUVector` by destructor;
-  Julia's explicit `release!` is dropped to match.
-- **Excerpts track current sources.** The `polymerpim` excerpts were rewritten
-  against today's API, which the originals predated.
+Function signatures and closing delimiters (`}`, `end`) are counted; for
+SimplePIM and the baseline, having to define a callback with an exact signature
+is part of what the model demands. Cleanup that one language does implicitly
+and another explicitly -- a C++ destructor versus Julia's `release!` -- is
+counted for neither.
