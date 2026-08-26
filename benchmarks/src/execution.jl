@@ -239,11 +239,27 @@ function archive_runner_state(path::AbstractString)
     println("Archived legacy runner checkpoint: $archived")
 end
 
-function run_state(options::Options)
+# Discard the checkpoints for a selection; an empty selection matches every
+# benchmark (or, for variants, every variant of a matched benchmark).
+function drop_records!(records, names, variants)
+    selected = Set(names)
+    selected_variants = Set(variants)
+    before = length(records)
+    filter!(records) do record
+        matches_benchmark = isempty(selected) ||
+                            get(record, "benchmark", "") in selected
+        matches_variant = isempty(selected_variants) ||
+                          get(record, "variant", "") in selected_variants
+        return !(matches_benchmark && matches_variant)
+    end
+    return before - length(records)
+end
+
+function run_state(options::Options, names = String[], variants = String[])
     enabled = !(options.dry_run || options.generate_only)
     records = Dict{String,Any}[]
     fresh = !options.resume
-    if enabled && options.resume && isfile(options.state)
+    if enabled && isfile(options.state)
         raw = TOML.parsefile(options.state)
         version = get(raw, "version", 0)
         if version in (1, 2)
@@ -255,6 +271,16 @@ function run_state(options::Options)
         else
             error("unsupported runner state $(options.state)")
         end
+    end
+    if fresh
+        # A run without --resume starts its own selection over, but keeps every
+        # other benchmark's progress: a sweep runs one benchmark at a time, and
+        # a fresh `red` run must not throw away a half-finished `knn` sweep.
+        dropped = drop_records!(records, names, variants)
+        dropped == 0 || println(
+            "[runner] discarded ", dropped, " saved checkpoint(s) for ",
+            reset_scope(isempty(names) ? ["all benchmarks"] : names, variants),
+            " (pass --resume to continue them instead)")
     end
     state = RunState(options.state, Set(run_key.(records)), records, enabled)
     fresh && save_state(state)
@@ -343,15 +369,7 @@ function reset_runs(names, variants, options::Options)
             error("unsupported runner state $(options.state)")
         end
     end
-    selected = Set(names)
-    selected_variants = Set(variants)
-    before = length(records)
-    filter!(records) do record
-        matches_benchmark = get(record, "benchmark", "") in selected
-        matches_variant = isempty(selected_variants) ||
-                          get(record, "variant", "") in selected_variants
-        return !(matches_benchmark && matches_variant)
-    end
+    dropped = drop_records!(records, names, variants)
     state = RunState(options.state, Set(run_key.(records)), records, true)
     save_state(state)
     csv = results_csv(options)
@@ -359,7 +377,7 @@ function reset_runs(names, variants, options::Options)
     sections = remove_run_rows(sections_csv(csv), names, variants)
     options.resume = true
     println("[runner] reset ", reset_scope(names, variants), ": ",
-            before - length(records), " checkpoints, ", rows,
+            dropped, " checkpoints, ", rows,
             " runs, ", sections, " sections")
 end
 
@@ -602,7 +620,8 @@ function run_benchmarks(config::RunnerConfig, benchmark_names::Vector{String},
                         requested::Vector{String}, options::Options;
                         invocation::Int = 0)
     tasks = benchmark_tasks(config, benchmark_names, requested, options)
-    state = ExecutionState(run_state(options), String[], nothing, Set{String}())
+    state = ExecutionState(run_state(options, benchmark_names, requested),
+                           String[], nothing, Set{String}())
 
     if config.defaults.group_by_variant
         needs_reference_data(options) && @warn(

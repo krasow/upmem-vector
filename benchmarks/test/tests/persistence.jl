@@ -33,6 +33,37 @@ end
     end
 end
 
+@testset "fresh runs keep other benchmarks' checkpoints" begin
+    mktempdir() do directory
+        path = joinpath(directory, "runner.toml")
+        records = [
+            BenchmarkRunner.run_record(
+                test_case(benchmark = "knn"), "polymerpim", nothing),
+            BenchmarkRunner.run_record(
+                test_case(benchmark = "red"), "polymerpim", nothing),
+        ]
+        BenchmarkRunner.save_state(BenchmarkRunner.RunState(
+            path, Set(BenchmarkRunner.run_key.(records)), records, true))
+
+        # A `red` run started without --resume starts red over and leaves the
+        # half-finished knn sweep alone.
+        state = quietly() do
+            BenchmarkRunner.run_state(
+                BenchmarkRunner.Options(state = path), ["red"], String[])
+        end
+        @test getindex.(state.records, "benchmark") == ["knn"]
+        @test TOML.parsefile(path)["completed"] ==
+              [Dict{String,Any}(records[1])]
+
+        # An unscoped fresh run still clears everything.
+        cleared = quietly() do
+            BenchmarkRunner.run_state(BenchmarkRunner.Options(state = path))
+        end
+        @test isempty(cleared.records)
+        @test isempty(TOML.parsefile(path)["completed"])
+    end
+end
+
 @testset "runner reset" begin
     mktempdir() do directory
         state_path = joinpath(directory, "runner.toml")
