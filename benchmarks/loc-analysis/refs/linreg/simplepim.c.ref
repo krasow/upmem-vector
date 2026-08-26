@@ -1,0 +1,41 @@
+void start_func(gen_red_arguments_t* args) {
+    uint32_t bytes = align8(args->table_len * args->output_type_size);
+    if (me() == 0) {
+        weights_data = fsb_get(fsb_alloc(bytes, 1));
+        mram_read(DPU_MRAM_HEAP_POINTER + args->info, weights_data, bytes);
+    }
+    barrier_wait(&barrier_maptoval);
+}
+
+void map_to_val_func(void* input, void* grads, uint32_t* key) {
+    RED_T* grads_ptr = (RED_T*)grads;
+    T* row = (T*)input;
+    T* weights = (T*)weights_data;
+    RED_T dot_prod = 0;
+    for (uint32_t i = 0; i < dim; i++) {
+        dot_prod += (RED_T)row[i] * weights[i];
+    }
+    RED_T e = dot_prod - ((RED_T)row[dim] << shift_amount);
+    for (uint32_t i = 0; i < dim; i++) {
+        grads_ptr[i] =
+            (row[i] >> (prevent_overflow_shift_amount / 2)) *
+            (e >> (prevent_overflow_shift_amount -
+                   prevent_overflow_shift_amount / 2));
+    }
+    *key = 0;
+}
+
+void combine_func(void* dest, void* src) {
+    RED_T* a = (RED_T*)dest;
+    RED_T* b = (RED_T*)src;
+    for (uint32_t i = 0; i < dim; i++) a[i] += b[i];
+}
+
+RED_T* run_linreg(T* elements, T* weights, simplepim_management_t* mgmt,
+                  handle_t* handle) {
+    simplepim_scatter("t1", elements, nr_elements, (dim + 1) * sizeof(T), mgmt);
+    uint32_t info = lookup_table("t1", mgmt)->end;
+    simplepim_broadcast("t2", weights, 1, dim * sizeof(T), mgmt);
+    return table_gen_red("t1", "t3", dim * sizeof(RED_T),
+                         1, handle, mgmt, info);
+}

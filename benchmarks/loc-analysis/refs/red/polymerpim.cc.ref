@@ -1,0 +1,5 @@
+DPUVector<T>::reduction_result_t run_reduction(const std::vector<T>& a) {
+    DPUVector<T> da(a, "a");
+    auto pending = sum(da);
+    return pending.get();
+}

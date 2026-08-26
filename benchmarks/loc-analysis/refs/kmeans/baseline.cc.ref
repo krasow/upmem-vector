@@ -1,0 +1,78 @@
+typedef struct {
+    uint32_t data_offset;
+    uint32_t centroids_offset;
+    uint32_t result_offset;
+    uint32_t num_elements;
+} DPU_LAUNCH_ARGS;
+
+void div_round_closest_centroids(RED_T* sums, RED_T* counts, T* centroids) {
+    for (uint32_t j = 0; j < K; j++) {
+        if (counts[j] <= 0) continue;
+        for (uint32_t d = 0; d < DIM; d++) {
+            int s = (int)sums[j * DIM + d];
+            int c = (int)counts[j];
+            centroids[j * DIM + d] =
+                (T)(((s < 0) ^ (c < 0)) ? (s - c / 2) / c : (s + c / 2) / c);
+        }
+    }
+}
+
+void run_kmeans(dpu_set_t dpu_set, T* centroids, RED_T* partials) {
+    dpu_broadcast_to(dpu_set, DPU_MRAM_HEAP_POINTER_NAME,
+                     centroids_offset, centroids,
+                     align8(K * DIM * sizeof(T)), DPU_XFER_DEFAULT);
+    dpu_launch(dpu_set, DPU_SYNCHRONOUS);
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        dpu_prepare_xfer(dpu, &partials[idx * NR_TASKLETS * K * (DIM + 1)]);
+    }
+    dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU, DPU_MRAM_HEAP_POINTER_NAME,
+                  result_offset, NR_TASKLETS * K * (DIM + 1) * sizeof(RED_T),
+                  DPU_XFER_DEFAULT);
+    RED_T global_sum[K * DIM] = {};
+    RED_T global_count[K] = {};
+    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++) {
+        RED_T* p = &partials[i * K * (DIM + 1)];
+        for (uint32_t j = 0; j < K; j++) {
+            for (uint32_t d = 0; d < DIM; d++)
+                global_sum[j * DIM + d] += p[j * (DIM + 1) + d];
+            global_count[j] += p[j * (DIM + 1) + DIM];
+        }
+    }
+    div_round_closest_centroids(global_sum, global_count, centroids);
+}
+
+int dpu_main(void) {
+    uint32_t tid = me();
+    T* centroids = tasklet_centroids[tid];
+    RED_T (*partial)[DIM + 1] = tasklet_partials[tid];
+    T* row_buf = tasklet_row_bufs[tid];
+    mram_read(args.centroids_offset, centroids, align8(K * DIM * sizeof(T)));
+    for (uint32_t j = 0; j < K; j++)
+        for (uint32_t d = 0; d <= DIM; d++) partial[j][d] = 0;
+    for (uint32_t i = tid * BLOCK_ROWS;
+         i < args.num_elements;
+         i += NR_TASKLETS * BLOCK_ROWS) {
+        uint32_t cnt = min(BLOCK_ROWS, args.num_elements - i);
+        mram_read(data_base + i * ROW_BYTES, row_buf, align8(cnt * ROW_BYTES));
+        for (uint32_t r = 0; r < cnt; r++) {
+            T* row = &row_buf[r * (ROW_BYTES / sizeof(T))];
+            uint32_t best = 0;
+            RED_T best_dist = INT32_MAX;
+            for (uint32_t j = 0; j < K; j++) {
+                RED_T sq_dist = 0;
+                for (uint32_t d = 0; d < DIM; d++) {
+                    RED_T diff = (RED_T)row[d] - (RED_T)centroids[j * DIM + d];
+                    sq_dist += diff * diff;
+                }
+                if (sq_dist < best_dist) {
+                    best = j;
+                    best_dist = sq_dist;
+                }
+            }
+            for (uint32_t d = 0; d < DIM; d++) partial[best][d] += row[d];
+            partial[best][DIM]++;
+        }
+    }
+    mram_write(partial, result_ptr, K * (DIM + 1) * sizeof(RED_T));
+    return 0;
+}

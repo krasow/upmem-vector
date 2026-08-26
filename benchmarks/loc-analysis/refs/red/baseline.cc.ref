@@ -1,0 +1,47 @@
+typedef struct {
+    uint32_t data_offset;
+    uint32_t result_offset;
+    uint32_t num_elements;
+} DPU_LAUNCH_ARGS;
+
+RED_T run_reduction(dpu_set_t dpu_set, T* input, RED_T* partials,
+                    uint32_t elems_per_dpu, uint32_t result_offset) {
+    uint32_t data_bytes = elems_per_dpu * sizeof(T);
+    dpu_set_t dpu;
+    uint32_t idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &input[idx * elems_per_dpu]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, 0,
+                             data_bytes, DPU_XFER_DEFAULT));
+    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+    idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &partials[idx * NR_TASKLETS]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, result_offset,
+                             NR_TASKLETS * sizeof(RED_T),
+                             DPU_XFER_DEFAULT));
+    RED_T result = 0;
+    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++) result += partials[i];
+    return result;
+}
+
+int dpu_main(void) {
+    uint32_t tid = me();
+    __mram_ptr T* data = (__mram_ptr T*)args.data_offset;
+    __mram_ptr RED_T* res = (__mram_ptr RED_T*)args.result_offset;
+    __dma_aligned T buf[BLOCK_SIZE];
+    RED_T local = 0;
+    for (uint32_t i = tid * BLOCK_SIZE;
+         i < args.num_elements;
+         i += NR_TASKLETS * BLOCK_SIZE) {
+        uint32_t cnt = min(BLOCK_SIZE, args.num_elements - i);
+        mram_read(data + i, buf, align8(cnt * sizeof(T)));
+        for (uint32_t j = 0; j < cnt; j++) local += buf[j];
+    }
+    res[tid] = local;
+    return 0;
+}

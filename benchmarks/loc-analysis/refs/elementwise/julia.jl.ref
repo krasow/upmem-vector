@@ -1,0 +1,8 @@
+compute(a, b) = OPERATION(a, b)
+
+function run_elementwise(a, b)
+    da = DPUVector(a)
+    db = DPUVector(b)
+    res = compute(da, db)
+    return Array(res)
+end

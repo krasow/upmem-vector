@@ -1,0 +1,50 @@
+typedef struct {
+    uint32_t data_offset;
+    uint32_t query_offset;
+    uint32_t result_offset;
+    uint32_t num_elements;
+} DPU_LAUNCH_ARGS;
+
+RED_T run_knn(dpu_set_t dpu_set, RED_T* tasklet_mins,
+              uint32_t result_offset) {
+    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+    dpu_set_t dpu;
+    uint32_t idx = 0;
+    DPU_FOREACH(dpu_set, dpu, idx) {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, &tasklet_mins[idx * NR_TASKLETS * 2]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, result_offset,
+                             NR_TASKLETS * 8, DPU_XFER_DEFAULT));
+    RED_T result = INT32_MAX;
+    for (uint32_t i = 0; i < nr_dpus * NR_TASKLETS; i++) {
+        if (tasklet_mins[i * 2] < result) result = tasklet_mins[i * 2];
+    }
+    return result;
+}
+
+int dpu_main(void) {
+    uint32_t tid = me();
+    __dma_aligned T query[DIM];
+    __dma_aligned T row_buf[BLOCK_ROWS * (ROW_BYTES / sizeof(T))];
+    mram_read(query_ptr, query, align8(DIM * sizeof(T)));
+    RED_T local_min = INT32_MAX;
+    for (uint32_t i = tid * BLOCK_ROWS;
+         i < args.num_elements;
+         i += NR_TASKLETS * BLOCK_ROWS) {
+        uint32_t cnt = min(BLOCK_ROWS, args.num_elements - i);
+        mram_read(data_base + i * ROW_BYTES, row_buf, cnt * ROW_BYTES);
+        for (uint32_t r = 0; r < cnt; r++) {
+            T* row = &row_buf[r * (ROW_BYTES / sizeof(T))];
+            RED_T sq_dist = 0;
+            for (uint32_t d = 0; d < DIM; d++) {
+                RED_T diff = (RED_T)row[d] - (RED_T)query[d];
+                sq_dist += diff * diff;
+            }
+            if (sq_dist < local_min) local_min = sq_dist;
+        }
+    }
+    __dma_aligned RED_T write_buf[2] = {local_min, 0};
+    mram_write(write_buf, result_ptr, 8);
+    return 0;
+}

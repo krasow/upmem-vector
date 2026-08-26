@@ -1,0 +1,7 @@
+std::vector<RED_T> run_histogram(const std::vector<T>& a) {
+    DPUVector<T> da(a, "a");
+    DPULocalVector<T> local_hist(BINS);
+    auto buckets = ((da * (T)BINS) >> (T)DEPTH);
+    local_hist[buckets] += (T)1;
+    return local_hist.to_cpu();
+}

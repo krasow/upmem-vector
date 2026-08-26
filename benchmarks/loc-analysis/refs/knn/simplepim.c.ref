@@ -1,0 +1,34 @@
+void start_func(gen_red_arguments_t* args) {
+    if (me() == 0) {
+        mram_read(DPU_MRAM_HEAP_POINTER + args->info,
+                  query_buf, align8(DIM * sizeof(T)));
+    }
+    barrier_wait(&barrier_knn);
+}
+
+void map_to_val_func(void* input, void* output, uint32_t* key) {
+    *key = 0;
+    T* row = (T*)input;
+    RED_T sq_dist = 0;
+    for (uint32_t d = 0; d < DIM; d++) {
+        RED_T diff = (RED_T)row[d] - (RED_T)query_buf[d];
+        sq_dist += diff * diff;
+    }
+    *(RED_T*)output = sq_dist;
+}
+
+void combine_func(void* dest, void* src) {
+    RED_T a = *(RED_T*)dest;
+    RED_T b = *(RED_T*)src;
+    if (b < a) *(RED_T*)dest = b;
+}
+
+RED_T run_knn(T* data, T* query, simplepim_management_t* mgmt,
+              handle_t* handle) {
+    simplepim_scatter("t1", data, nr_elements, DIM * sizeof(T), mgmt);
+    uint32_t info = lookup_table("t1", mgmt)->end;
+    simplepim_broadcast("query", query, 1, DIM * sizeof(T), mgmt);
+    RED_T* res = table_gen_red("t1", "res", sizeof(RED_T),
+                               1, handle, mgmt, info);
+    return *res;
+}

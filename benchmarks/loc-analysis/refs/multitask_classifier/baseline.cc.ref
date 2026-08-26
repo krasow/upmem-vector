@@ -1,0 +1,141 @@
+typedef struct {
+    uint32_t rows_offset;
+    uint32_t weights_offset;
+    uint32_t result_offset;
+    uint32_t num_elements;
+    uint32_t mode;
+    uint32_t classifier;
+} DPU_LAUNCH_ARGS;
+
+void send_args(dpu_set_t dpu_set, std::vector<DPU_LAUNCH_ARGS>& args) {
+    dpu_set_t dpu;
+    uint32_t dpu_index = 0;
+    DPU_FOREACH(dpu_set, dpu, dpu_index)
+    DPU_ASSERT(dpu_prepare_xfer(dpu, &args[dpu_index]));
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
+                             sizeof(args[0]), DPU_XFER_DEFAULT));
+}
+
+void gather_results(dpu_set_t dpu_set, RED_T* partials,
+                    uint32_t result_offset, uint32_t result_bytes) {
+    dpu_set_t dpu;
+    uint32_t dpu_index = 0;
+    DPU_FOREACH(dpu_set, dpu, dpu_index) {
+        DPU_ASSERT(dpu_prepare_xfer(
+            dpu, &partials[(uint64_t)dpu_index * NR_TASKLETS * RESULT_WORDS]));
+    }
+    DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU,
+                             DPU_MRAM_HEAP_POINTER_NAME, result_offset,
+                             result_bytes, DPU_XFER_DEFAULT));
+}
+
+void run_epoch(dpu_set_t dpu_set, std::vector<DPU_LAUNCH_ARGS>& args,
+               std::vector<T>& weights, std::vector<int64_t>& gradients,
+               RED_T* partials, svm_metrics_t& metrics, uint32_t nr_dpus,
+               uint32_t weights_offset, uint32_t weights_bytes,
+               uint32_t result_offset, uint32_t result_bytes) {
+    std::fill(gradients.begin(), gradients.end(), 0);
+    metrics.margin_violations = 0;
+    DPU_ASSERT(dpu_broadcast_to(dpu_set, DPU_MRAM_HEAP_POINTER_NAME,
+                                weights_offset, weights.data(), weights_bytes,
+                                DPU_XFER_DEFAULT));
+    for (uint32_t c = 0; c < CLASSES; c++) {
+        for (auto& arg : args) {
+            arg.mode = SVM_MODE_TRAIN;
+            arg.classifier = c;
+        }
+        send_args(dpu_set, args);
+        DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+        gather_results(dpu_set, partials, result_offset, result_bytes);
+        for (uint64_t i = 0; i < (uint64_t)nr_dpus * NR_TASKLETS; i++) {
+            RED_T* partial = &partials[i * RESULT_WORDS];
+            for (uint32_t d = 0; d < FEATURES; d++) {
+                gradients[(uint64_t)c * FEATURES + d] += partial[d];
+            }
+            metrics.margin_violations += partial[FEATURES];
+        }
+    }
+    for (uint32_t i = 0; i < CLASSES * FEATURES; i++) {
+        weights[i] = (T)svm_update_weight(weights[i], gradients[i], N);
+    }
+    DPU_ASSERT(dpu_broadcast_to(dpu_set, DPU_MRAM_HEAP_POINTER_NAME,
+                                weights_offset, weights.data(), weights_bytes,
+                                DPU_XFER_DEFAULT));
+    for (auto& arg : args) {
+        arg.mode = SVM_MODE_EVALUATE;
+        arg.classifier = 0;
+    }
+    send_args(dpu_set, args);
+    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+    gather_results(dpu_set, partials, result_offset, result_bytes);
+    metrics.correct_predictions = 0;
+    for (uint64_t i = 0; i < (uint64_t)nr_dpus * NR_TASKLETS; i++) {
+        metrics.correct_predictions += partials[i * RESULT_WORDS];
+    }
+}
+
+__host DPU_LAUNCH_ARGS args;
+__dma_aligned T tasklet_weights[NR_TASKLETS][FLOW_CLASSES * FLOW_FEATURES];
+__dma_aligned RED_T tasklet_results[NR_TASKLETS][RESULT_WORDS];
+__dma_aligned T tasklet_rows[NR_TASKLETS][BLOCK_ROWS * FLOW_ROW_WORDS];
+
+int dpu_main(void) {
+    uint32_t tid = me();
+    T* weights = tasklet_weights[tid];
+    RED_T* result = tasklet_results[tid];
+    T* rows = tasklet_rows[tid];
+    uint32_t weight_count = args.mode == SVM_MODE_EVALUATE
+                                ? FLOW_CLASSES * FLOW_FEATURES
+                                : FLOW_FEATURES;
+    uint32_t weight_offset =
+        args.mode == SVM_MODE_EVALUATE ? 0 : args.classifier * FLOW_FEATURES;
+    mram_read((__mram_ptr T*)args.weights_offset + weight_offset, weights,
+              weight_count * sizeof(T));
+    for (uint32_t i = 0; i < RESULT_WORDS; i++) {
+        result[i] = 0;
+    }
+    __mram_ptr T* input = (__mram_ptr T*)args.rows_offset;
+    for (uint32_t first = tid * BLOCK_ROWS; first < args.num_elements;
+         first += NR_TASKLETS * BLOCK_ROWS) {
+        uint32_t count = first + BLOCK_ROWS <= args.num_elements
+                             ? BLOCK_ROWS
+                             : args.num_elements - first;
+        mram_read(input + (uint64_t)first * FLOW_ROW_WORDS, rows,
+                  count * FLOW_ROW_WORDS * sizeof(T));
+        for (uint32_t r = 0; r < count; r++) {
+            T* row = &rows[r * FLOW_ROW_WORDS];
+            if (args.mode == SVM_MODE_EVALUATE) {
+                int32_t best_score = 0;
+                uint32_t best_class = 0;
+                for (uint32_t c = 0; c < FLOW_CLASSES; c++) {
+                    int32_t score = 0;
+                    for (uint32_t d = 0; d < FLOW_FEATURES; d++) {
+                        score += weights[c * FLOW_FEATURES + d] * row[d];
+                    }
+                    if (c == 0 || score > best_score) {
+                        best_score = score;
+                        best_class = c;
+                    }
+                }
+                result[0] += best_class == (uint32_t)row[FLOW_FEATURES];
+                continue;
+            }
+            int32_t score = 0;
+            for (uint32_t d = 0; d < FLOW_FEATURES; d++) {
+                score += weights[d] * row[d];
+            }
+            int32_t label =
+                svm_signed_label(row[FLOW_FEATURES], args.classifier);
+            if (label * score < SVM_MARGIN) {
+                for (uint32_t d = 0; d < FLOW_FEATURES; d++) {
+                    result[d] += (RED_T)(-label * row[d]);
+                }
+                result[FLOW_FEATURES]++;
+            }
+        }
+    }
+    mram_write(result, (__mram_ptr void*)(args.result_offset +
+                                          tid * RESULT_WORDS * sizeof(RED_T)),
+               RESULT_WORDS * sizeof(RED_T));
+    return 0;
+}

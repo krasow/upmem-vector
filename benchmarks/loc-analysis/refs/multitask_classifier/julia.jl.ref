@@ -1,0 +1,36 @@
+function run_epoch(features, class_ids, weights, metrics)
+    violation_futures = DpuFuture[]
+    gradient_futures = DpuFuture[]
+
+    for c in 0:(CLASSES - 1)
+        model = Int32[weights[c * FEATURES + d] for d in 1:FEATURES]
+        score = features[1] .* model[1]
+        for d in 2:FEATURES
+            score = score .+ features[d] .* model[d]
+        end
+        label = (class_ids .== T(c)) .* T(2) .- T(1)
+        active = label .* score .< T(SVM_MARGIN)
+        factor = DPUVector(active .* (-label))
+        push!(violation_futures, sum(abs2.(factor)))
+        for d in 1:FEATURES
+            push!(gradient_futures, sum(factor .* features[d]))
+        end
+    end
+
+    metrics[:margin_violations] = sum(Int64(get(f)) for f in violation_futures)
+    gradients = Int64[Int64(get(f)) for f in gradient_futures]
+    for i in 1:(CLASSES * FEATURES)
+        weights[i] = svm_update_weight(weights[i], gradients[i], N)
+    end
+
+    scores = DpuLazy[]
+    for c in 0:(CLASSES - 1)
+        s = features[1] .* weights[c * FEATURES + 1]
+        for d in 2:FEATURES
+            s = s .+ features[d] .* weights[c * FEATURES + d]
+        end
+        push!(scores, s)
+    end
+    best = argmax.(zip(scores...)) .- 1
+    metrics[:correct_predictions] = Int64(get(sum(best .== class_ids)))
+end

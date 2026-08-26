@@ -1,0 +1,6 @@
+function run_histogram(a)
+    da = DPUVector(a)
+    bins = DPULocalVector(BINS)
+    bins[(da .* T(BINS)) .>> T(DEPTH)] .+= 1
+    return Array(bins)
+end

@@ -1,0 +1,8 @@
+function run_knn(cols, query)
+    acc = abs2.(cols[1] .- query[1])
+    for d in 2:DIM
+        acc = acc .+ abs2.(cols[d] .- query[d])
+    end
+    pending = minimum(acc)
+    return pending[]
+end

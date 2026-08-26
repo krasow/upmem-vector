@@ -1,0 +1,47 @@
+void run_epoch(const std::vector<DPUVector<T> >& features,
+               const DPUVector<T>& class_ids, std::vector<T>& weights,
+               svm_metrics_t& metrics) {
+    using ReductionResult = typename DPUVector<T>::reduction_result_t;
+    std::vector<DpuFuture<T> > gradient_futures;
+    std::vector<DpuFuture<T> > violation_futures;
+    std::vector<DPUVector<T> > factors;
+
+    for (uint32_t c = 0; c < CLASSES; c++) {
+        auto score = features[0] * weights[(uint64_t)c * FEATURES];
+        for (uint32_t d = 1; d < FEATURES; ++d) {
+            score = score + features[d] * weights[(uint64_t)c * FEATURES + d];
+        }
+        auto label = (class_ids == (T)c) * (T)2 - (T)1;
+        auto active = label * score < (T)SVM_MARGIN;
+        factors.emplace_back(active * -label);
+        violation_futures.push_back(sum(sqr(factors.back())));
+        for (uint32_t d = 0; d < FEATURES; ++d) {
+            gradient_futures.push_back(sum(factors.back() * features[d]));
+        }
+    }
+
+    std::vector<int64_t> gradients((uint64_t)CLASSES * FEATURES);
+    metrics.margin_violations = 0;
+    for (uint32_t c = 0; c < CLASSES; c++) {
+        metrics.margin_violations +=
+            (uint64_t)(ReductionResult)violation_futures[c].get();
+    }
+    for (uint32_t i = 0; i < CLASSES * FEATURES; i++) {
+        gradients[i] = (int64_t)(ReductionResult)gradient_futures[i].get();
+    }
+    for (uint32_t i = 0; i < CLASSES * FEATURES; i++) {
+        weights[i] = (T)svm_update_weight(weights[i], gradients[i], N);
+    }
+
+    std::vector<DpuLazy<T> > scores;
+    for (uint32_t c = 0; c < CLASSES; ++c) {
+        auto score = features[0] * weights[(uint64_t)c * FEATURES];
+        for (uint32_t d = 1; d < FEATURES; ++d) {
+            score = score + features[d] * weights[(uint64_t)c * FEATURES + d];
+        }
+        scores.push_back(std::move(score));
+    }
+    auto correct_future = sum(argmax(scores) == class_ids);
+    metrics.correct_predictions =
+        (uint64_t)(ReductionResult)correct_future.get();
+}
