@@ -228,7 +228,9 @@ function tuning_cases(spec::BenchmarkSpec, defaults::RunnerDefaults,
     sizes = tuning_sizes(spec, options)
     warmup = something(options.warmup, spec.warmup, defaults.warmup)
     iterations = something(options.iterations, spec.iterations, defaults.iterations)
-    return [RunCase(spec.name, dpus, size, warmup, iterations, check,
+    # Tuning never materializes the CPU reference set, so its cases synthesize
+    # inputs in-process; every knob candidate is timed the same way.
+    return [RunCase(spec.name, dpus, size, warmup, iterations, check, false,
                     something(spec.seed, defaults.seed), spec.parameters, spec.operation)
             for dpus in options.dpus for size in sizes]
 end
