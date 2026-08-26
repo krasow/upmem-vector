@@ -237,6 +237,10 @@ inline std::string fusion_rpn_expr_preview(
         return "sum";
       case OP_PRODUCT:
         return "product";
+      case OP_ARGMIN_REDUCE:
+        return "argmin";
+      case OP_ARGMAX_REDUCE:
+        return "argmax";
       default:
         return "reduce";
     }

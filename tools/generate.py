@@ -221,6 +221,10 @@ pipeline_ops = [
     # push_index plus the shard base in args.pipeline.index_base.  Appended so
     # existing opcode numbers, and the JIT cache keys over them, do not move.
     ('push_global_index', 'PUSH_GLOBAL_INDEX'),
+    # Whole-vector arg-reduction terminals.  Their reduction slot is an 8-byte
+    # {int32 value, uint32 global_index} pair.
+    ('argmin_reduce', 'ARGMIN_REDUCE'),
+    ('argmax_reduce', 'ARGMAX_REDUCE'),
 ]
 
 with open("common/opcodes.h", "w") as out:
@@ -238,7 +242,7 @@ with open("common/opcodes.h", "w") as out:
     out.write('#define IS_OP_BINARY(op) ((op) >= OP_ADD && (op) <= OP_LE)\n')
     out.write('#define IS_OP_SCALAR(op) ((op) >= OP_ADD_SCALAR && (op) <= OP_LE_SCALAR)\n')
     out.write('#define IS_OP_SCALAR_VAR(op) ((op) >= OP_ADD_SCALAR_VAR && (op) <= OP_LE_SCALAR_VAR)\n')
-    out.write('#define IS_OP_REDUCTION(op) ((op) >= OP_MIN && (op) <= OP_PRODUCT)\n')
+    out.write('#define IS_OP_REDUCTION(op) (((op) >= OP_MIN && (op) <= OP_PRODUCT) || (op) == OP_ARGMIN_REDUCE || (op) == OP_ARGMAX_REDUCE)\n')
     out.write('#define IS_OP_TERNARY(op) ((op) == OP_SELECT)\n')
     out.write('#define IS_OP_ARG_K(op) ((op) == OP_ARGMIN_K || (op) == OP_ARGMAX_K)\n')
     out.write('#define IS_OP_INDIRECT_UPDATE(op) ((op) == OP_ADD_INDIRECT || (op) == OP_APPLY_INDIRECT)\n')
@@ -273,7 +277,7 @@ with open("julia/src/internal/opcodes.jl", "w") as out:
     out.write('    elseif op == OP_APPLY_INDIRECT\n        return 2\n')
     out.write('    elseif op == OP_ARGMIN_K || op == OP_ARGMAX_K\n        return 1\n')
     out.write('    end\n    return 0\nend\n\n')
-    out.write('is_reduction(op::UInt8) = OP_MIN <= op <= OP_PRODUCT\n\n')
+    out.write('is_reduction(op::UInt8) = OP_MIN <= op <= OP_PRODUCT || op == OP_ARGMIN_REDUCE || op == OP_ARGMAX_REDUCE\n\n')
     out.write('end # module Opcodes\n')
 
 

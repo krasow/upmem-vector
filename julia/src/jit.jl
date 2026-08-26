@@ -117,10 +117,12 @@ function _code_jitted_scatter(statement)
                        noperands = length(operands))
 end
 
-# Pass 1 is a statically compiled reduction with no source, so show pass 2: the
-# index of the value's first occurrence.
-_code_jitted_arg(::Symbol, v::DPUVector) =
-    code_jitted(_arg_index_program(); nelements = length(v))
+# Whole-vector arg forms are one pair-valued reduction terminal.
+function _code_jitted_arg(name::Symbol, v::DPUVector)
+    terminal = name in (:argmax, :findmax) ? Internal._argmax_terminal :
+                                            Internal._argmin_terminal
+    return code_jitted(terminal(Internal.input()); nelements = length(v))
+end
 
 _code_jitted_arg(name::Symbol, x) = error(
     "@code_jitted $name takes a DPUVector or a list of them, got a $(typeof(x))")
@@ -161,7 +163,7 @@ variable holding `sum`.
 
 `a + b` and `sum(a)` use statically compiled kernels and have no generated
 source. `argmin` / `argmax` / `findmin` / `findmax` over a single vector show
-their index pass; the value pass is a statically compiled reduction.
+their pair-valued reduction kernel.
 `argmin.(zip(a, b))` shows the per-element lane kernel.
 
 An assignment describes its right-hand side: `@code_jitted g = sum(a .+ b)` is

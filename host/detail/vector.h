@@ -58,6 +58,15 @@ template <typename T>
 struct lazy_reduction_result;
 
 template <typename T>
+struct arg_reduction_result {
+  T value;
+  uint32_t index;
+};
+
+template <typename T>
+struct lazy_arg_reduction_result;
+
+template <typename T>
 class dpu_local_vector;
 
 template <typename T>
@@ -172,6 +181,10 @@ class dpu_vector {
       const dpu_pipeline_expr<T>& expr,
       const std::vector<dpu_vector<T>>& operands = {},
       const std::vector<uint32_t>& scalars = {});
+  lazy_arg_reduction_result<T> pipeline_argreduce(
+      const std::vector<uint8_t>& ops,
+      const std::vector<dpu_vector<T>>& operands = {},
+      const std::vector<uint32_t>& scalars = {});
 #endif
 #if JIT
   pipeline_result<T> jit(const std::vector<uint8_t>& ops);
@@ -197,7 +210,22 @@ struct lazy_reduction_result {
 };
 
 template <typename T>
+struct lazy_arg_reduction_result {
+  dpu_vector<T> vec;
+  bool want_max = true;
+  bool ready = false;
+  arg_reduction_result<T> cached{};
+  lazy_arg_reduction_result() noexcept = default;
+  lazy_arg_reduction_result(dpu_vector<T> v, bool max)
+      : vec(std::move(v)), want_max(max) {}
+  arg_reduction_result<T> get();
+};
+
+template <typename T>
 using dpu_future = lazy_reduction_result<T>;
+
+template <typename T>
+using dpu_arg_future = lazy_arg_reduction_result<T>;
 
 enum class dpu_local_reduce_op : uint8_t {
   sum,

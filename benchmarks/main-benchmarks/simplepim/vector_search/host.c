@@ -25,9 +25,7 @@ static vector_search_result_t cpu_best(const T *records, const T *query) {
       for (uint32_t d = 0; d < DIM; ++d) {
         score += row[d] + query[d];
       }
-      vector_search_result_insert(
-          &local,
-          (int32_t)(((int64_t)score + 2 * DIM) * nr_elements + row[DIM]));
+      vector_search_result_insert(&local, score, (uint32_t)row[DIM]);
     }
 #pragma omp critical
     vector_search_result_merge(&result, &local);
@@ -40,7 +38,7 @@ int main(void) {
       !vector_search_key_range_is_valid(nr_elements, DIM)) {
     fprintf(stderr,
             "Invalid Vector search configuration: require N divisible by DPUs "
-            "and (4*DIM+1)*N <= INT32_MAX\n");
+            "and N <= UINT32_MAX\n");
     return 2;
   }
 
@@ -69,7 +67,7 @@ int main(void) {
     for (uint32_t d = 0; d < DIM; ++d) {
       records[i * (DIM + 1) + d] = vector_search_dataset_value(seed, i, d, DIM);
     }
-    records[i * (DIM + 1) + DIM] = (T)(nr_elements - 1 - i);
+    records[i * (DIM + 1) + DIM] = (T)i;
   }
   bench_stage_end(&stages);
 
@@ -146,12 +144,13 @@ int main(void) {
 
   if (check_correctness && iterations) {
     vector_search_result_t expected = cpu_best(records, query);
-    int ok = last_result.key == expected.key;
+    int ok = last_result.score == expected.score &&
+             last_result.index == expected.index;
     if (ok) {
       printf("the result is correct\n");
     } else {
-      printf("Mismatch: got key %d, expected %d\n", last_result.key,
-             expected.key);
+      printf("Mismatch: got (%d, %u), expected (%d, %u)\n", last_result.score,
+             last_result.index, expected.score, expected.index);
     }
   }
 

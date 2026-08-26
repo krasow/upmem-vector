@@ -432,7 +432,7 @@ void launch_universal_pipeline(
   // Detect reduction and flag result descriptor synchronously
   for (size_t i = 0; i < ops.size(); ++i) {
     uint8_t op = ops[i];
-    if (res && op >= OP_MIN && op <= OP_PRODUCT) {
+    if (res && IS_OP_REDUCTION(op)) {
       res->is_reduction_result = true;
       res->reduction_rid = static_cast<KernelID>(op);
     }

@@ -55,9 +55,7 @@ int main(void) {
         score += rows[r * DIM + d] + query_buf[d];
       }
       uint32_t global_index = args.base_index + first + r;
-      vector_search_result_insert(
-          &tasklet_best[tid],
-          vector_search_pack_key(score, global_index, N, DIM));
+      vector_search_result_insert(&tasklet_best[tid], score, global_index);
     }
   }
 

@@ -43,6 +43,30 @@ TEST(public_api, scalar_values_reuse_one_jit_program) {
 #endif
 }
 
+TEST(public_api, arg_reductions_return_value_and_first_index_in_one_pass) {
+#if !PIPELINE
+  SKIP("requires PIPELINE=1");
+#else
+  std::vector<T> host = {-4, 9, 2, 9, 1};
+  DPUVector<T> input(host);
+
+  sync();
+  RuntimeStatistics before = statistics();
+  ArgResult maximum = argmax(input + (T)3).get();
+  sync();
+  CHECK_EQ(statistics().compute_launches - before.compute_launches, 1u);
+  CHECK_EQ(maximum.value, 12);
+  CHECK_EQ(maximum.index, 1u);
+
+  before = statistics();
+  ArgResult minimum = argmin(input - (T)2).get();
+  sync();
+  CHECK_EQ(statistics().compute_launches - before.compute_launches, 1u);
+  CHECK_EQ(minimum.value, -6);
+  CHECK_EQ(minimum.index, 0u);
+#endif
+}
+
 TEST(public_api, interpreter_falls_back_for_deep_tree) {
 #if !PIPELINE || JIT
   SKIP("requires PIPELINE=1 JIT=0");

@@ -31,9 +31,8 @@ void map_to_val_func(void *input, void *output, uint32_t *key) {
 
   vector_search_result_t *candidate = (vector_search_result_t *)output;
   vector_search_result_init(candidate);
-  /* record[DIM] stores N-1-global_index, the packed key's tie breaker. */
-  candidate->key = (int32_t)(((int64_t)score + 2 * DIM) * (int64_t)nr_elements +
-                             record[DIM]);
+  candidate->score = score;
+  candidate->index = (uint32_t)record[DIM];
 }
 
 #endif

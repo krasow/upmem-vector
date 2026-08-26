@@ -116,10 +116,15 @@ end
     @test PolymerPIM.Internal.Opcodes.OP_ARGMIN_K in (@code_jitted argmin.(zip(a, b))).ops
     @test length((@code_jitted argmax.(zip(a, b)) .* 3).ops) > length(lanes.ops)
 
-    # The vertical form has a kernel too now: the index pass.
+    # The vertical form is one pair-valued terminal, not a separate index pass,
+    # so argmax and findmax submit the same program and the min forms differ
+    # only in their terminal opcode.
     idx = @code_jitted argmax(a)
-    @test PolymerPIM.Internal.Opcodes.OP_PUSH_GLOBAL_INDEX in idx.ops
-    @test idx.ops[end] == PolymerPIM.Internal.Opcodes.OP_MIN
-    @test (@code_jitted findmin(a)).hash == idx.hash
+    @test idx.ops[end] == PolymerPIM.Internal.Opcodes.OP_ARGMAX_REDUCE
+    @test (@code_jitted findmax(a)).hash == idx.hash
+    @test (@code_jitted findmin(a)).ops[end] ==
+          PolymerPIM.Internal.Opcodes.OP_ARGMIN_REDUCE
+    @test (@code_jitted argmin(a)).hash == (@code_jitted findmin(a)).hash
+    @test (@code_jitted findmin(a)).hash != idx.hash
 
 end

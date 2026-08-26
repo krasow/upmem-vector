@@ -381,6 +381,17 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
                                             scalar_args(scalars));
              });
 
+  // Private Julia lowering bridge.  The DPU result is a native pair; this
+  // uint64 is only an FFI transport returned after the one-pass reduction.
+  mod.method("_argreduce",
+             [](Vec& input, jlcxx::ArrayRef<uint8_t> ops, VecList& operands,
+                jlcxx::ArrayRef<int32_t> scalars) -> uint64_t {
+               auto future = input.pipeline_argreduce(
+                   copy_array(ops), operands.items, scalar_args(scalars));
+               const auto result = future.get();
+               return (uint64_t(result.index) << 32) | uint32_t(result.value);
+             });
+
   // ---- synchronization ----
 
   mod.method("dpu_fence", [](Vec& v) { v.add_fence(); });

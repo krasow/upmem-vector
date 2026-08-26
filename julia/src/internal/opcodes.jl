@@ -66,6 +66,8 @@ const OP_APPLY_INDIRECT = UInt8(57)
 const OP_PUSH_SCALAR = UInt8(58)
 const OP_PUSH_SCALAR_VAR = UInt8(59)
 const OP_PUSH_GLOBAL_INDEX = UInt8(60)
+const OP_ARGMIN_REDUCE = UInt8(61)
+const OP_ARGMAX_REDUCE = UInt8(62)
 
 # Number of inline argument bytes that follow an opcode.
 function inline_bytes(op::UInt8)
@@ -87,6 +89,6 @@ function inline_bytes(op::UInt8)
     return 0
 end
 
-is_reduction(op::UInt8) = OP_MIN <= op <= OP_PRODUCT
+is_reduction(op::UInt8) = OP_MIN <= op <= OP_PRODUCT || op == OP_ARGMIN_REDUCE || op == OP_ARGMAX_REDUCE
 
 end # module Opcodes

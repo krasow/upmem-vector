@@ -1,9 +1,7 @@
-# Vector search: for each query, the best packed (score, tie-break) key over the
-# dataset. Mirrors benchmarks/main-benchmarks/polymerpim/vector_search/run.cc.
+# Vector search: for each query, return the best (score, row index) pair over
+# the dataset. Mirrors benchmarks/main-benchmarks/polymerpim/vector_search/run.cc.
 #
 # `iterations` is the number of queries in the timed batch, not a repeat count.
-# Every query's reduction is left unread until the batch is complete, which is
-# what lets them share kernel passes.
 
 using PolymerPIM
 using Printf
@@ -35,9 +33,6 @@ function query_value(seed::Integer, query_id::Integer, dim::Integer)
     return (mix64((UInt64(seed) << 32) ⊻ counter) & 1) == 1 ? Int32(1) : Int32(-1)
 end
 
-pack_key(score, index, n, dims) =
-    Int32((Int64(score) + 2 * dims) * Int64(n) + (Int64(n) - 1 - Int64(index)))
-
 function main()
     T = Param.T
     N = Param.N
@@ -53,7 +48,7 @@ function main()
     PolymerPIM.sync()
     stage_end!(stages)
 
-    # DIM dataset columns, then a tie-break column, all SoA.
+    # DIM dataset columns, all SoA.
     cols = Vector{DPUVector}()
     host_cols = Vector{Vector{T}}()
     for d in 0:(DIM - 1)
@@ -72,19 +67,13 @@ function main()
         Param.check_correctness != 0 && push!(host_cols, col)
     end
 
-    stage_begin!(stages, :write)
-    tie = T[T(N - 1 - i) for i in 0:(N - 1)]
-    push!(cols, DPUVector(tie))
-    fence(cols[end])
-    stage_end!(stages)
-
     query_id = Ref{Int}(0)
     last_query = Vector{T}(undef, DIM)
 
-    # score = sum_d (col_d + query_d); the key packs score against the
-    # tie-break column so a single max() picks the winner.
+    # score = sum_d (col_d + query_d); findmax returns the score and the first
+    # global row index as two 32-bit fields.
     function run_queries(count, st)
-        pending = Vector{DpuFuture}()
+        result = (typemin(Int32), typemax(UInt32))
         for _ in 1:count
             stage_begin!(st, :write)
             for d in 0:(DIM - 1)
@@ -98,19 +87,11 @@ function main()
             for d in 2:DIM
                 e = e .+ cols[d] .+ last_query[d]
             end
-            packed = (e .+ T(2 * DIM)) .* T(N) .+ cols[end]
-            push!(pending, maximum(packed))
+            value, index = findmax(e)
+            result = (Int32(value), UInt32(index - 1))
             stage_end!(st)
         end
-
-        stage_begin!(st, :read)
-        best = [get(f) for f in pending]
-        stage_end!(st)
-
-        stage_begin!(st, :merge)
-        key = isempty(best) ? Int64(-1) : Int64(best[end])
-        stage_end!(st)
-        return key
+        return result
     end
 
     warm = BenchStats()
@@ -122,7 +103,7 @@ function main()
     end
 
     stats = BenchStats()
-    result = Int64(-1)
+    result = (typemin(Int32), typemax(UInt32))
     if Param.iterations > 0
         t0 = time_ns()
         result = run_queries(Param.iterations, stages)
@@ -133,16 +114,21 @@ function main()
     stages_report("$(LABEL)_cold", warm_stages)
 
     if Param.check_correctness != 0 && Param.iterations > 0
-        best = Int64(-1)
+        best = (typemin(Int32), typemax(UInt32))
         for i in 0:(N - 1)
             score = 0
             for d in 1:DIM
                 score += Int64(host_cols[d][i + 1]) + Int64(last_query[d])
             end
-            best = max(best, Int64(pack_key(score, i, N, DIM)))
+            candidate = (Int32(score), UInt32(i))
+            if candidate[1] > best[1] ||
+                    (candidate[1] == best[1] && candidate[2] < best[2])
+                best = candidate
+            end
         end
         if best != result
-            @printf("Mismatch: CPU key = %d, DPU key = %d\n", best, result)
+            @printf("Mismatch: CPU = (%d, %u), DPU = (%d, %u)\n",
+                    best[1], best[2], result[1], result[2])
             exit(1)
         end
         println("the result is correct")

@@ -12,7 +12,7 @@
 
 typedef int32_t T;
 #ifndef RED_T
-typedef int64_t RED_T;
+typedef int32_t RED_T;
 #endif
 
 const uint32_t check_correctness = 0;

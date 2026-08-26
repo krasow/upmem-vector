@@ -711,6 +711,29 @@ typename dpu_vector<T>::reduction_result_t lazy_reduction_result<T>::get() {
   return reduction_cpu(vec, rid);
 }
 
+template <typename T>
+arg_reduction_result<T> lazy_arg_reduction_result<T>::get() {
+  if (ready) return cached;
+  auto partials = vec.to_cpu();
+  auto& runtime = DpuRuntime::get();
+  if (partials.empty() || runtime.num_dpus() == 0) return {T{}, 0};
+  size_t stride = partials.size() / runtime.num_dpus();
+  assert(stride >= 2);
+  arg_reduction_result<T> best = {partials[0],
+                                  static_cast<uint32_t>(partials[1])};
+  for (size_t i = stride; i < partials.size(); i += stride) {
+    T value = partials[i];
+    uint32_t index = static_cast<uint32_t>(partials[i + 1]);
+    if ((want_max ? value > best.value : value < best.value) ||
+        (value == best.value && index < best.index)) {
+      best = {value, index};
+    }
+  }
+  cached = best;
+  ready = true;
+  return cached;
+}
+
 #if PIPELINE
 template <typename T>
 lazy_reduction_result<T> dpu_vector<T>::pipeline_reduce(
@@ -759,6 +782,35 @@ lazy_reduction_result<T> dpu_vector<T>::pipeline_reduce(
                                     OpInfo<T>::universal_pipeline, scalars);
 
   return lazy_reduction_result<T>(std::move(res), rid);
+}
+
+template <typename T>
+lazy_arg_reduction_result<T> dpu_vector<T>::pipeline_argreduce(
+    const std::vector<uint8_t>& ops, const std::vector<dpu_vector<T>>& operands,
+    const std::vector<uint32_t>& scalars) {
+  if (operands.size() > MAX_VFUSE_INPUTS) {
+    throw std::logic_error(
+        "pipeline arg-reduction operand count exceeds MAX_VFUSE_INPUTS");
+  }
+  assert(!ops.empty() &&
+         (ops.back() == OP_ARGMIN_REDUCE || ops.back() == OP_ARGMAX_REDUCE));
+  auto& runtime = DpuRuntime::get();
+
+  // One 8-byte {value,index} result per DPU.
+  dpu_vector<T> res(runtime.num_dpus() * 2, runtime.num_tasklets() * 8, true);
+  res.data_desc_ref()->type_name = typeid(T).name();
+  res.data_desc_ref()->is_reduction_result = true;
+  res.data_desc_ref()->reduction_rid =
+      ops.back() == OP_ARGMIN_REDUCE ? OpInfo<T>::min : OpInfo<T>::max;
+
+  std::vector<detail::VectorDescRef> operand_descs;
+  for (const auto& operand : operands)
+    operand_descs.push_back(operand.data_desc_ref());
+  detail::launch_universal_pipeline(res.data_desc_ref(), this->data_desc_ref(),
+                                    ops, operand_descs,
+                                    OpInfo<T>::universal_pipeline, scalars);
+  return lazy_arg_reduction_result<T>(std::move(res),
+                                      ops.back() == OP_ARGMAX_REDUCE);
 }
 
 template <typename T>
