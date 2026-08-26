@@ -1,3 +1,4 @@
+#include <benchmark.h>
 #include <omp.h>
 
 #include <chrono>
@@ -39,6 +40,12 @@ int main(int argc, char** argv) {
   // Data Init
   for (uint64_t i = 0; i < N; i++) {
     a[i] = i % 1000;
+  }
+
+  if (bench_ref_data_only()) {
+    std::cout << "Writing input files to ./data/ ..." << std::endl;
+    write_bin("data/ref_t1.bin", a.data(), N * sizeof(T));
+    return 0;
   }
 
   // Warmup

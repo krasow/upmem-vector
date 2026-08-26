@@ -1,3 +1,4 @@
+#include <benchmark.h>
 #include <omp.h>
 
 #include <algorithm>
@@ -79,6 +80,15 @@ int main(int argc, char** argv) {
     }
   }
   centroids = centroids_init;
+
+  if (bench_ref_data_only()) {
+    std::cout << "Writing input files to ./data/ ..." << std::endl;
+    write_bin("data/AoS/rows.bin", elements.data(), N * dim * sizeof(T));
+    write_columns(elements);
+    write_bin("data/ref_c_init.bin", centroids_init.data(),
+              k * dim * sizeof(T));
+    return 0;
+  }
 
   // Benchmark
   auto start = std::chrono::high_resolution_clock::now();

@@ -1,3 +1,4 @@
+#include <benchmark.h>
 #include <omp.h>
 
 #include <algorithm>
@@ -83,6 +84,17 @@ int main() {
       host_x_cols[j][i] = (i * (DIM + 1) + j) % 256;
     }
     host_y[i] = (i * (DIM + 1) + DIM) % 256;
+  }
+
+  if (bench_ref_data_only()) {
+    std::cout << "Writing input files to ./data/ ..." << std::endl;
+    for (uint32_t j = 0; j < DIM; j++) {
+      save_bin("./data/SoA/x_col_" + std::to_string(j) + ".bin",
+               host_x_cols[j].data(), N * sizeof(T));
+    }
+    save_bin("./data/SoA/y.bin", host_y.data(), N * sizeof(T));
+    save_padded_rows(host_x_cols, host_y);
+    return 0;
   }
 
   std::vector<RED_T> expected_grads(DIM, 0);

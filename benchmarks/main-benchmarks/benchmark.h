@@ -97,6 +97,17 @@ static inline void bench_load_bin(const char *filename, void *data,
   fclose(f);
 }
 
+// Reference-data generation mode.
+//
+// The sweep runs generate_ref purely to materialize inputs for the DPU
+// variants, which must not pay for the CPU reference computation at sweep
+// sizes. REF_DATA_ONLY=1 writes the input files and skips both the timed CPU
+// loops and the expected-result files that only correctness runs consume.
+static inline int bench_ref_data_only(void) {
+  const char *value = getenv("REF_DATA_ONLY");
+  return value && *value && *value != '0';
+}
+
 // Whole-process stage breakdown ————————————————————————————————————————
 //
 // A fixed, model-agnostic vocabulary so every benchmark/programming model

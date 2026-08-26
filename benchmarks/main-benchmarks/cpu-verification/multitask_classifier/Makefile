@@ -1,5 +1,5 @@
 CXX ?= g++
-CXXFLAGS := -std=c++17 -O3 -fopenmp -I../.. $(EXTRA_FLAGS)
+CXXFLAGS := -std=c++17 -O3 -fopenmp -I. -I../.. $(EXTRA_FLAGS)
 
 .PHONY: all clean
 
@@ -10,3 +10,4 @@ generate_ref: generate_ref.cc Param.h
 
 clean:
 	rm -f generate_ref
+	rm -rf data
