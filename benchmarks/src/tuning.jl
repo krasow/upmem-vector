@@ -325,10 +325,6 @@ function checkpoint_signature(config::RunnerConfig, spec::BenchmarkSpec,
     )
 end
 
-checkpoint_request(signature) = Dict(
-    key => value for (key, value) in signature
-    if key != "source_fingerprint")
-
 function trial_result(trial)
     cases = Tuple{Int,Int}[]
     for item in get(trial, "cases", String[])
@@ -355,11 +351,9 @@ function load_checkpoint(config::RunnerConfig, spec::BenchmarkSpec,
         complete = Bool(get(raw, "complete", false))
         if raw["signature"] != signature
             profile = joinpath(options.profiles, spec.name * ".toml")
-            reusable = complete && isfile(profile) &&
-                       checkpoint_request(raw["signature"]) ==
-                       checkpoint_request(signature)
+            reusable = complete && isfile(profile)
             if reusable
-                println("[fusion] source changed; reusing completed $(spec.name) profile")
+                println("[fusion] tuning inputs changed; reusing completed $(spec.name) profile")
             elseif complete || !isempty(saved_trials)
                 error("tuning options do not match $path; reset tuning to retune")
             else

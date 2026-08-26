@@ -80,6 +80,18 @@ end
             checkpoints = directory, resume = true)
         @test_throws ErrorException BenchmarkRunner.load_checkpoint(
             config, spec, mismatched)
+
+        checkpoint.complete = true
+        BenchmarkRunner.save_checkpoint(checkpoint)
+        profiles = joinpath(directory, "profiles")
+        mkpath(profiles)
+        write(joinpath(profiles, "elementwise.toml"), "saved")
+        completed = BenchmarkRunner.load_checkpoint(
+            config, spec, BenchmarkRunner.TuneOptions(
+                dpus = [4], elements_per_dpu = [64], warmup = 0,
+                iterations = 1, checkpoints = directory,
+                profiles = profiles, resume = true))
+        @test completed.complete
     end
 
     mktempdir() do directory
