@@ -17,16 +17,28 @@ are installed into `../opt/` on first use.
 ```
 
 - `--resume` continues tuning and retries unfinished trials.
-- `--reset` discards saved runs for the selection.
-- `--reset-tune` discards its tuning profile.
+- `--reset` discards saved runs; `--reset-tune` discards the tuning profile.
 - `--default-params` skips tuning and ignores profiles.
+- `--no-load-ref` synthesizes inputs in-process instead of reading them.
 - `--verbose` prints subprocess output.
 
-Use `./run.sh --help` for runner options and `--help-all` for advanced options.
-Arguments after `--tune` or `--runner` apply only to that phase.
+`./run.sh --help` lists runner options, `--help-all` the advanced ones.
+Arguments after `--tune` or `--runner` apply only to that phase. Benchmarks run
+in the order named. `ntrials` launches independent processes; `iterations`
+controls each process's workload loop.
 
-`ntrials` launches independent processes; `iterations` controls each process's
-workload loop.
+## Inputs
+
+Every variant reads the same reference files, so their load times are
+comparable. The runner generates one case's files, runs all variants against
+them, then deletes them — a single case reaches ~180 GB at the largest DPU
+counts. `--check` additionally generates expected outputs and verifies results
+against them.
+
+`--no-load-ref` has each variant synthesize its own inputs instead: fast and
+needs no disk, but the generators are not equally optimized, so load times are
+no longer comparable across variants. The mode is recorded per row in the
+`load_ref` column of `results/runs.csv`.
 
 ## Suites
 
@@ -35,15 +47,12 @@ workload loop.
 - `dynamic-benchmarks/benchmark.toml`: cold-start `adaptive_image` and
   `dynamic_query` workloads without warmup.
 
-Dynamic workloads keep independent results:
+Dynamic workloads keep independent results under `results/dynamic/`:
 
 ```bash
 ./dynamic-benchmarks/adaptive_image.sh --reset
 ./dynamic-benchmarks/query_sweep.sh --reset
 ```
-
-Both write their CSV, sections, checkpoint, summary, and plot under
-`results/dynamic/`.
 
 ## Direct commands
 
@@ -60,27 +69,20 @@ julia --project=. test/runtests.jl
 - `results/runs.sections.csv`: parsed timed sections.
 - `results/fusion/`: tuning profiles, measurements, and checkpoints.
 
-Runs use `/usr/bin/time`. Failures are recorded and do not stop the suite;
-`--resume` skips successes and retries missing trials. Generated results,
-parameters, binaries, and reference data are untracked.
-
-Generate the completed-benchmark weak-scaling grids and their averaged CSV:
+Runs use `/usr/bin/time`. Failures are recorded and do not stop the suite.
+Generated results, parameters, binaries, and reference data are untracked.
 
 ```bash
-python3 plot_weak_scaling.py
+python3 plot_weak_scaling.py           # weak-scaling grids and averaged CSV
+python3 plot_runtime_decomposition.py  # one runtime breakdown per DPU count
 ```
 
-Generate one end-to-end runtime-decomposition grid per DPU count:
+Decomposition bars average the completed trials: solid segments are setup and
+measured-iteration work, hatched segments are warm-up work, and the unmeasured
+segment is the residual between the instrumented stages and wall time. Error
+bars show the wall-time standard deviation.
 
-```bash
-python3 plot_runtime_decomposition.py
-```
-
-The PDFs are written under `results/runtime-decomposition/`. Each stacked bar
-averages the completed trials. Solid segments contain setup and
-measured-iteration work, hatched segments contain warm-up work, and the
-unmeasured segment is the residual between all instrumented stages and
-`/usr/bin/time` wall time. Error bars show the wall-time standard deviation.
+See `loc-analysis/` for the lines-of-code comparison across programming models.
 
 The UPMEM SDK is loaded from `$UPMEM_ENV` or `/usr/upmem_env.sh`. Set `JULIA` to
 select the Julia executable.
