@@ -64,5 +64,23 @@ Runs use `/usr/bin/time`. Failures are recorded and do not stop the suite;
 `--resume` skips successes and retries missing trials. Generated results,
 parameters, binaries, and reference data are untracked.
 
+Generate the completed-benchmark weak-scaling grids and their averaged CSV:
+
+```bash
+python3 plot_weak_scaling.py
+```
+
+Generate one end-to-end runtime-decomposition grid per DPU count:
+
+```bash
+python3 plot_runtime_decomposition.py
+```
+
+The PDFs are written under `results/runtime-decomposition/`. Each stacked bar
+averages the completed trials. Solid segments contain setup and
+measured-iteration work, hatched segments contain warm-up work, and the
+unmeasured segment is the residual between all instrumented stages and
+`/usr/bin/time` wall time. Error bars show the wall-time standard deviation.
+
 The UPMEM SDK is loaded from `$UPMEM_ENV` or `/usr/upmem_env.sh`. Set `JULIA` to
 select the Julia executable.

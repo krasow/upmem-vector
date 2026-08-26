@@ -14,7 +14,7 @@ BENCHMARKS = Path(__file__).resolve().parent.parent
 RESULTS = BENCHMARKS / "results" / "dynamic"
 RUNS_CSV = RESULTS / "adaptive-image.csv"
 SUMMARY_CSV = RESULTS / "adaptive-image-summary.csv"
-FIGURE = RESULTS / "adaptive-image.svg"
+FIGURE = RESULTS / "adaptive-image.pdf"
 
 MODEL_ORDER = (
     "polymerpim-jit",
@@ -134,17 +134,17 @@ def plot(rows):
     if len(sizes) != 2:
         raise SystemExit("adaptive_image plot expects exactly two problem sizes")
 
-    figure, axes = plt.subplots(3, len(sizes), figsize=(12, 10.5), sharex="col")
+    figure, axes = plt.subplots(3, len(sizes), figsize=(10, 9.5), sharex="col")
     for column, size in enumerate(sizes):
         selected = [row for row in rows if row.elements_per_dpu == size]
-        mean_axis, worst_axis, wall_axis = axes[:, column]
+        worst_axis, mean_axis, wall_axis = axes[:, column]
         for model in MODEL_ORDER:
             draw(mean_axis, selected, model, "mean_ms")
             draw(worst_axis, selected, model, "max_ms")
             draw(wall_axis, selected, model,
                  "wall_mean_s", "wall_min_s", "wall_max_s")
 
-        mean_axis.set_title(f"{size:,} elements/DPU", fontweight="bold")
+        worst_axis.set_title(f"{size:,} elements/DPU", fontweight="bold")
         mean_axis.set_ylabel("Mean iteration (ms)" if column == 0 else "")
         worst_axis.set_ylabel("Worst iteration (ms)" if column == 0 else "")
         wall_axis.set_ylabel(
@@ -157,8 +157,8 @@ def plot(rows):
                     fontsize=15, fontweight="bold")
     figure.legend(handles=legend_handles(MODEL_ORDER, linewidth=2.1),
                   loc="upper center", ncol=4, frameon=False,
-                  bbox_to_anchor=(0.5, 0.945))
-    figure.tight_layout(rect=(0, 0, 1, 0.88), h_pad=2.2, w_pad=1.5)
+                  bbox_to_anchor=(0.5, 0.955))
+    figure.tight_layout(rect=(0, 0, 1, 0.925), h_pad=1.6, w_pad=1.25)
     figure.savefig(FIGURE)
 
 

@@ -25,7 +25,7 @@ RESULTS = BENCHMARKS / "results" / "dynamic"
 RUNS_CSV = RESULTS / "query-sweep.csv"
 SECTIONS_CSV = RESULTS / "query-sweep.sections.csv"
 SUMMARY_CSV = RESULTS / "query-sweep-summary.csv"
-FIGURE = RESULTS / "query-sweep.svg"
+FIGURE = RESULTS / "query-sweep.pdf"
 
 RunKey = Tuple[str, str, str, str]
 MeasurementKey = Tuple[str, int, int]
@@ -163,13 +163,11 @@ def format_elements(value: int) -> str:
 def plot_results(boundaries, measurements):
     plt = load_pyplot(FIGURE)
 
-    figure, axes = plt.subplots(2, 2, figsize=(12, 9))
-    compile_axis, boundary_axis, query_axis, wall_axis = axes.ravel()
+    figure, axes = plt.subplots(1, 2, figsize=(10, 4.4))
+    query_axis, boundary_axis = axes
 
     for model in COMPILED_MODELS:
         rows = [row for row in boundaries if row.model == model]
-        draw_series(compile_axis, model,
-                    sorted((row.total_elements, row.compile_ms) for row in rows))
         draw_series(boundary_axis, model, sorted(
             (row.total_elements, row.break_even_batches)
             for row in rows if math.isfinite(row.break_even_batches)
@@ -177,47 +175,37 @@ def plot_results(boundaries, measurements):
 
     for model in MODEL_ORDER:
         draw_series(query_axis, model, model_points(measurements, model, "query_ms"))
-        draw_series(wall_axis, model, model_points(measurements, model, "wall_s"))
 
     element_counts = sorted({measurement.total_elements
                              for measurement in measurements.values()})
-    for axis in axes.ravel():
+    for axis in axes:
         configure_axis(
             axis, element_counts,
             [format_elements(value) for value in element_counts],
             "Total elements", minor_grid=True,
         )
 
-    compile_axis.set_title("Compilation overhead\n"
-                           "Cold first batch minus reused batch",
-                           fontweight="bold")
-    compile_axis.set_ylabel("Cold-start overhead (ms)")
+    query_axis.set_title("Mean Query Runtime\n"
+                         "Cold first batch plus 4 reused batches",
+                         fontweight="bold")
+    query_axis.set_yscale("log")
+    query_axis.set_ylabel("Mean Query Runtime (ms)")
 
-    boundary_axis.set_title("Break-even vs Pipeline\n"
-                            "Batches needed to recover compile time",
-                            fontweight="bold")
+    boundary_axis.set_title(
+        "When compilation pays off vs Pipeline\n"
+        "Batches to offset cold-start overhead",
+        fontweight="bold",
+    )
     boundary_axis.set_yscale("log")
     boundary_axis.set_ylabel("Batches to break even")
     boundary_axis.axhline(1, color="#777777", linewidth=1)
-
-    query_axis.set_title("Query latency\n"
-                         "Cold first batch plus four reused batches",
-                         fontweight="bold")
-    query_axis.set_yscale("log")
-    query_axis.set_ylabel("Mean query time (ms)")
-
-    wall_axis.set_title("End-to-end runtime\n"
-                        "Ten queries including setup and validation",
-                        fontweight="bold")
-    wall_axis.set_yscale("log")
-    wall_axis.set_ylabel("Process time (s)")
 
     figure.suptitle("Dynamic query performance", fontsize=15,
                     fontweight="bold")
     figure.legend(handles=legend_handles(MODEL_ORDER), loc="upper center",
                   ncol=4, frameon=False,
-                  bbox_to_anchor=(0.5, 0.955))
-    figure.tight_layout(rect=(0, 0, 1, 0.89), h_pad=2.0, w_pad=1.5)
+                  bbox_to_anchor=(0.5, 0.94))
+    figure.tight_layout(rect=(0, 0, 1, 0.90), w_pad=1.5)
     figure.savefig(FIGURE)
 
 
