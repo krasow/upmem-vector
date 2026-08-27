@@ -7,6 +7,12 @@ benchmark/variant.  Each excerpt keeps the model-specific data movement and
 compute and drops the parts every variant pays equally: parameter plumbing,
 timing instrumentation, host input synthesis, and result verification.
 
+Every file is counted twice: the built-in counter reports logical lines --
+blank lines and comments dropped -- and boyter/scc contributes its own SLOC
+definition plus complexity, cognitive complexity, and unique-line counts.  The
+two SLOC figures agreeing is the check that neither counter is flattering
+anyone; `scripts/install_scc.sh` provides scc.
+
 Migrated from ../../analyze_model_loc.py, which covered six benchmarks and
 three C/C++ models; this adds Julia and the two newer benchmarks.
 """
@@ -15,11 +21,19 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import subprocess
+from collections import defaultdict
 from pathlib import Path
+from typing import Iterable, Iterator, NamedTuple
 
 ANALYSIS_ROOT = Path(__file__).resolve().parent
 BENCHMARK_DIR = ANALYSIS_ROOT.parent
+REPO_ROOT = BENCHMARK_DIR.parent
 DEFAULT_OUTPUT_DIR = BENCHMARK_DIR / "results" / "loc-analysis"
+# scripts/install_scc.sh drops scc here, keeping the dependency inside the
+# repo; anything already on PATH is the fallback.
+VENDORED_SCC = REPO_ROOT / "opt" / "scc" / "bin" / "scc"
 
 # The six the original comparison covered, kept as a named subset so the
 # earlier figure stays reproducible after the suite grew.
@@ -41,6 +55,55 @@ COMPARISONS = (
     ("julia", "simplepim"),
     ("julia", "baseline"),
     ("julia", "polymerpim"),
+)
+
+# Reference files end in `.ref` so they never compile by accident, which also
+# hides the language from scc -- hence one invocation per language, each with
+# `--count-as ref:<language>`.
+SCC_LANGUAGE = {
+    "julia": "Julia",
+    "polymerpim": "C++",
+    "simplepim": "C",
+    "baseline": "C++",
+}
+
+
+class Column(NamedTuple):
+    """One count: where scc reports it, what we call it, how to head it."""
+
+    scc_key: str
+    name: str
+    heading: str
+
+
+COLUMNS = (
+    Column("", "logical_loc", "Logical LOC"),
+    Column("Code", "scc_code", "scc SLOC"),
+    Column("Lines", "scc_lines", "Lines"),
+    Column("Comment", "scc_comment", "Comment"),
+    Column("Blank", "scc_blank", "Blank"),
+    Column("Complexity", "scc_complexity", "Complexity"),
+    Column("Cognitive", "scc_cognitive", "Cognitive"),
+    Column("Uloc", "scc_uloc", "ULOC"),
+)
+SCC_COLUMNS = tuple(column for column in COLUMNS if column.scc_key)
+
+
+class MetricView(NamedTuple):
+    """A count to reduce over, and the key namespace its figures live in."""
+
+    column: str
+    prefix: str
+    title: str
+
+    def key(self, name: str) -> str:
+        return f"{self.prefix}{name}"
+
+
+VIEWS = (
+    MetricView("logical_loc", "", "logical LOC"),
+    MetricView("scc_code", "scc_sloc_", "scc SLOC"),
+    MetricView("scc_uloc", "scc_uloc_", "scc ULOC (distinct lines)"),
 )
 
 
@@ -75,12 +138,39 @@ def parse_args():
         default=str(DEFAULT_OUTPUT_DIR),
         help=f"Directory for CSV/Markdown output (default: {DEFAULT_OUTPUT_DIR}).",
     )
+    parser.add_argument(
+        "--scc-bin",
+        default=str(VENDORED_SCC) if VENDORED_SCC.is_file() else "scc",
+        help=(
+            "scc executable to count with (default: <repo>/opt/scc/bin/scc "
+            "if installed, else scc on PATH)."
+        ),
+    )
     return parser.parse_args()
 
 
-def count_c_like_loc(lines: list[str]) -> tuple[int, int]:
-    raw_loc = sum(1 for line in lines if line.strip())
-    logical_loc = 0
+def take_string_literal(line: str, start: int) -> tuple[str, int]:
+    """Consume the literal opening at `start`, escapes included.
+
+    Both strippers below need this: a comment marker inside a string is code,
+    so the literal has to be stepped over rather than scanned into.
+    """
+    quote = line[start]
+    text = [quote]
+    i = start + 1
+    while i < len(line):
+        if line[i] == "\\":
+            text.append(line[i:i + 2])
+            i += 2
+            continue
+        text.append(line[i])
+        i += 1
+        if text[-1] == quote:
+            break
+    return "".join(text), i
+
+
+def strip_c_comments(lines: Iterable[str]) -> Iterator[str]:
     in_block_comment = False
 
     for line in lines:
@@ -93,27 +183,23 @@ def count_c_like_loc(lines: list[str]) -> tuple[int, int]:
                     break
                 in_block_comment = False
                 i = end + 2
-                continue
-            if line.startswith("//", i):
+            elif line.startswith("//", i):
                 break
-            if line.startswith("/*", i):
+            elif line.startswith("/*", i):
                 in_block_comment = True
                 i += 2
-                continue
-            code.append(line[i])
-            i += 1
-        if "".join(code).strip():
-            logical_loc += 1
+            elif line[i] in "\"'":
+                text, i = take_string_literal(line, i)
+                code.append(text)
+            else:
+                code.append(line[i])
+                i += 1
+        yield "".join(code)
 
-    return raw_loc, logical_loc
 
-
-def count_julia_loc(lines: list[str]) -> tuple[int, int]:
+def strip_julia_comments(lines: Iterable[str]) -> Iterator[str]:
     # Julia comments: `#` to end of line, nestable `#= ... =#`, and triple-
-    # quoted docstrings. A `#` inside a string literal is code, so string
-    # state is tracked rather than scanning for `#` blindly.
-    raw_loc = sum(1 for line in lines if line.strip())
-    logical_loc = 0
+    # quoted docstrings.
     block_depth = 0
     in_docstring = False
 
@@ -130,56 +216,84 @@ def count_julia_loc(lines: list[str]) -> tuple[int, int]:
                     i += 2
                 else:
                     i += 1
-                continue
-            if in_docstring:
+            elif in_docstring:
                 end = line.find('"""', i)
                 if end == -1:
                     break
                 in_docstring = False
                 i = end + 3
-                continue
-            if line.startswith('"""', i):
+            elif line.startswith('"""', i):
                 in_docstring = True
                 i += 3
-                continue
-            if line.startswith("#=", i):
+            elif line.startswith("#=", i):
                 block_depth += 1
                 i += 2
-                continue
-            if line[i] == "#":
+            elif line[i] == "#":
                 break
-            if line[i] == '"':
-                # Consume a single-line string so a `#` inside it survives.
+            elif line[i] == '"':
+                text, i = take_string_literal(line, i)
+                code.append(text)
+            else:
                 code.append(line[i])
                 i += 1
-                while i < len(line):
-                    if line[i] == "\\":
-                        code.append(line[i:i + 2])
-                        i += 2
-                        continue
-                    code.append(line[i])
-                    if line[i] == '"':
-                        i += 1
-                        break
-                    i += 1
-                continue
-            code.append(line[i])
-            i += 1
-        if "".join(code).strip():
-            logical_loc += 1
-
-    return raw_loc, logical_loc
+        yield "".join(code)
 
 
-def count_loc(variant: str, lines: list[str]) -> tuple[int, int]:
-    return (count_julia_loc(lines) if variant == "julia"
-            else count_c_like_loc(lines))
+def count_logical_loc(variant: str, lines: list[str]) -> int:
+    strip = strip_julia_comments if variant == "julia" else strip_c_comments
+    return sum(1 for line in strip(lines) if line.strip())
 
 
-def summarize(benchmarks, variants):
-    summary_rows = []
-    file_rows = []
+def scc_version(binary: str) -> str:
+    try:
+        proc = subprocess.run([binary, "--version"], capture_output=True,
+                              text=True, check=True)
+    except FileNotFoundError:
+        raise SystemExit(
+            f"scc not found: {binary!r}.\n"
+            "Install it into the repo with:\n"
+            "  scripts/install_scc.sh")
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"{binary} --version failed: {exc.stderr.strip()}")
+    return proc.stdout.strip().splitlines()[0]
+
+
+def run_scc(binary: str, targets: list[tuple[str, Path]]) -> dict[Path, dict]:
+    """Per-file scc counts, keyed by resolved path.
+
+    `targets` pairs each file with the scc language to count it as; files are
+    grouped so scc runs once per language instead of once per file.
+    """
+    by_language: dict[str, list[Path]] = defaultdict(list)
+    for language, path in targets:
+        by_language[language].append(path)
+
+    counts: dict[Path, dict] = {}
+    for language, group in sorted(by_language.items()):
+        cmd = [binary, "--by-file", "--format", "json", "--no-cocomo",
+               "--uloc", "--cognitive", "--count-as", f"ref:{language}",
+               *(str(path) for path in group)]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  check=True)
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit(
+                f"scc failed for {language}: {exc.stderr.strip()}")
+        for entry in json.loads(proc.stdout):
+            for file_entry in entry.get("Files", []):
+                # Cognitive and Uloc arrived in later scc releases; treat a
+                # missing key as zero rather than failing the whole run.
+                counts[Path(file_entry["Location"]).resolve()] = {
+                    column.name: file_entry.get(column.scc_key, 0)
+                    for column in SCC_COLUMNS
+                }
+    return counts
+
+
+def summarize(benchmarks, variants, scc_binary: str) -> list[dict]:
+    rows = []
     missing = []
+    scc_targets = []
 
     for benchmark in benchmarks:
         for variant in variants:
@@ -188,28 +302,115 @@ def summarize(benchmarks, variants):
             if not path.is_file():
                 missing.append(rel_path)
                 continue
-            lines = path.read_text(encoding="utf-8").splitlines()
-            raw_loc, logical_loc = count_loc(variant, lines)
-
-            summary_rows.append({
-                "benchmark": benchmark,
-                "variant": variant,
-                "logical_loc": logical_loc,
-                "raw_loc": raw_loc,
-                "source_file_count": 1,
-            })
-            file_rows.append({
+            rows.append({
                 "benchmark": benchmark,
                 "variant": variant,
                 "path": rel_path,
-                "logical_loc": logical_loc,
-                "raw_loc": raw_loc,
+                "logical_loc": count_logical_loc(
+                    variant, path.read_text(encoding="utf-8").splitlines()),
             })
+            scc_targets.append((SCC_LANGUAGE[variant], path))
 
     if missing:
         raise SystemExit(
             "missing reference file(s):\n  " + "\n  ".join(missing))
-    return summary_rows, file_rows
+
+    scc_counts = run_scc(scc_binary, scc_targets)
+    for row in rows:
+        counts = scc_counts.get((ANALYSIS_ROOT / row["path"]).resolve())
+        if counts is None:
+            raise SystemExit(f"scc returned no counts for {row['path']}")
+        row.update(counts)
+
+    return rows
+
+
+def selected_benchmarks(rows: list[dict], benchmarks) -> list[str]:
+    counted = {row["benchmark"] for row in rows}
+    return [b for b in benchmarks if b in counted]
+
+
+def by_variant(rows: list[dict], benchmark: str) -> dict[str, dict]:
+    return {row["variant"]: row
+            for row in rows if row["benchmark"] == benchmark}
+
+
+def pct_reduction(reference: int, subject: int) -> float:
+    return 100.0 * (1.0 - (subject / reference))
+
+
+def aggregate(rows: list[dict], benchmarks, view: MetricView) -> dict:
+    """Per-benchmark mean reduction, plus the pooled-total reduction.
+
+    The mean weights every benchmark equally; the pooled figure weights by
+    size. They differ, so both are reported rather than one standing in for
+    the other.
+    """
+    present = selected_benchmarks(rows, benchmarks)
+    metrics: dict = {view.key("benchmark_count"): len(present)}
+    if not present:
+        return metrics
+
+    count = {b: {variant: row[view.column]
+                 for variant, row in by_variant(rows, b).items()}
+             for b in present}
+    variants = {row["variant"] for row in rows}
+
+    for variant in VARIANT_ORDER:
+        if variant in variants:
+            metrics[view.key(f"total_{variant}_loc")] = sum(
+                count[b][variant] for b in present)
+
+    for subject, reference in COMPARISONS:
+        if not {subject, reference} <= variants:
+            continue
+        per_benchmark = [
+            pct_reduction(count[b][reference], count[b][subject])
+            for b in present
+        ]
+        metrics[view.key(f"mean_{subject}_vs_{reference}_pct")] = (
+            sum(per_benchmark) / len(per_benchmark))
+        metrics[view.key(f"total_{subject}_vs_{reference}_pct")] = (
+            pct_reduction(sum(count[b][reference] for b in present),
+                          sum(count[b][subject] for b in present)))
+    return metrics
+
+
+def md_table(headings, table) -> str:
+    """A markdown table: first column left-aligned, the rest right."""
+    divider = ["---"] + ["---:"] * (len(headings) - 1)
+    return "\n".join(
+        "| " + " | ".join(str(cell) for cell in row) + " |"
+        for row in [headings, divider, *table])
+
+
+def metric_table(title: str, metrics: dict, view: MetricView) -> str:
+    table = [("Benchmark count", metrics[view.key("benchmark_count")])]
+    for variant in VARIANT_ORDER:
+        key = view.key(f"total_{variant}_loc")
+        if key in metrics:
+            table.append((f"Total {variant}", metrics[key]))
+    for stat, label in (("mean", "Mean per-benchmark"),
+                        ("total", "Pooled-total")):
+        for subject, reference in COMPARISONS:
+            key = view.key(f"{stat}_{subject}_vs_{reference}_pct")
+            if key in metrics:
+                table.append(
+                    (f"{label} {subject} reduction vs {reference}",
+                     f"{metrics[key]:.1f}%"))
+    return f"### {title}\n\n" + md_table(("Metric", "Value"), table)
+
+
+def agreement_line(rows: list[dict]) -> str:
+    """Whether scc's SLOC and the built-in count line up, and where not."""
+    off = [row for row in rows if row["scc_code"] != row["logical_loc"]]
+    if not off:
+        return f"scc SLOC matches logical LOC on all {len(rows)} files."
+    detail = ", ".join(f"{row['benchmark']}/{row['variant']} "
+                       f"({row['logical_loc']} vs {row['scc_code']})"
+                       for row in off)
+    return (f"scc SLOC and logical LOC disagree on {len(off)} of {len(rows)} "
+            f"files: {detail}.")
 
 
 def write_csv(path: Path, rows: list[dict], fieldnames: list[str]):
@@ -219,140 +420,70 @@ def write_csv(path: Path, rows: list[dict], fieldnames: list[str]):
         writer.writerows(rows)
 
 
-def variant_rows(summary_rows: list[dict], benchmark: str) -> dict[str, dict]:
-    return {row["variant"]: row
-            for row in summary_rows if row["benchmark"] == benchmark}
+REPORT_HEADER = """\
+# Focused LOC Comparison
+
+Counts come from curated barebones reference files under `loc-analysis/refs`.
+Logical LOC excludes blank lines and comments; each excerpt keeps only the
+model-specific data movement and compute."""
+
+SCC_NOTE = """\
+The scc columns come from `{version}` (<https://github.com/boyter/scc>), run
+over the same files with `--count-as ref:<language>`, `--uloc`, and
+`--cognitive`. scc is a second opinion on the line count, and carries metrics a
+line count misses: cyclomatic complexity, nesting-weighted cognitive
+complexity, and ULOC, the count of *distinct* lines -- which collapses the
+copy-pasted transfer and kernel boilerplate the lower-level models repeat."""
 
 
-def pct_reduction(reference: int, subject: int) -> float:
-    return 100.0 * (1.0 - (subject / reference))
-
-
-def aggregate(summary_rows: list[dict], benchmarks) -> dict:
-    """Per-benchmark mean reduction, plus the pooled-total reduction.
-
-    The mean weights every benchmark equally; the pooled figure weights by
-    size. They differ, so both are reported rather than one standing in for
-    the other.
-    """
-    present = [b for b in benchmarks
-               if b in {row["benchmark"] for row in summary_rows}]
-    metrics: dict = {"benchmark_count": len(present)}
-    if not present:
-        return metrics
-
-    loc = {b: variant_rows(summary_rows, b) for b in present}
-    variants = {row["variant"] for row in summary_rows}
-
-    for variant in VARIANT_ORDER:
-        if variant in variants:
-            metrics[f"total_{variant}_loc"] = sum(
-                loc[b][variant]["logical_loc"] for b in present)
-
-    for subject, reference in COMPARISONS:
-        if not {subject, reference} <= variants:
-            continue
-        per_benchmark = [
-            pct_reduction(loc[b][reference]["logical_loc"],
-                          loc[b][subject]["logical_loc"])
-            for b in present
-        ]
-        metrics[f"mean_{subject}_vs_{reference}_pct"] = (
-            sum(per_benchmark) / len(per_benchmark))
-        metrics[f"total_{subject}_vs_{reference}_pct"] = pct_reduction(
-            sum(loc[b][reference]["logical_loc"] for b in present),
-            sum(loc[b][subject]["logical_loc"] for b in present))
-    return metrics
-
-
-def metric_table(title: str, metrics: dict, variants) -> list[str]:
-    lines = [f"### {title}", "",
-             "| Metric | Value |", "| --- | ---: |",
-             f"| Benchmark count | {metrics['benchmark_count']} |"]
-    for variant in VARIANT_ORDER:
-        key = f"total_{variant}_loc"
-        if key in metrics:
-            lines.append(f"| Total {variant} LOC | {metrics[key]} |")
-    for subject, reference in COMPARISONS:
-        key = f"mean_{subject}_vs_{reference}_pct"
-        if key in metrics:
-            lines.append(
-                f"| Mean per-benchmark {subject} reduction vs {reference} "
-                f"| {metrics[key]:.1f}% |")
-    for subject, reference in COMPARISONS:
-        key = f"total_{subject}_vs_{reference}_pct"
-        if key in metrics:
-            lines.append(
-                f"| Pooled-total {subject} reduction vs {reference} "
-                f"| {metrics[key]:.1f}% |")
-    lines.append("")
-    return lines
-
-
-def write_report(output_dir: Path, summary_rows, file_rows, benchmarks,
-                 variants):
-    selected = [b for b in benchmarks
-                if b in {row["benchmark"] for row in summary_rows}]
+def build_report(rows, benchmarks, version) -> str:
+    selected = selected_benchmarks(rows, benchmarks)
     legacy = [b for b in selected if b in LEGACY_BENCHMARKS]
 
-    lines = [
-        "# Focused LOC Comparison",
-        "",
-        "Counts come from curated barebones reference files under",
-        "`loc-analysis/refs`. Logical LOC excludes blank lines and comments;",
-        "each excerpt keeps only the model-specific data movement and compute.",
-        "",
-        "## Overall",
-        "",
-    ]
-    lines.extend(metric_table(
-        f"All {len(selected)} benchmarks", aggregate(summary_rows, selected),
-        variants))
-    if legacy and len(legacy) != len(selected):
-        lines.extend(metric_table(
-            f"Original {len(legacy)} benchmarks",
-            aggregate(summary_rows, legacy), variants))
+    blocks = [REPORT_HEADER, SCC_NOTE.format(version=version),
+              agreement_line(rows), "## Overall"]
+    for view in VIEWS:
+        blocks.append(metric_table(
+            f"{view.title}, all {len(selected)} benchmarks",
+            aggregate(rows, selected, view), view))
+        if legacy and len(legacy) != len(selected):
+            blocks.append(metric_table(
+                f"{view.title}, original {len(legacy)} benchmarks",
+                aggregate(rows, legacy, view), view))
 
+    headings = ["Variant", *(column.heading for column in COLUMNS),
+                "Reference file"]
     for benchmark in benchmarks:
-        rows = variant_rows(summary_rows, benchmark)
-        if not rows:
+        variants = by_variant(rows, benchmark)
+        if not variants:
             continue
-        lines.extend([
-            f"## {benchmark}",
-            "",
-            "| Variant | Logical LOC | Raw LOC | Reference file |",
-            "| --- | ---: | ---: | --- |",
-        ])
-        for variant in VARIANT_ORDER:
-            if variant not in rows:
-                continue
-            row = rows[variant]
-            source = next(
-                item["path"] for item in file_rows
-                if item["benchmark"] == benchmark
-                and item["variant"] == variant)
-            lines.append(
-                f"| {variant} | {row['logical_loc']} | {row['raw_loc']} "
-                f"| `{source}` |")
-        lines.append("")
+        table = [[variant, *(variants[variant][column.name]
+                             for column in COLUMNS),
+                  f"`{variants[variant]['path']}`"]
+                 for variant in VARIANT_ORDER if variant in variants]
+        blocks.append(f"## {benchmark}\n\n" + md_table(headings, table))
 
-    (output_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
+    return "\n\n".join(blocks) + "\n"
 
 
-def print_stdout(summary_rows, benchmarks):
-    print("benchmark,variant,logical_loc,raw_loc,source_file_count")
-    for row in summary_rows:
-        print(f"{row['benchmark']},{row['variant']},{row['logical_loc']},"
-              f"{row['raw_loc']},{row['source_file_count']}")
-    selected = [b for b in benchmarks
-                if b in {row["benchmark"] for row in summary_rows}]
-    metrics = aggregate(summary_rows, selected)
-    print()
-    for subject, reference in COMPARISONS:
-        key = f"mean_{subject}_vs_{reference}_pct"
-        if key in metrics:
-            print(f"overall,mean_{subject}_vs_{reference}_pct="
-                  f"{metrics[key]:.1f}")
+def build_stdout(rows, benchmarks) -> str:
+    keys = ["benchmark", "variant", *(column.name for column in COLUMNS)]
+    blocks = ["\n".join([",".join(keys)] +
+                        [",".join(str(row[key]) for key in keys)
+                         for row in rows])]
+
+    selected = selected_benchmarks(rows, benchmarks)
+    for view in VIEWS:
+        metrics = aggregate(rows, selected, view)
+        lines = []
+        for subject, reference in COMPARISONS:
+            key = view.key(f"mean_{subject}_vs_{reference}_pct")
+            if key in metrics:
+                lines.append(f"overall,{key}={metrics[key]:.1f}")
+        blocks.append("\n".join(lines))
+
+    blocks.append(f"# {agreement_line(rows)}")
+    return "\n\n".join(blocks)
 
 
 def main():
@@ -360,28 +491,26 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    summary_rows, file_rows = summarize(args.benchmarks, args.variants)
-    selected = [b for b in args.benchmarks
-                if b in {row["benchmark"] for row in summary_rows}]
+    version = scc_version(args.scc_bin)
+    rows = summarize(args.benchmarks, args.variants, args.scc_bin)
+    selected = selected_benchmarks(rows, args.benchmarks)
 
-    write_csv(output_dir / "summary.csv", summary_rows,
-              ["benchmark", "variant", "logical_loc", "raw_loc",
-               "source_file_count"])
-    write_csv(output_dir / "file_breakdown.csv", file_rows,
-              ["benchmark", "variant", "path", "logical_loc", "raw_loc"])
+    write_csv(output_dir / "summary.csv", rows,
+              ["benchmark", "variant", "path",
+               *(column.name for column in COLUMNS)])
+    for name, subset in (("overall_metrics.csv", selected),
+                         ("overall_metrics_legacy_six.csv",
+                          [b for b in selected if b in LEGACY_BENCHMARKS])):
+        if not subset:
+            continue
+        metrics = {}
+        for view in VIEWS:
+            metrics.update(aggregate(rows, subset, view))
+        write_csv(output_dir / name, [metrics], list(metrics.keys()))
 
-    overall = aggregate(summary_rows, selected)
-    write_csv(output_dir / "overall_metrics.csv", [overall],
-              list(overall.keys()))
-    legacy = [b for b in selected if b in LEGACY_BENCHMARKS]
-    if legacy:
-        legacy_metrics = aggregate(summary_rows, legacy)
-        write_csv(output_dir / "overall_metrics_legacy_six.csv",
-                  [legacy_metrics], list(legacy_metrics.keys()))
-
-    write_report(output_dir, summary_rows, file_rows, args.benchmarks,
-                 args.variants)
-    print_stdout(summary_rows, args.benchmarks)
+    (output_dir / "report.md").write_text(
+        build_report(rows, args.benchmarks, version), encoding="utf-8")
+    print(build_stdout(rows, args.benchmarks))
 
 
 if __name__ == "__main__":
