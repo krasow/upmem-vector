@@ -8,7 +8,8 @@ python3 analyze_model_loc.py                       # all 8 benchmarks
 python3 analyze_model_loc.py --benchmarks red knn  # a subset
 ```
 
-Results are written to `../results/loc-analysis/`.
+Results are written to `../results/loc-analysis/`. The scc counts below need
+`scripts/install_scc.sh` (also run by `scripts/install_dependencies.sh`).
 
 ## Results
 
@@ -30,9 +31,8 @@ Results are written to `../results/loc-analysis/`.
 
 `refs/<benchmark>/<variant>.<ext>.ref` holds a hand-curated excerpt of each
 implementation, tracking the sources under `../main-benchmarks`. Logical LOC
-excludes blank lines and comments.
-
-An excerpt contains everything the programmer must write for that model:
+excludes blank lines and comments. An excerpt is everything the programmer must
+write for that model:
 
 | Model | Covered by the excerpt |
 | --- | --- |
@@ -41,12 +41,28 @@ An excerpt contains everything the programmer must write for that model:
 | `polymerpim` | host-level expression only |
 | `julia` | host-level expression only |
 
-It excludes what every model pays equally: parameter plumbing, timing
-instrumentation, DPU allocation and teardown, input synthesis and reference
-loading, result verification, and headers shared verbatim across variants.
+Excluded is what every model pays equally: parameter plumbing, timing, DPU
+allocation and teardown, input synthesis, reference loading, verification, and
+shared headers. Function signatures and closing delimiters (`}`, `end`) count --
+for SimplePIM and the baseline, a callback with an exact signature is part of
+what the model demands -- while cleanup one language does implicitly and another
+explicitly (a C++ destructor versus Julia's `release!`) counts for nobody.
 
-Function signatures and closing delimiters (`}`, `end`) are counted; for
-SimplePIM and the baseline, having to define a callback with an exact signature
-is part of what the model demands. Cleanup that one language does implicitly
-and another explicitly -- a C++ destructor versus Julia's `release!` -- is
-counted for neither.
+## scc cross-check
+
+Every run also counts with [boyter/scc](https://github.com/boyter/scc), found
+at `opt/scc/bin/scc` or on `PATH`, so the headline numbers do not rest on a
+counter shipped in this repo.
+
+scc's SLOC matches the built-in count on all 32 files -- any divergence is
+printed -- and it adds three metrics a line count misses:
+
+| Total, all 8 benchmarks | Julia | PolymerPIM | SimplePIM | Baseline |
+| --- | ---: | ---: | ---: | ---: |
+| Cyclomatic complexity | 20 | 21 | 40 | 70 |
+| Cognitive complexity | 47 | 49 | 99 | 215 |
+| ULOC (distinct lines) | 98 | 121 | 298 | 491 |
+
+Mean ULOC reduction is 68.6% (Julia) and 61.4% (PolymerPIM) vs SimplePIM, 81.1%
+and 76.7% vs baseline, so the advantage is not just repeated boilerplate.
+Per-file counts: `report.md` and the `scc_*` columns of `summary.csv`.
