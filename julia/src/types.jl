@@ -81,6 +81,13 @@ Base.broadcasted(::typeof(+), x, ::DpuZeros) = x
 # Reading them is what materialises them.
 DPUVector(z::DpuZeros) = DPUVector(Base.zeros(Int32, z.length))
 
+# Only `+` can drop the zeros for free, so every other use materialises rather
+# than failing on a type that has no storage.
+Base.broadcastable(z::DpuZeros) = DPUVector(z)
+for f in (:sum, :prod, :minimum, :maximum, :findmax, :findmin, :argmin, :argmax)
+    @eval Base.$f(z::DpuZeros) = Base.$f(DPUVector(z))
+end
+
 export DpuZeros
 
 # ---- Conversions: DPU -> Julia ----

@@ -55,29 +55,21 @@ NodeRef scalar_node(T value) {
   return result;
 }
 
-// Two scalars collapse and an identity operand drops, so a sized vector's zero
-// fill costs nothing on its first use.
+// An identity operand drops, so a sized vector's zero fill costs nothing on its
+// first use.
 NodeRef fold_binary(ExprOp op, const NodeRef& lhs, const NodeRef& rhs) {
-  auto is_scalar = [](const NodeRef& n) {
-    return n && n->op == ExprOp::scalar;
+  auto is_value = [](const NodeRef& n, T value) {
+    return n && n->op == ExprOp::scalar && n->scalar == value;
   };
-  auto is_value = [&](const NodeRef& n, T value) {
-    return is_scalar(n) && n->scalar == value;
-  };
-  const bool constant = is_scalar(lhs) && is_scalar(rhs);
-
   switch (op) {
     case ExprOp::add:
-      if (constant) return scalar_node((T)(lhs->scalar + rhs->scalar));
       if (is_value(lhs, 0)) return rhs;
       if (is_value(rhs, 0)) return lhs;
       break;
     case ExprOp::sub:
-      if (constant) return scalar_node((T)(lhs->scalar - rhs->scalar));
       if (is_value(rhs, 0)) return lhs;
       break;
     case ExprOp::mul:
-      if (constant) return scalar_node((T)(lhs->scalar * rhs->scalar));
       if (is_value(lhs, 1)) return rhs;
       if (is_value(rhs, 1)) return lhs;
       break;
@@ -265,6 +257,15 @@ bool can_interpret(const std::vector<uint8_t>& ops) {
 }
 #endif
 
+// No device-side fill exists, so stage it.  from_cpu queues against `buffer`,
+// which dies here, hence the fence.
+BackendVector fill_vector(T value, size_t length, std::string_view name = "") {
+  std::vector<T> buffer(length, value);
+  BackendVector vec = BackendVector::from_cpu(buffer, name);
+  vec.add_fence();
+  return vec;
+}
+
 BackendVector eager(const NodeRef& value) {
   switch (value->op) {
     case ExprOp::input:
@@ -422,15 +423,8 @@ struct DPUVector<T>::Impl {
 
   BackendVector& storage() const {
     if (!pending) return value;
-    if (is_fill()) {
-      // No device-side fill exists, so stage it.  from_cpu queues against
-      // `buffer`, which dies here, hence the fence.
-      std::vector<T> buffer(length, pending->scalar);
-      value = BackendVector::from_cpu(buffer, name);
-      value.add_fence();
-    } else {
-      value = materialize(pending);
-    }
+    value = is_fill() ? fill_vector(pending->scalar, length, name)
+                      : materialize(pending);
     pending = nullptr;
     return value;
   }
@@ -440,7 +434,7 @@ struct DPUVector<T>::Impl {
     if (is_fill()) return length;
     Compiler compiler;
     compiler.expression(pending);
-    return compiler.inputs().empty() ? length : compiler.inputs()[0].size();
+    return compiler.inputs().empty() ? 0 : compiler.inputs()[0].size();
   }
 
   mutable BackendVector value;
@@ -498,8 +492,15 @@ DPUVector<T>::DPUVector(size_t count, std::string_view name)
     : DPUVector(count, (T)0, name) {}
 
 DPUVector<T>::DPUVector(size_t count, T value, std::string_view name)
+#if PIPELINE
     : impl_(std::make_shared<Impl>(scalar_node(value), count,
-                                   std::string(name))) {}
+                                   std::string(name))) {
+}
+#else
+    // without fusion we can't do this scalar impl
+    : impl_(std::make_shared<Impl>(fill_vector(value, count, name))) {
+}
+#endif
 
 DPUVector<T>::DPUVector(std::vector<T>& values, std::string_view name)
     : impl_(translate_oom([&] {
@@ -512,9 +513,15 @@ DPUVector<T>::DPUVector(T* values, size_t count, std::string_view name)
             BackendVector::from_cpu(values, count, name));
       })) {}
 
-DPUVector<T>::DPUVector(const DpuLazy<T>& expression)
-    : impl_(expression.impl_ ? std::make_shared<Impl>(expression.impl_->root, 0)
-                             : nullptr) {}
+// Naming a value means wanting it: construction runs the expression, so a
+// vector several consumers read is computed once.  Assignment is what defers,
+// because `acc = acc + x` replaces the value it just consumed.
+DPUVector<T>::DPUVector(const DpuLazy<T>& expression) {
+  if (!expression.impl_) return;
+  impl_ = translate_oom([&] {
+    return std::make_shared<Impl>(materialize(expression.impl_->root));
+  });
+}
 
 DPUVector<T>::DPUVector(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 

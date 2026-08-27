@@ -194,11 +194,21 @@ TEST(public_api, assignment_defers_until_something_needs_storage) {
   sync();
 
   RuntimeStatistics before = statistics();
-  DPUVector<T> doubled = input * (T)2;
+  DPUVector<T> doubled(n);
+  doubled = input * (T)2;
   sync();
   RuntimeStatistics assigned = statistics() - before;
   CHECK_EQ(assigned.compute_launches, 0u);
   CHECK_EQ(doubled.size(), n);
+
+  // Construction is the other half of the rule: naming a value runs the
+  // expression, so several consumers read one result instead of re-fusing it
+  // into each of them (linreg's error vector, read once per dimension).
+  before = statistics();
+  DPUVector<T> named = input * (T)3;
+  sync();
+  RuntimeStatistics constructed = statistics() - before;
+  CHECK_EQ(constructed.compute_launches, 1u);
 
   // First consumer fuses; a second materializes once instead of re-evaluating.
   before = statistics();
@@ -248,4 +258,35 @@ TEST(public_api, intermediate_feeding_several_reductions) {
   }
   CHECK_EQ(actual, expected);
 #endif
+}
+
+// A fill is only free where it folds away.  Anywhere else -- the wrong side of
+// a multiply, a constructor, a reduction -- it has to behave like the zeros it
+// promised rather than like the uninitialised memory it used to be.
+TEST(public_api, fill_behaves_as_its_value_outside_the_fold) {
+  const size_t n = tf::elements();
+  std::vector<T> host = tf::random_vector<T>(n, -20, 20);
+  DPUVector<T> input(host);
+  sync();
+
+  DPUVector<T> zeros(n);
+  zeros = zeros * input;
+  CHECK_VEC_EQ(zeros.to_cpu(), std::vector<T>(n, (T)0));
+
+  DPUVector<T> reversed(n);
+  reversed = input * reversed;
+  CHECK_VEC_EQ(reversed.to_cpu(), std::vector<T>(n, (T)0));
+
+  DPUVector<T> scaled(n, (T)7);
+  scaled = scaled * input;
+  std::vector<T> expected(n);
+  for (size_t i = 0; i < n; ++i) expected[i] = (T)(host[i] * 7);
+  CHECK_VEC_EQ(scaled.to_cpu(), expected);
+
+  // A fill assigned an expression that folds to another scalar stays a fill of
+  // that value, sized by the destination.
+  DPUVector<T> shifted(n);
+  shifted = shifted + (T)5;
+  CHECK_EQ(shifted.size(), n);
+  CHECK_VEC_EQ(shifted.to_cpu(), std::vector<T>(n, (T)5));
 }

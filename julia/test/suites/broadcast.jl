@@ -175,3 +175,16 @@ end
     @test Array(folded) == expected
     @test Int64(sum(folded)[]) == sum(Int64.(expected))
 end
+
+@testset "zeros materialise outside the additive fold" begin
+    n = 64
+    xv = Int32.(collect(1:n))
+    x = DPUVector(xv)
+    PolymerPIM.sync()
+
+    @test Array(PolymerPIM.zeros(Int32, n) .* x) == zeros(Int32, n)
+    @test Array(x .* PolymerPIM.zeros(Int32, n)) == zeros(Int32, n)
+    @test Array(PolymerPIM.zeros(Int32, n) .- x) == -xv
+    @test Int64(minimum(PolymerPIM.zeros(Int32, n))[]) == 0
+    @test Int64(sum(PolymerPIM.zeros(Int32, n))[]) == 0
+end
