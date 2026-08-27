@@ -33,6 +33,22 @@ function Base.show(io::IO, ::MIME"text/plain", v::DPUVector)
     end
 end
 
+# Only the REPL's display forces; `show(io, f)` and a trailing `;` stay queued.
+Base.show(io::IO, f::DpuFuture) =
+    print(io, "DpuFuture(", f.resolved ? string(f.value) : "unread", ")")
+
+function Base.show(io::IO, ::MIME"text/plain", f::DpuFuture)
+    value = try
+        get(f)
+    catch err
+        # Displaying must not throw.
+        print(io, "DpuFuture(unread: ", sprint(showerror, err), ")")
+        return
+    end
+    # Named, so it does not read as a plain Int64.
+    print(io, "DpuFuture(", value, ")")
+end
+
 _field(io, key, value) = println(io, "  ", rpad(key * ":", 16), value)
 
 """
