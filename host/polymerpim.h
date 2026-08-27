@@ -87,10 +87,16 @@ class DPUVector<int32_t> {
   struct Impl;
 
   DPUVector() = default;
+  // `count` zeros (or `value`s) as a pending fill: nothing is allocated or
+  // transferred, and a zero fill drops out of the first expression using it.
+  explicit DPUVector(size_t count, std::string_view name = "");
+  DPUVector(size_t count, int32_t value, std::string_view name = "");
   explicit DPUVector(std::vector<int32_t>& values, std::string_view name = "");
   DPUVector(int32_t* values, size_t count, std::string_view name = "");
   DPUVector(const DpuLazy<int32_t>& expression);
 
+  // Records the expression rather than running it, so a chain of assignments
+  // still fuses into one kernel; errors surface at the first read, not here.
   DPUVector& operator=(const DpuLazy<int32_t>& expression);
   DPUVector& operator+=(const DpuLazy<int32_t>& rhs);
   DPUVector& operator-=(const DpuLazy<int32_t>& rhs);

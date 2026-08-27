@@ -1,6 +1,6 @@
 function run_query(cols, query)
-    score = cols[1] .+ query[1]
-    for d in 2:DIM
+    score = PolymerPIM.zeros(T, N)
+    for d in 1:DIM
         score = score .+ cols[d] .+ query[d]
     end
     return findmax(score)

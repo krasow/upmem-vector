@@ -78,6 +78,26 @@ Common assertions include `CHECK`, `CHECK_EQ` and its comparison variants,
 `CHECK_NEAR`, `CHECK_VEC_EQ`, `CHECK_VEC_NEAR`, `CHECK_KERNELS_*`,
 `CHECK_FUSIONS_GE`, and `SKIP`.
 
+## Known runtime bugs
+
+A vector derived from other vectors and then read by several reductions
+deadlocks the event queue: the fused event waits on a dependency id that was
+retired without running (`[QUEUE-HEARTBEAT] id=6 dependency block on 4
+(current=2)`). It reproduces through the internal API with
+
+```cpp
+dpu_vector<T> factor = (da + db) * da;
+auto squares = sum(factor * factor);
+auto weighted = sum(factor * db);
+auto scaled = sum(factor * da);
+tf::drain();                        // never returns
+```
+
+The same shape through the public API (`polymerpim.h`) completes, and
+`public_api.intermediate_feeding_several_reductions` covers it. There is no
+test for the internal-API form: a known-fatal marker still runs under
+`--isolate`, so it would cost the 300s timeout on every run.
+
 ## Limits and formatting
 
 `MAX_PIPELINE_STACK_DEPTH` is 2. Raising it to 8 overflows WRAM; deep RPN

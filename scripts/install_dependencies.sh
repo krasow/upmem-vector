@@ -5,6 +5,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 simplepim="${root}/opt/SimplePIM"
 perfetto="${root}/opt/Perfetto"
+scc="${root}/opt/scc"
 simplepim_repo="https://github.com/krasow/simple-pim-clone.git"
 
 mkdir -p "${root}/opt"
@@ -23,4 +24,10 @@ if [[ -f "${perfetto}/include/perfetto.h" &&
     echo "Perfetto already installed: ${perfetto}"
 else
     "${root}/scripts/install_perfetto.sh" "${perfetto}"
+fi
+
+if [[ -x "${scc}/bin/scc" ]]; then
+    echo "scc already installed: ${scc}/bin/scc"
+else
+    "${root}/scripts/install_scc.sh" "${scc}"
 fi

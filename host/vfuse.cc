@@ -116,16 +116,22 @@ detail::MappedChain map_consumer_onto_producer(
 
   bool primary_on_stack = false;
   bool stacked_without_primary = false;
+  // The producer's result is on the stack of the next chain only; every
+  // OP_NEXT_CHAIN starts a fresh one.  A later chain must read it from MRAM
+  // instead, so decline the merge rather than drop its push.
+  bool past_first_chain = false;
 
   for (size_t k = 0; k < consumer_rpn.size(); ++k) {
     uint8_t op = consumer_rpn[k];
     if (op == OP_PUSH_INPUT) {
       uint8_t push = push_op_for(consumer_inputs[0]);
       if (push == PUSH_OP_BUDGET_EXCEEDED) return {};
-      if (push == PUSH_OP_ALREADY_ON_STACK)
+      if (push == PUSH_OP_ALREADY_ON_STACK) {
+        if (past_first_chain) return {};
         primary_on_stack = true;
-      else
+      } else {
         mapped.rpn.push_back(push);
+      }
 
     } else if (op >= OP_PUSH_OPERAND_0 &&
                op < OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS) {
@@ -134,11 +140,18 @@ detail::MappedChain map_consumer_onto_producer(
       uint8_t push = push_op_for(consumer_inputs[idx]);
       if (push == PUSH_OP_BUDGET_EXCEEDED) return {};
       if (push == PUSH_OP_ALREADY_ON_STACK) {
+        if (past_first_chain) return {};
         if (primary_on_stack) mapped.rpn.push_back(OP_DUP);
         stacked_without_primary = true;
       } else {
         mapped.rpn.push_back(push);
       }
+
+    } else if (op == OP_NEXT_CHAIN) {
+      past_first_chain = true;
+      primary_on_stack = false;
+      stacked_without_primary = false;
+      mapped.rpn.push_back(op);
 
     } else if (IS_OP_SCALAR_VAR(op)) {
       // Scalar slots shift up by the producer's scalar table size.

@@ -150,3 +150,41 @@ end
 
     @test Array(abs2.(a .- b)) == (Array(a) .- Array(b)) .^ 2
 end
+
+@testset "lazy zeros fold out of an accumulator" begin
+    n = 512
+    av = Int32.(collect(1:n)); bv = Int32.(collect(n:-1:1))
+    a = DPUVector(av); b = DPUVector(bv)
+    PolymerPIM.sync()
+
+    @test length(PolymerPIM.zeros(Int32, n)) == n
+    @test Array(DPUVector(PolymerPIM.zeros(Int32, 8))) == zeros(Int32, 8)
+    @test_throws ArgumentError PolymerPIM.zeros(Int32, -1)
+
+    # Seeding with the zeros emits the same program as seeding from the first
+    # term, so starting at 1 costs nothing.
+    seeded = abs2.(a .- Int32(3))
+    seeded = seeded .+ abs2.(b .- Int32(5))
+    folded = PolymerPIM.zeros(Int32, n)
+    for (vec, scalar) in ((a, Int32(3)), (b, Int32(5)))
+        folded = folded .+ abs2.(vec .- scalar)
+    end
+    @test code_jitted(folded).ops == code_jitted(seeded).ops
+
+    expected = abs2.(av .- 3) .+ abs2.(bv .- 5)
+    @test Array(folded) == expected
+    @test Int64(sum(folded)[]) == sum(Int64.(expected))
+end
+
+@testset "zeros materialise outside the additive fold" begin
+    n = 64
+    xv = Int32.(collect(1:n))
+    x = DPUVector(xv)
+    PolymerPIM.sync()
+
+    @test Array(PolymerPIM.zeros(Int32, n) .* x) == zeros(Int32, n)
+    @test Array(x .* PolymerPIM.zeros(Int32, n)) == zeros(Int32, n)
+    @test Array(PolymerPIM.zeros(Int32, n) .- x) == -xv
+    @test Int64(minimum(PolymerPIM.zeros(Int32, n))[]) == 0
+    @test Int64(sum(PolymerPIM.zeros(Int32, n))[]) == 0
+end

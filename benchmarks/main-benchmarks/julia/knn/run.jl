@@ -71,8 +71,8 @@ function main()
         stage_begin!(st, :kernel)
         # sum_d (col_d - query_d)^2, then min -- one fused reduction kernel.
         # abs2 lowers to sqr, so each difference is loaded once (OP_DUP).
-        acc = abs2.(cols[1] .- query[1])
-        for d in 2:DIM
+        acc = PolymerPIM.zeros(T, N)
+        for d in 1:DIM
             acc = acc .+ abs2.(cols[d] .- query[d])
         end
         pending = minimum(acc)

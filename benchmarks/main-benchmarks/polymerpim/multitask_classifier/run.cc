@@ -91,8 +91,8 @@ int main() {
 
         bench_stage_begin(&active_stages, BENCH_STAGE_KERNEL);
         for (uint32_t c = 0; c < CLASSES; c++) {
-          auto score = features[0] * weights[(uint64_t)c * FEATURES];
-          for (uint32_t d = 1; d < FEATURES; ++d) {
+          DPUVector<T> score(features[0].size());
+          for (uint32_t d = 0; d < FEATURES; ++d) {
             score = score + features[d] * weights[(uint64_t)c * FEATURES + d];
           }
 
@@ -130,11 +130,11 @@ int main() {
         std::vector<DpuLazy<T> > scores;
         scores.reserve(CLASSES);
         for (uint32_t c = 0; c < CLASSES; ++c) {
-          auto score = features[0] * weights[(uint64_t)c * FEATURES];
-          for (uint32_t d = 1; d < FEATURES; ++d) {
+          DPUVector<T> score(features[0].size());
+          for (uint32_t d = 0; d < FEATURES; ++d) {
             score = score + features[d] * weights[(uint64_t)c * FEATURES + d];
           }
-          scores.push_back(std::move(score));
+          scores.push_back(score);
         }
         auto correct_future = sum(argmax(scores) == class_ids);
         sync();

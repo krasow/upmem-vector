@@ -55,6 +55,30 @@ NodeRef scalar_node(T value) {
   return result;
 }
 
+// An identity operand drops, so a sized vector's zero fill costs nothing on its
+// first use.
+NodeRef fold_binary(ExprOp op, const NodeRef& lhs, const NodeRef& rhs) {
+  auto is_value = [](const NodeRef& n, T value) {
+    return n && n->op == ExprOp::scalar && n->scalar == value;
+  };
+  switch (op) {
+    case ExprOp::add:
+      if (is_value(lhs, 0)) return rhs;
+      if (is_value(rhs, 0)) return lhs;
+      break;
+    case ExprOp::sub:
+      if (is_value(rhs, 0)) return lhs;
+      break;
+    case ExprOp::mul:
+      if (is_value(lhs, 1)) return rhs;
+      if (is_value(rhs, 1)) return lhs;
+      break;
+    default:
+      break;
+  }
+  return node(op, {lhs, rhs});
+}
+
 uint8_t binary_opcode(ExprOp op) {
   switch (op) {
     case ExprOp::add:
@@ -233,6 +257,15 @@ bool can_interpret(const std::vector<uint8_t>& ops) {
 }
 #endif
 
+// No device-side fill exists, so stage it.  from_cpu queues against `buffer`,
+// which dies here, hence the fence.
+BackendVector fill_vector(T value, size_t length, std::string_view name = "") {
+  std::vector<T> buffer(length, value);
+  BackendVector vec = BackendVector::from_cpu(buffer, name);
+  vec.add_fence();
+  return vec;
+}
+
 BackendVector eager(const NodeRef& value) {
   switch (value->op) {
     case ExprOp::input:
@@ -374,9 +407,43 @@ RuntimeStatistics public_stats(const StatsSnapshot& value) {
 
 }  // namespace
 
+// Contents may still be an unevaluated expression: assignment records it and
+// storage waits for a host read or a fence, so a chain of assignments reaches a
+// reduction as one kernel.  A sized vector starts as a bare scalar -- a fill --
+// which is what `length` sizes.
 struct DPUVector<T>::Impl {
-  explicit Impl(BackendVector value) : value(std::move(value)) {}
-  BackendVector value;
+  explicit Impl(BackendVector storage) : value(std::move(storage)) {}
+
+  Impl(NodeRef expression, size_t length, std::string debug_name = {})
+      : pending(std::move(expression)),
+        length(length),
+        name(std::move(debug_name)) {}
+
+  bool is_fill() const { return pending && pending->op == ExprOp::scalar; }
+
+  BackendVector& storage() const {
+    if (!pending) return value;
+    value = is_fill() ? fill_vector(pending->scalar, length, name)
+                      : materialize(pending);
+    pending = nullptr;
+    return value;
+  }
+
+  size_t size() const {
+    if (!pending) return value.size();
+    if (is_fill()) return length;
+    Compiler compiler;
+    compiler.expression(pending);
+    return compiler.inputs().empty() ? 0 : compiler.inputs()[0].size();
+  }
+
+  mutable BackendVector value;
+  mutable NodeRef pending;
+  size_t length = 0;
+  std::string name;
+  // The first consumer fuses the expression; later ones read storage, since
+  // re-fusing into each recomputes it per element (1.7x on nine reductions).
+  mutable bool consumed = false;
 };
 
 struct DpuLazy<T>::Impl {
@@ -421,6 +488,20 @@ std::vector<T> DpuLazy<T>::to_cpu() const {
   return translate_oom([&] { return materialize(impl_->root).to_cpu(); });
 }
 
+DPUVector<T>::DPUVector(size_t count, std::string_view name)
+    : DPUVector(count, (T)0, name) {}
+
+DPUVector<T>::DPUVector(size_t count, T value, std::string_view name)
+#if PIPELINE
+    : impl_(std::make_shared<Impl>(scalar_node(value), count,
+                                   std::string(name))) {
+}
+#else
+    // without fusion we can't do this scalar impl
+    : impl_(std::make_shared<Impl>(fill_vector(value, count, name))) {
+}
+#endif
+
 DPUVector<T>::DPUVector(std::vector<T>& values, std::string_view name)
     : impl_(translate_oom([&] {
         return std::make_shared<Impl>(BackendVector::from_cpu(values, name));
@@ -432,17 +513,22 @@ DPUVector<T>::DPUVector(T* values, size_t count, std::string_view name)
             BackendVector::from_cpu(values, count, name));
       })) {}
 
-DPUVector<T>::DPUVector(const DpuLazy<T>& expression)
-    : impl_(translate_oom([&] {
-        return std::make_shared<Impl>(materialize(expression.impl_->root));
-      })) {}
+// Naming a value means wanting it: construction runs the expression, so a
+// vector several consumers read is computed once.  Assignment is what defers,
+// because `acc = acc + x` replaces the value it just consumed.
+DPUVector<T>::DPUVector(const DpuLazy<T>& expression) {
+  if (!expression.impl_) return;
+  impl_ = translate_oom([&] {
+    return std::make_shared<Impl>(materialize(expression.impl_->root));
+  });
+}
 
 DPUVector<T>::DPUVector(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
 DPUVector<T>& DPUVector<T>::operator=(const DpuLazy<T>& expression) {
-  impl_ = translate_oom([&] {
-    return std::make_shared<Impl>(materialize(expression.impl_->root));
-  });
+  impl_ = expression.impl_
+              ? std::make_shared<Impl>(expression.impl_->root, size())
+              : nullptr;
   return *this;
 }
 
@@ -472,35 +558,39 @@ DPUVector<T>& DPUVector<T>::operator*=(T rhs) {
 
 std::vector<T> DPUVector<T>::to_cpu() {
   if (!impl_) return {};
-  return translate_oom([&] { return impl_->value.to_cpu(); });
+  return translate_oom([&] { return impl_->storage().to_cpu(); });
 }
 
 size_t DPUVector<T>::to_cpu_into(T* output, size_t capacity) {
   if (!impl_) return 0;
   return translate_oom(
-      [&] { return impl_->value.to_cpu_into(output, capacity); });
+      [&] { return impl_->storage().to_cpu_into(output, capacity); });
 }
 
-size_t DPUVector<T>::size() const { return impl_ ? impl_->value.size() : 0; }
+size_t DPUVector<T>::size() const { return impl_ ? impl_->size() : 0; }
 
 DPUVector<T>::operator DpuLazy<T>() const {
   if (!impl_) return {};
+  if (impl_->pending && !impl_->consumed) {
+    impl_->consumed = true;
+    return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(impl_->pending));
+  }
   auto root = node(ExprOp::input);
-  root->input = impl_->value;
+  root->input = translate_oom([&] { return impl_->storage(); });
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(std::move(root)));
 }
 
 DpuLazy<T> operator+(const DpuLazy<T>& lhs, const DpuLazy<T>& rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
-      node(ExprOp::add, {lhs.impl_->root, rhs.impl_->root})));
+      fold_binary(ExprOp::add, lhs.impl_->root, rhs.impl_->root)));
 }
 DpuLazy<T> operator-(const DpuLazy<T>& lhs, const DpuLazy<T>& rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
-      node(ExprOp::sub, {lhs.impl_->root, rhs.impl_->root})));
+      fold_binary(ExprOp::sub, lhs.impl_->root, rhs.impl_->root)));
 }
 DpuLazy<T> operator*(const DpuLazy<T>& lhs, const DpuLazy<T>& rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
-      node(ExprOp::mul, {lhs.impl_->root, rhs.impl_->root})));
+      fold_binary(ExprOp::mul, lhs.impl_->root, rhs.impl_->root)));
 }
 DpuLazy<T> operator/(const DpuLazy<T>& lhs, const DpuLazy<T>& rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
@@ -516,15 +606,15 @@ DpuLazy<T> operator==(const DpuLazy<T>& lhs, const DpuLazy<T>& rhs) {
 }
 DpuLazy<T> operator+(const DpuLazy<T>& lhs, T rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
-      node(ExprOp::add, {lhs.impl_->root, scalar_node(rhs)})));
+      fold_binary(ExprOp::add, lhs.impl_->root, scalar_node(rhs))));
 }
 DpuLazy<T> operator-(const DpuLazy<T>& lhs, T rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
-      node(ExprOp::sub, {lhs.impl_->root, scalar_node(rhs)})));
+      fold_binary(ExprOp::sub, lhs.impl_->root, scalar_node(rhs))));
 }
 DpuLazy<T> operator*(const DpuLazy<T>& lhs, T rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
-      node(ExprOp::mul, {lhs.impl_->root, scalar_node(rhs)})));
+      fold_binary(ExprOp::mul, lhs.impl_->root, scalar_node(rhs))));
 }
 DpuLazy<T> operator/(const DpuLazy<T>& lhs, T rhs) {
   return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(
@@ -836,7 +926,7 @@ void sync() {
 }
 
 void fence(DPUVector<T>& vector) {
-  if (vector.impl_) vector.impl_->value.add_fence();
+  if (vector.impl_) vector.impl_->storage().add_fence();
 }
 
 void shutdown() {

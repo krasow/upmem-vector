@@ -102,8 +102,8 @@ function main()
 
         for c in 0:(CLASSES - 1)
             model = Int32[weights[c * FEATURES + d] for d in 1:FEATURES]
-            score = features[1] .* model[1]
-            for d in 2:FEATURES
+            score = PolymerPIM.zeros(T, N)
+            for d in 1:FEATURES
                 score = score .+ features[d] .* model[d]
             end
             label = (class_ids .== T(c)) .* T(2) .- T(1)
@@ -141,8 +141,8 @@ function main()
         stage_begin!(st, :kernel)
         scores = DpuLazy[]
         for c in 0:(CLASSES - 1)
-            s = features[1] .* weights[c * FEATURES + 1]
-            for d in 2:FEATURES
+            s = PolymerPIM.zeros(T, N)
+            for d in 1:FEATURES
                 s = s .+ features[d] .* weights[c * FEATURES + d]
             end
             push!(scores, s)

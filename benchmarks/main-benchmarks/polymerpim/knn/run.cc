@@ -78,8 +78,8 @@ int main() {
 
       auto run_knn = [&](BenchStages& stages) {
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-        auto dist = sqr(da[0] - query[0]);
-        for (uint32_t d = 1; d < DIM; d++) {
+        DPUVector<T> dist(da[0].size());
+        for (uint32_t d = 0; d < DIM; d++) {
           dist = dist + sqr(da[d] - query[d]);
         }
         auto pending = minimum(dist);

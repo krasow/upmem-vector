@@ -103,8 +103,8 @@ int main() {
         bench_stage_end(&query_stages);
 
         bench_stage_begin(&query_stages, BENCH_STAGE_KERNEL);
-        auto score = columns[0] + query[0];
-        for (uint32_t d = 1; d < DIM; ++d) {
+        DPUVector<T> score(columns[0].size());
+        for (uint32_t d = 0; d < DIM; ++d) {
           score = score + columns[d] + query[d];
         }
         pending.push_back(argmax(score));
