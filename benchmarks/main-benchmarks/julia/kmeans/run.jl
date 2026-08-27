@@ -83,8 +83,8 @@ function main()
         # kernel while capturing this iteration's centroid values.
         dists = Vector{Any}(undef, K)
         for j in 0:(K - 1)
-            acc = abs2.(cols[1] .- centroids[j * DIM + 1])
-            for d in 2:DIM
+            acc = PolymerPIM.zeros(T, N)
+            for d in 1:DIM
                 acc = acc .+ abs2.(cols[d] .- centroids[j * DIM + d])
             end
             dists[j + 1] = acc

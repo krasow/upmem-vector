@@ -91,8 +91,8 @@ function main()
             stage_end!(st)
 
             stage_begin!(st, :kernel)
-            e = cols[1] .+ last_query[1]
-            for d in 2:DIM
+            e = PolymerPIM.zeros(T, N)
+            for d in 1:DIM
                 e = e .+ cols[d] .+ last_query[d]
             end
             value, index = findmax(e)

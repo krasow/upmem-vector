@@ -51,6 +51,38 @@ function DPUVector(n::Integer)
     return DPUVector(handle)
 end
 
+"""
+    PolymerPIM.zeros(Int32, n) -> DpuZeros
+
+`n` zeros that exist only as the additive identity: `zeros(Int32, n) .+ x`
+lowers to the program `x` alone would give, so an accumulator loop can start at
+its first element. Nothing is allocated until a `DPUVector` reads them.
+"""
+struct DpuZeros
+    length::Int64
+
+    function DpuZeros(n::Integer)
+        n >= 0 || throw(ArgumentError("length must be non-negative, got $n"))
+        return new(Int64(n))
+    end
+end
+
+zeros(::Type{Int32}, n::Integer) = DpuZeros(n)
+
+Base.length(z::DpuZeros) = z.length
+Base.size(z::DpuZeros) = (z.length,)
+Base.eltype(::DpuZeros) = Int32
+
+# Dropped as the tree is built, not during lowering: folding a runtime scalar
+# that happens to be 0 would split the JIT program shared across its values.
+Base.broadcasted(::typeof(+), ::DpuZeros, x) = x
+Base.broadcasted(::typeof(+), x, ::DpuZeros) = x
+
+# Reading them is what materialises them.
+DPUVector(z::DpuZeros) = DPUVector(Base.zeros(Int32, z.length))
+
+export DpuZeros
+
 # ---- Conversions: DPU -> Julia ----
 
 """

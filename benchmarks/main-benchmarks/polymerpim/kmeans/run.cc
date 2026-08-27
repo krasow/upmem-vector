@@ -93,11 +93,11 @@ int main() {
         std::vector<DpuLazy<T> > distances;
         distances.reserve(K);
         for (uint32_t j = 0; j < K; ++j) {
-          auto distance = sqr(da[0] - centroids[j * DIM]);
-          for (uint32_t d = 1; d < DIM; ++d) {
+          DPUVector<T> distance(da[0].size());
+          for (uint32_t d = 0; d < DIM; ++d) {
             distance = distance + sqr(da[d] - centroids[j * DIM + d]);
           }
-          distances.push_back(std::move(distance));
+          distances.push_back(distance);
         }
 
         auto base = argmin(distances) * (T)(DIM + 1);
