@@ -9,14 +9,14 @@ variants = ["polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"]
 group_by_variant = true
 
 [[elementwise]]
-elements_per_dpu = [2097152, 3145728]
+elements_per_dpu = [2097152]
 operation = "-abs(((a) + (b)) - (a))"
 
 [[knn]]
-elements_per_dpu = [262144, 524288]
+elements_per_dpu = [262144]
 iterations = 1
 parameters = { dim = 10, k = 1 }
 
 [[linreg]]
-elements_per_dpu = [524288, 1048576]
+elements_per_dpu = [524288]
 parameters = { dim = 10, scaling_shift = 12, learning_shift = 24, learning_rate = 1 }
