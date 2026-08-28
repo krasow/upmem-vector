@@ -1,0 +1,6 @@
+name = "simplepim-patched"
+directory = "{benchmark_root}/simplepim-patched/{benchmark}"
+parameter_file = "Param.h"
+build = ["make clean", "make"]
+run = "./bin/host"
+timing_label = "simplepim-patched"

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #include "Param.h"
@@ -65,26 +66,29 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  std::vector<T> res(N);
+  /* Allocated per pass, like the DPU models; new T[] leaves it untouched. */
+  std::unique_ptr<T[]> res;
 
   std::cout << "Starting warmup..." << std::endl;
   for (uint32_t iter = 0; iter < warmup_iterations; iter++) {
+    res.reset(new T[N]);
 #pragma omp parallel for schedule(static)
     for (uint64_t i = 0; i < N; i++) {
       res[i] = OPERATION(a[i], b[i]);
     }
-    DoNotOptimize(res.data());
+    DoNotOptimize(res.get());
   }
 
   std::cout << "Starting benchmark..." << std::endl;
   auto start = std::chrono::high_resolution_clock::now();
 
   for (uint32_t iter = 0; iter < iterations; iter++) {
+    res.reset(new T[N]);
 #pragma omp parallel for schedule(static)
     for (uint64_t i = 0; i < N; i++) {
       res[i] = OPERATION(a[i], b[i]);
     }
-    DoNotOptimize(res.data());
+    DoNotOptimize(res.get());
   }
 
   auto end = std::chrono::high_resolution_clock::now();
@@ -95,7 +99,7 @@ int main(int argc, char** argv) {
   std::cout << "Writing binary files to ./data/ ..." << std::endl;
   write_bin("data/ref_a.bin", a.data(), N * sizeof(T));
   write_bin("data/ref_b.bin", b.data(), N * sizeof(T));
-  write_bin("data/ref_res.bin", res.data(), N * sizeof(T));
+  write_bin("data/ref_res.bin", res.get(), N * sizeof(T));
 
   std::cout << "Reference generation complete." << std::endl;
   return 0;

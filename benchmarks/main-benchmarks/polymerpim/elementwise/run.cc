@@ -6,6 +6,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #include "Param.h"
@@ -84,7 +85,7 @@ int main() {
         bench_stage_end(&stages);
       }
 
-      std::vector<T> result;
+      std::unique_ptr<T[]> result;
 
       // PolymerPIM executes lazily: from_cpu/compute only enqueue work. Fence
       // at each stage boundary so write/kernel time is attributed to its own
@@ -100,7 +101,10 @@ int main() {
         sync();
         bench_stage_end(&stages);
         bench_stage_begin(&stages, BENCH_STAGE_READ);
-        result = res.to_cpu();  // implicit runtime fence
+        /* Untouched buffer per pass: to_cpu()'s sized vector would zero all N
+           elements the transfer then overwrites. */
+        result.reset(new T[N]);
+        res.to_cpu_into(result.get(), N);  // implicit runtime fence
         bench_stage_end(&stages);
       };
 
@@ -108,6 +112,7 @@ int main() {
       BenchStats warmup_stats;
       bench_stats_init(&warmup_stats);
       for (uint32_t i = 0; i < warmup_iterations; i++) {
+        result.reset();  // freed untimed, as in the other models
         bench_start(&warmup_timer, 0);
         run_round_trip(warm_stages);
         bench_stop(&warmup_timer, 0);
@@ -121,6 +126,7 @@ int main() {
       bench_stats_init(&stats);
       BenchTimer timer;
       for (uint32_t i = 0; i < iterations; i++) {
+        result.reset();
         bench_start(&timer, 0);
         run_round_trip(stages);
         bench_stop(&timer, 0);
@@ -131,7 +137,7 @@ int main() {
       bench_stages_report("polymerpim_cold", &warm_stages);
 
       if (check_correctness) {
-        compare_cpu_dpu_vectors(a, b, result.data(), iterations);
+        compare_cpu_dpu_vectors(a, b, result.get(), iterations);
       }
     }
 
