@@ -14,7 +14,7 @@ operation = "-abs(((a) + (b)) - (a))"
 
 [[knn]]
 elements_per_dpu = [262144]
-iterations = 1
+iterations = 20
 parameters = { dim = 10, k = 1 }
 
 [[linreg]]
