@@ -28,6 +28,45 @@ end
     @test sum(b)[] == 2 * N
 end
 
+@testset "futures behave as their value" begin
+    da = DPUVector(Int32.(1:N))
+    db = DPUVector(Int32.((N + 1):(2N)))
+    A, B = Int64.(1:N), Int64.((N + 1):(2N))
+
+    @test sum(da) + sum(db) == sum(A) + sum(B)
+    @test sum(da) + 1 == sum(A) + 1
+    @test 1 - sum(da) == 1 - sum(A)
+    @test -sum(da) == -sum(A)
+    @test abs(-sum(da)) == sum(A)
+    @test min(sum(da), sum(db)) == sum(A)
+    @test max(sum(da), sum(db)) == sum(B)
+    @test sum(da) < sum(db)
+    @test sum(db) > sum(da)
+    @test Int64(sum(da)) === sum(A)
+    @test typeof(sum(da) + sum(db)) === Int64
+    # `hash` must agree with `==`.
+    @test hash(sum(da)) == hash(sum(A))
+
+    # Reading twice must not change the answer.
+    f = sum(da)
+    @test f[] == f[] == sum(A)
+
+    # Arithmetic leaves fusion intact: both are queued before either is read.
+    PolymerPIM.dpu_sync()
+    before = PolymerPIM.stat_compute_launches()
+    x, y = sum(da), sum(db)
+    total = x + y
+    @test total == sum(A) + sum(B)
+    @test PolymerPIM.stat_compute_launches() - before == 1
+
+    # The REPL display forces; plain `show` stays lazy.
+    @test sprint(show, sum(da)) == "DpuFuture(unread)"
+    g = sum(da)
+    @test sprint((io, v) -> show(io, MIME"text/plain"(), v), g) ==
+          "DpuFuture($(sum(A)))"
+    @test sprint(show, g) == "DpuFuture($(sum(A)))"
+end
+
 @testset "reductions fuse into one kernel pass" begin
     # Read none until all are queued.  Eight is inside MAX_HFUSE_CHAINS.
     vectors = [DPUVector(fill(Int32(i), 1024)) for i in 1:8]

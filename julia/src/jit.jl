@@ -14,6 +14,7 @@ struct JittedCode
     path::String
     nelements::Int
     noperands::Int
+    nchains::Int
 end
 
 # `source` keeps the shared preamble, so it matches the compiled file byte for
@@ -27,6 +28,10 @@ function Base.show(io::IO, ::MIME"text/plain", c::JittedCode)
     println(io, "JIT kernel k_", c.hash, " -- ", length(c.ops), " opcodes, ",
             c.noperands, " operand", c.noperands == 1 ? "" : "s",
             c.nelements > 0 ? ", $(c.nelements) elements" : "")
+    if c.nchains > 1
+        println(io, "  horizontally fused: ", c.nchains,
+                " chains sharing one pass over the input")
+    end
     body, elided = _body(c)
     # Checked here, not at construction: the kernel is written on first launch.
     println(io, "  ", c.path, iscompiled(c) ? " (compiled)" : " (not compiled yet)",
@@ -43,12 +48,13 @@ Base.show(io::IO, c::JittedCode) = print(io, "JittedCode(k_", c.hash, ")")
 The generated kernel for a lazy broadcast, a `DpuExpr`, or an opcode stream.
 Usually reached through [`@code_jitted`](@ref).
 """
-function code_jitted(ops::AbstractVector{UInt8}; nelements = 0, noperands = 0)
+function code_jitted(ops::AbstractVector{UInt8}; nelements = 0, noperands = 0,
+                     nchains = 1)
     ops = Vector{UInt8}(ops)
     hash = String(jit_hash(ops))
     return JittedCode(ops, hash, String(jit_source(ops)),
                       joinpath(String(jit_dir()), "k_" * hash * ".c"),
-                      Int(nelements), Int(noperands))
+                      Int(nelements), Int(noperands), Int(nchains))
 end
 
 code_jitted(e::DpuExpr; kwargs...) = code_jitted(e.ops; kwargs...)
@@ -90,6 +96,81 @@ _code_jitted_reduce(f, e::DpuExpr) = code_jitted(f(e))
 _code_jitted_reduce(f, x::DpuLazy) = _code_jitted_reduce(f, x.bc)
 _code_jitted_reduce(f, x) = code_jitted(x)
 
+# ---- horizontal fusion: independent reductions, one kernel, a chain each ----
+
+const _O = Internal.Opcodes
+
+# A reduction's program with what its opcodes refer to: input 1 is the primary
+# (OP_PUSH_INPUT), the rest operands.
+struct _Chain
+    ops::Vector{UInt8}
+    inputs::Vector{DPUVector}
+    nscalars::Int
+end
+
+function _chain_of(f, bc::Base.Broadcast.Broadcasted)
+    e, primary, operands, scalars = _lower_tree(bc; consume = false)
+    return _Chain(f(e).ops, DPUVector[primary, operands...], length(scalars))
+end
+
+_chain_of(f, v::DPUVector) = _Chain(f(Internal.input()).ops, DPUVector[v], 0)
+_chain_of(f, x::DpuLazy) = _chain_of(f, x.bc)
+_chain_of(f, x) = error("each reduction must be over a DPUVector or a broadcast " *
+                        "over one; got a $(typeof(x))")
+
+# Which input an opcode reads, 0 for none.
+function _reads(op::UInt8)
+    op == _O.OP_PUSH_INPUT && return 1
+    lo = _O.OP_PUSH_OPERAND_0
+    return lo <= op < lo + MAX_VFUSE_INPUTS ? Int(op - lo) + 2 : 0
+end
+
+_pushes_scalar(op::UInt8) = op == _O.OP_PUSH_SCALAR_VAR ||
+    _O.OP_ADD_SCALAR_VAR <= op <= _O.OP_LE_SCALAR_VAR
+
+function _slot!(fused::Vector{DPUVector}, v::DPUVector)
+    at = findfirst(x -> x === v, fused)
+    at === nothing || return at
+    push!(fused, v)
+    return length(fused)
+end
+
+# Rewrite a chain onto the shared input and scalar tables, as push_op_for() and
+# the scalar-slot shift in host/hfuse.cc do.
+function _remap(c::_Chain, fused::Vector{DPUVector}, scalar_base::Int)
+    slots = [_slot!(fused, v) for v in c.inputs]
+    out, i = UInt8[], 1
+    while i <= length(c.ops)
+        op = c.ops[i]
+        n = Int(_O.inline_bytes(op))
+        read = _reads(op)
+        push!(out, read == 0 ? op :
+              slots[read] == 1 ? _O.OP_PUSH_INPUT :
+              UInt8(_O.OP_PUSH_OPERAND_0 + slots[read] - 2))
+        if n == 1 && _pushes_scalar(op)
+            push!(out, UInt8(scalar_base + c.ops[i + 1]))
+        else
+            append!(out, c.ops[(i + 1):(i + n)])
+        end
+        i += 1 + n
+    end
+    return out
+end
+
+function _code_jitted_hfused(cs::Vector{_Chain})
+    length(cs) <= MAX_CHAINS || error(
+        "$(length(cs)) reductions exceeds MAX_HFUSE_CHAINS ($MAX_CHAINS), so the " *
+        "queue splits them across passes")
+    fused, base, chains = DPUVector[], 0, Internal.DpuExpr[]
+    for c in cs
+        push!(chains, Internal.DpuExpr(_remap(c, fused, base)))
+        base += c.nscalars
+    end
+    return code_jitted(Internal.chain(chains...);
+                       nelements = length(first(fused)),
+                       noperands = length(fused) - 1, nchains = length(cs))
+end
+
 # `sum(abs, a)` / `mapreduce(abs, +, a)`: trace the function, append the terminal.
 _code_jitted_map(terminal, f, v::DPUVector) =
     code_jitted(terminal(_trace(f)); nelements = length(v))
@@ -129,6 +210,27 @@ _code_jitted_arg(name::Symbol, x) = error(
 
 # Assignments describe their right-hand side.  Stripped before dispatch, so a
 # reduction under one stays visible; nothing is launched, so nothing is assigned.
+_host_combined_message(inner) = """
+    this reduction is combined on the host, so the result is a value, not a program.
+    Inspect the reduction itself:
+        @code_jitted $(inner[1])"""
+
+# Reducer calls nested inside something else: `sum(x) + sum(y)` is two programs
+# and a host-side add, so no one kernel describes it.
+function _reduce_calls(ex)
+    ex isa Expr || return Any[]
+    out = Any[]
+    if ex.head === :call && ex.args[1] isa Symbol &&
+       (ex.args[1] in REDUCERS || ex.args[1] in ARG_FORMS)
+        push!(out, ex)
+    end
+    for arg in ex.args
+        append!(out, _reduce_calls(arg))
+    end
+    return out
+end
+
+
 _rhs(x) = x
 _rhs(ex::Expr) = (ex.head === :(=) || ex.head === :.=) ? _rhs(ex.args[2]) : ex
 
@@ -191,6 +293,14 @@ macro code_jitted(ex)
                                             $(esc(ex.args[3])),
                                             $(esc(ex.args[4]))))
         end
+    end
+    inner = _reduce_calls(ex)
+    if length(inner) > 1
+        chains = [:(_chain_of($(esc(c.args[1])), $(esc(_bcify(c.args[2])))))
+                  for c in inner]
+        return :(_code_jitted_hfused([$(chains...)]))
+    elseif length(inner) == 1
+        return :(error($(_host_combined_message(inner))))
     end
     return :(code_jitted($(esc(_bcify(ex)))))
 end

@@ -128,3 +128,52 @@ end
     @test (@code_jitted findmin(a)).hash != idx.hash
 
 end
+
+@testset "a reduction combined on the host has no program" begin
+    # Rejected on shape, so the operand is never evaluated.
+    for ex in (:(sum(never_defined) + 1), :(2 * sum(never_defined)))
+        err = try
+            eval(Expr(:macrocall, Symbol("@code_jitted"), LineNumberNode(0), ex))
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("not a program", err.msg)
+        @test occursin("@code_jitted sum(never_defined)", err.msg)
+    end
+end
+
+@testset "horizontal fusion is rendered" begin
+    a = DPUVector(Int32.(1:N))
+    b = DPUVector(Int32.((N + 1):(2N)))
+
+    c = @code_jitted sum(a) + sum(b)
+    @test c.nchains == 2
+    @test c.noperands == 1                      # b deduped into one slot
+    @test occursin("Chain 0", c.source) && occursin("Chain 1", c.source)
+    @test occursin("horizontally fused: 2 chains",
+                  sprint((io, v) -> show(io, MIME"text/plain"(), v), c))
+
+    # Chain 2 must read an operand, not the input: both reading the primary
+    # would be a kernel that never runs.
+    O = PolymerPIM.Internal.Opcodes
+    @test c.ops == UInt8[O.OP_PUSH_INPUT, O.OP_SUM, O.OP_NEXT_CHAIN,
+                         O.OP_PUSH_OPERAND_0, O.OP_SUM]
+
+    @test (@code_jitted sum(a) + sum(b) + sum(a .+ b)).nchains == 3
+    @test (@code_jitted maximum(a) + minimum(b)).nchains == 2
+
+    # Scalar slots index a table shared across chains, so the second chain's
+    # slot shifts past the first's.
+    scal = @code_jitted sum(a .+ 5) + sum(b .* 3)
+    slots = [scal.ops[i + 1] for i in eachindex(scal.ops)
+             if scal.ops[i] == O.OP_ADD_SCALAR_VAR || scal.ops[i] == O.OP_MUL_SCALAR_VAR]
+    @test slots == UInt8[0, 1]
+
+    # Beyond MAX_HFUSE_CHAINS the queue splits, so refuse rather than lie.
+    vs = [DPUVector(Int32.(1:N)) for _ in 1:(MAX_CHAINS + 1)]
+    many = Expr(:call, :+, (Expr(:call, :sum, v) for v in vs)...)
+    @test_throws ErrorException eval(Expr(:macrocall, Symbol("@code_jitted"),
+                                          LineNumberNode(0), many))
+end

@@ -154,17 +154,50 @@ kernel pass; `f[]`, `get(f)` or `fetch(f)` forces them.
 """
 mutable struct DpuFuture
     handle::PolymerPIM.DpuFutureInt32
+    value::Int64
+    resolved::Bool
+
+    DpuFuture(handle::PolymerPIM.DpuFutureInt32) = new(handle, 0, false)
 end
 
 """
     get(f::DpuFuture) -> Int64
 
-Read a queued reduction, blocking until the DPUs have produced it.
+Read a queued reduction, blocking until the DPUs have produced it.  Kept, so a
+second read transfers nothing.
 """
-Base.get(f::DpuFuture) = retry_on_oom(() -> PolymerPIM.cpp_get(f.handle))
+function Base.get(f::DpuFuture)
+    f.resolved && return f.value
+    f.value = retry_on_oom(() -> PolymerPIM.cpp_get(f.handle))
+    f.resolved = true
+    return f.value
+end
 
 # `f[]` as for any value holder; `fetch` is the Julia future spelling.
 Base.getindex(f::DpuFuture) = get(f)
 Base.fetch(f::DpuFuture) = get(f)
+
+# A future stands in for its value.  Both operands were queued before the read,
+# so this costs no fusion.
+Base.convert(::Type{T}, f::DpuFuture) where {T<:Number} = convert(T, get(f))
+Base.Int64(f::DpuFuture) = get(f)
+
+for op in (:+, :-, :*, :/, :÷, :%, :^, :min, :max)
+    @eval Base.$op(f::DpuFuture, g::DpuFuture) = Base.$op(get(f), get(g))
+    @eval Base.$op(f::DpuFuture, x::Number) = Base.$op(get(f), x)
+    @eval Base.$op(x::Number, f::DpuFuture) = Base.$op(x, get(f))
+end
+
+# Base derives `>` and `>=` from these.
+for op in (:(==), :<, :<=, :isless)
+    @eval Base.$op(f::DpuFuture, g::DpuFuture) = Base.$op(get(f), get(g))
+    @eval Base.$op(f::DpuFuture, x::Number) = Base.$op(get(f), x)
+    @eval Base.$op(x::Number, f::DpuFuture) = Base.$op(x, get(f))
+end
+
+Base.:-(f::DpuFuture) = -get(f)
+Base.abs(f::DpuFuture) = abs(get(f))
+# `==` reads, so `hash` must too.
+Base.hash(f::DpuFuture, h::UInt) = hash(get(f), h)
 
 export DpuFuture
