@@ -2,7 +2,7 @@ DpuFuture<ArgResult> run_query(const std::vector<DPUVector<T> >& columns,
                                const std::vector<T>& query) {
     DPUVector<T> score(columns[0].size());
     for (uint32_t d = 0; d < DIM; ++d) {
-        score = score + columns[d] + query[d];
+        score = score + columns[d] * query[d];
     }
     return argmax(score);
 }
