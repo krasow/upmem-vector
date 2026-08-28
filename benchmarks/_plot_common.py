@@ -13,9 +13,28 @@ except ImportError:  # Python < 3.11
 import os
 
 BENCHMARKS = Path(__file__).resolve().parent
-CONFIG = BENCHMARKS / "main-benchmarks" / "benchmark.toml"
 RESULTS = BENCHMARKS / "results"
-RUNS_CSV = RESULTS / "runs.csv"
+
+# Which benchmark suite to plot:  PLOT_SUITE=modes
+# Each suite has its own config, its own runs.csv, and its own output folder.
+# The runner derives the same folder from the config name (see cli.jl), so a
+# suite's figures sit beside the runs.csv they came from.
+SUITES = {
+    "main": ("benchmark.toml",
+             ("polymerpim", "julia", "baseline", "simplepim",
+              "simplepim-patched")),
+    "modes": ("polymerpim-modes.toml",
+              ("polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager")),
+}
+SUITE = os.environ.get("PLOT_SUITE", "main").strip() or "main"
+if SUITE not in SUITES:
+    raise SystemExit(f"unknown PLOT_SUITE {SUITE!r}; "
+                     f"expected one of {', '.join(sorted(SUITES))}")
+_config_name, VARIANT_ORDER = SUITES[SUITE]
+CONFIG = BENCHMARKS / "main-benchmarks" / _config_name
+SUITE_RESULTS = (RESULTS if _config_name == "benchmark.toml"
+                 else RESULTS / Path(_config_name).stem)
+RUNS_CSV = SUITE_RESULTS / "runs.csv"
 
 BENCHMARK_ORDER = (
     "elementwise",
@@ -57,8 +76,8 @@ class FigureView:
         return variant not in self.without
 
     def path(self, stem, extension):
-        directory = (RESULTS / "-".join(sorted(self.benchmarks))
-                     if self.benchmarks else RESULTS)
+        directory = (SUITE_RESULTS / "-".join(sorted(self.benchmarks))
+                     if self.benchmarks else SUITE_RESULTS)
         directory.mkdir(parents=True, exist_ok=True)
         dropped = "-no-" + "-".join(sorted(self.without)) if self.without else ""
         scale = "-log" if self.log_y else ""
@@ -85,14 +104,15 @@ BENCHMARK_LABELS = {
     "vector_search": "Vector Search",
 }
 
-VARIANT_ORDER = ("polymerpim", "julia", "baseline", "simplepim",
-                 "simplepim-patched")
 VARIANT_STYLES = {
     "polymerpim": ("PolymerPIM", "#3264a8", "o", "-"),
     "julia": ("Julia", "#dd7f27", "D", "-"),
     "baseline": ("Hand-tuned baseline", "#3b8f5a", "s", "-"),
     "simplepim": ("SimplePIM", "#b94a48", "^", "-"),
     "simplepim-patched": ("SimplePIM (direct gather)", "#8c564b", "v", "--"),
+    "polymerpim-jit": ("PolymerPIM (JIT)", "#3264a8", "o", "-"),
+    "polymerpim-pipeline": ("PolymerPIM (interpreter)", "#7b5ea7", "s", "-"),
+    "polymerpim-eager": ("PolymerPIM (eager)", "#c26a2a", "^", "--"),
 }
 
 

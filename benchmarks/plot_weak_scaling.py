@@ -108,9 +108,16 @@ def aggregate_speedup(points, candidate, reference, value):
 
 
 def print_speedups(points, value, heading):
+    # Only meaningful for a suite that has a reference to compare against; the
+    # build-mode suite is all one implementation.
+    candidates = [(name, label) for name, label in (("polymerpim", "PolymerPIM"),
+                                                    ("julia", "Julia"))
+                  if name in VARIANT_ORDER]
+    if not candidates or not any(r in VARIANT_ORDER
+                                 for r in ("baseline", "simplepim")):
+        return
     print(f"{heading} (geomean across benchmarks):")
-    for candidate, label in (("polymerpim", "PolymerPIM"),
-                             ("julia", "Julia")):
+    for candidate, label in candidates:
         comparisons = []
         benchmark_count = 0
         references = [(r, l) for r, l in (

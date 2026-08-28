@@ -53,6 +53,7 @@ end
 
 function parse_args(args)
     options = Options()
+    explicit_state = false
     index = 1
     while index <= length(args)
         arg = args[index]
@@ -105,12 +106,20 @@ function parse_args(args)
             value = option_value(args, index, arg)
             index += 1
             options.state = abspath(value)
+            explicit_state = true
         elseif startswith(arg, "-")
             error("unknown option $arg")
         else
             push!(options.benchmarks, arg)
         end
         index += 1
+    end
+    # Every suite gets its own results, so a second TOML cannot append to the
+    # main suite's runs.csv.  benchmark.toml keeps results/ itself.
+    if !explicit_state && options.config != DEFAULT_CONFIG
+        suite = splitext(basename(options.config))[1]
+        options.state = joinpath(BENCHMARK_DIR, "results", suite,
+                                 "runner-state.toml")
     end
     return options
 end
