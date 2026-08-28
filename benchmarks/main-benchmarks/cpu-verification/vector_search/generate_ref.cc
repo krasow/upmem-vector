@@ -136,7 +136,7 @@ int main() {
       for (uint64_t i = 0; i < N; ++i) {
         int32_t score = 0;
         for (uint32_t d = 0; d < DIM; ++d) {
-          score += vector_search_dataset_value(seed, i, d, DIM) + query[d];
+          score += vector_search_dataset_value(seed, i, d, DIM) * query[d];
         }
         vector_search_result_insert(&local, score, (uint32_t)i);
       }

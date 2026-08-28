@@ -93,7 +93,7 @@ function main()
             stage_begin!(st, :kernel)
             e = PolymerPIM.zeros(T, N)
             for d in 1:DIM
-                e = e .+ cols[d] .+ last_query[d]
+                e = e .+ cols[d] .* last_query[d]
             end
             value, index = findmax(e)
             result = (Int32(value), UInt32(index - 1))
@@ -126,7 +126,7 @@ function main()
         for i in 0:(N - 1)
             score = 0
             for d in 1:DIM
-                score += Int64(host_cols[d][i + 1]) + Int64(last_query[d])
+                score += Int64(host_cols[d][i + 1]) * Int64(last_query[d])
             end
             candidate = (Int32(score), UInt32(i))
             if candidate[1] > best[1] ||

@@ -52,7 +52,7 @@ int main(void) {
     for (uint32_t r = 0; r < count; ++r) {
       int32_t score = 0;
       for (uint32_t d = 0; d < DIM; ++d) {
-        score += rows[r * DIM + d] + query_buf[d];
+        score += rows[r * DIM + d] * query_buf[d];
       }
       uint32_t global_index = args.base_index + first + r;
       vector_search_result_insert(&tasklet_best[tid], score, global_index);

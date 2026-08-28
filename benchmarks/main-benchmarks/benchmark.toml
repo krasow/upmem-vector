@@ -58,5 +58,5 @@ variants = ["polymerpim", "julia", "baseline", "simplepim"]
 elements_per_dpu = [262144, 524288]
 warmup = 10
 iterations = 50
-parameters = { dim = 10 }
+parameters = { dim = 16 }
 variants = ["polymerpim", "julia", "baseline", "simplepim"]
