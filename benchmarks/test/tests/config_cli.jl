@@ -6,8 +6,8 @@
     @test config.defaults.benchmark_root == "main-benchmarks"
     @test Set(keys(config.variants)) ==
           Set(["baseline", "cpu", "julia", "polymerpim", "simplepim",
-               "polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager",
-               "polymerpim-hybrid"])
+               "simplepim-patched", "polymerpim-jit", "polymerpim-pipeline",
+               "polymerpim-eager", "polymerpim-hybrid"])
     @test BenchmarkRunner.Options().profiles ==
           joinpath(BENCHMARKS, "results", "fusion", "profiles")
     @test BenchmarkRunner.TuneOptions().profiles ==
@@ -30,6 +30,17 @@
     @test (options.timeout, options.build_timeout) == (7, 9)
     @test options.check && options.skip_setup && options.verbose && options.reset
     @test options.csv == "/tmp/benchmark-times.csv"
+
+    # Each suite TOML owns its own results, so a second suite cannot append to
+    # the main runs.csv.  An explicit --state still wins.
+    modes = joinpath(BENCHMARKS, "main-benchmarks", "polymerpim-modes.toml")
+    @test BenchmarkRunner.results_csv(parse_args(String[])) ==
+          joinpath(BENCHMARKS, "results", "runs.csv")
+    @test BenchmarkRunner.results_csv(parse_args(["--config", modes])) ==
+          joinpath(BENCHMARKS, "results", "polymerpim-modes", "runs.csv")
+    @test BenchmarkRunner.results_csv(
+              parse_args(["--config", modes, "--state", "/tmp/pp/state.toml"])) ==
+          joinpath("/tmp/pp", "runs.csv")
 
     @test_throws ErrorException parse_args(["--ntrail", "3"])
     output = IOBuffer()
