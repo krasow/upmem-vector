@@ -10,6 +10,8 @@ try:
 except ImportError:  # Python < 3.11
     import tomli as tomllib
 
+import os
+
 BENCHMARKS = Path(__file__).resolve().parent
 CONFIG = BENCHMARKS / "main-benchmarks" / "benchmark.toml"
 RESULTS = BENCHMARKS / "results"
@@ -25,7 +27,53 @@ BENCHMARK_ORDER = (
     "multitask_classifier",
     "vector_search",
 )
+@dataclass(frozen=True)
+class FigureView:
+    """The slice of the data one figure covers, and where it is written.
+
+    Chosen by the environment, so a filtered figure never overwrites the
+    canonical set:
+
+        PLOT_ONLY_BENCHMARKS=elementwise   one panel, in its own folder
+        PLOT_EXCLUDE_VARIANTS=simplepim    rescale axes one variant dominates
+        PLOT_LOG_Y=1                       runtimes span two orders of magnitude
+    """
+
+    benchmarks: frozenset = frozenset()   # empty means every benchmark
+    without: frozenset = frozenset()
+    log_y: bool = False
+
+    @staticmethod
+    def from_env():
+        return FigureView(_env_names("PLOT_ONLY_BENCHMARKS"),
+                          _env_names("PLOT_EXCLUDE_VARIANTS"),
+                          os.environ.get("PLOT_LOG_Y", "").strip()
+                          not in ("", "0", "false", "no"))
+
+    def covers(self, benchmark):
+        return not self.benchmarks or benchmark in self.benchmarks
+
+    def keeps(self, variant):
+        return variant not in self.without
+
+    def path(self, stem, extension):
+        directory = (RESULTS / "-".join(sorted(self.benchmarks))
+                     if self.benchmarks else RESULTS)
+        directory.mkdir(parents=True, exist_ok=True)
+        dropped = "-no-" + "-".join(sorted(self.without)) if self.without else ""
+        scale = "-log" if self.log_y else ""
+        return directory / f"{stem}{dropped}{scale}{extension}"
+
+
+def _env_names(key):
+    return frozenset(part.strip()
+                     for part in os.environ.get(key, "").split(",") if part.strip())
+
+
+VIEW = FigureView.from_env()
+
 EXCLUDED_BENCHMARKS = {"multitask_classifier"}
+
 BENCHMARK_LABELS = {
     "elementwise": "Elementwise",
     "hist": "Histogram",
@@ -37,12 +85,14 @@ BENCHMARK_LABELS = {
     "vector_search": "Vector Search",
 }
 
-VARIANT_ORDER = ("polymerpim", "julia", "baseline", "simplepim")
+VARIANT_ORDER = ("polymerpim", "julia", "baseline", "simplepim",
+                 "simplepim-patched")
 VARIANT_STYLES = {
     "polymerpim": ("PolymerPIM", "#3264a8", "o", "-"),
     "julia": ("Julia", "#dd7f27", "D", "-"),
     "baseline": ("Hand-tuned baseline", "#3b8f5a", "s", "-"),
     "simplepim": ("SimplePIM", "#b94a48", "^", "-"),
+    "simplepim-patched": ("SimplePIM (direct gather)", "#8c564b", "v", "--"),
 }
 
 
@@ -66,6 +116,8 @@ def load_selections():
     for name in BENCHMARK_ORDER:
         if name in EXCLUDED_BENCHMARKS:
             continue
+        if not VIEW.covers(name):
+            continue
         specs = config.get(name, [])
         if not specs:
             continue
@@ -79,7 +131,8 @@ def load_selections():
             name=name,
             elements_per_dpu=target_size,
             dpus=tuple(int(value) for value in spec.get("dpus", defaults["dpus"])),
-            variants=tuple(spec.get("variants", defaults["variants"])),
+            variants=tuple(v for v in spec.get("variants", defaults["variants"])
+                           if VIEW.keeps(v)),
             warmup=int(spec.get("warmup", defaults["warmup"])),
             iterations=int(spec.get("iterations", defaults["iterations"])),
             ntrials=int(defaults["ntrials"]),

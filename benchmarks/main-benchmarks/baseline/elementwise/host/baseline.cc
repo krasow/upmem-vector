@@ -13,10 +13,6 @@
 #include "../Param.h"
 #endif
 
-#ifndef FRESH_RESULT_BUFFER
-#define FRESH_RESULT_BUFFER 0
-#endif
-
 typedef struct {
   uint32_t lhs_offset;
   uint32_t rhs_offset;
@@ -77,9 +73,6 @@ int main() {
   bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
   a_vec = (int32_t *)calloc(nr_elements, sizeof(int32_t));
   b_vec = (int32_t *)calloc(nr_elements, sizeof(int32_t));
-#if !FRESH_RESULT_BUFFER
-  res_vec = (int32_t *)calloc(nr_elements, sizeof(int32_t));
-#endif
   bench_stage_end(&stages);
   if (load_ref) {
     bench_stage_begin(&stages, BENCH_STAGE_LOAD);
@@ -133,17 +126,12 @@ int main() {
     bench_stage_end(&stages);
 
     bench_stage_begin(&stages, BENCH_STAGE_READ);
-#if FRESH_RESULT_BUFFER
-    int32_t *round_res_vec = (int32_t *)calloc(nr_elements, sizeof(int32_t));
-    if (!round_res_vec) {
-      fprintf(stderr, "failed to allocate fresh result buffer\n");
+    res_vec = (int32_t *)calloc(nr_elements, sizeof(int32_t));
+    if (!res_vec) {
+      fprintf(stderr, "failed to allocate result buffer\n");
       exit(1);
     }
-    vec_xfer_from_dpu(dpu_set, (char *)round_res_vec, args);
-    res_vec = round_res_vec;
-#else
     vec_xfer_from_dpu(dpu_set, (char *)res_vec, args);
-#endif
     bench_stage_end(&stages);
   };
 
@@ -151,12 +139,10 @@ int main() {
   BenchStats warmup_stats;
   bench_stats_init(&warmup_stats);
   for (int i = 0; i < warmup_iterations; i++) {
-#if FRESH_RESULT_BUFFER
     if (res_vec) {
       free(res_vec);
       res_vec = NULL;
     }
-#endif
     bench_start(&warmup_timer, 0);
     run_round_trip(warm_stages);
     bench_stop(&warmup_timer, 0);
@@ -171,12 +157,10 @@ int main() {
   BenchTimer timer;
 
   for (int i = 0; i < iterations; i++) {
-#if FRESH_RESULT_BUFFER
     if (res_vec) {
       free(res_vec);
       res_vec = NULL;
     }
-#endif
     bench_start(&timer, 0);
     run_round_trip(stages);
     bench_stop(&timer, 0);

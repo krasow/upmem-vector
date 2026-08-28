@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 from _plot_common import (
     BENCHMARK_ORDER,
-    RESULTS,
     VARIANT_ORDER,
     VARIANT_STYLES,
+    VIEW,
     average,
     benchmark_title,
     complete_trial_rows,
@@ -17,9 +17,9 @@ from _plot_common import (
     sample_stddev,
 )
 
-SUMMARY_CSV = RESULTS / "weak-scaling-summary.csv"
-ITERATION_FIGURE = RESULTS / "weak-scaling-mean-iteration.pdf"
-RUNTIME_FIGURE = RESULTS / "weak-scaling-total-runtime.pdf"
+SUMMARY_CSV = VIEW.path("weak-scaling-summary", ".csv")
+ITERATION_FIGURE = VIEW.path("weak-scaling-mean-iteration", ".pdf")
+RUNTIME_FIGURE = VIEW.path("weak-scaling-total-runtime", ".pdf")
 
 
 @dataclass(frozen=True)
@@ -113,10 +113,12 @@ def print_speedups(points, value, heading):
                              ("julia", "Julia")):
         comparisons = []
         benchmark_count = 0
-        for reference, reference_label in (
-                ("baseline", "baseline"),
-                ("simplepim", "SimplePIM"),
-                ("best", "best of baseline and SimplePIM")):
+        references = [(r, l) for r, l in (
+            ("baseline", "baseline"),
+            ("simplepim", "SimplePIM"),
+            ("best", "best of baseline and SimplePIM"))
+            if VIEW.keeps(r)]
+        for reference, reference_label in references:
             speedup, count = aggregate_speedup(
                 points, candidate, reference, value)
             benchmark_count = max(benchmark_count, count)
@@ -136,6 +138,18 @@ def configure_dpu_axis(axis, dpus):
     axis.grid(True, color="#d8d8d8", linewidth=0.8, alpha=0.8)
 
 
+def draw_header(figure, handles, title, single):
+    """Title above a legend, wrapped if narrow; returns the top for the axes."""
+    # One panel is too narrow to fit every label on a single row.
+    columns = min(len(handles), 3) if single else len(handles)
+    rows = -(-len(handles) // columns)
+    top = 0.99 - 0.05 * (rows - 1)
+    figure.suptitle(title, fontsize=15, fontweight="bold", y=top)
+    figure.legend(handles=handles, loc="upper center", ncol=columns,
+                  frameon=False, bbox_to_anchor=(0.5, top - 0.035))
+    return 0.91 - 0.06 * (rows - 1)
+
+
 def plot_grid(points, benchmarks, value, error, ylabel, title, output):
     import matplotlib
     matplotlib.use("Agg")
@@ -143,8 +157,8 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
     from matplotlib.lines import Line2D
 
     rows, columns = grid_shape(len(benchmarks))
-    figure, axes = plt.subplots(rows, columns, figsize=(10, rows * 2.75),
-                                squeeze=False)
+    size = (7, 4.6) if len(benchmarks) == 1 else (10, rows * 2.75)
+    figure, axes = plt.subplots(rows, columns, figsize=size, squeeze=False)
     flat_axes = axes.ravel()
 
     for index, (axis, benchmark) in enumerate(zip(flat_axes, benchmarks)):
@@ -176,6 +190,8 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
         axis.set_title(benchmark_title(benchmark, elements_per_dpu),
                        fontsize=11, fontweight="bold")
         configure_dpu_axis(axis, dpus)
+        if VIEW.log_y:
+            axis.set_yscale("log")
         axis.set_xlabel("DPUs")
         if index % columns == 0:
             axis.set_ylabel(ylabel)
@@ -184,16 +200,16 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
     for axis in flat_axes[len(benchmarks):]:
         axis.set_visible(False)
 
+    drawn = {point.variant for point in points}
     handles = [
         Line2D([0], [0], color=color, marker=marker, linestyle=linestyle,
                linewidth=1.8, markersize=5.5, label=label)
-        for variant in VARIANT_ORDER
+        for variant in VARIANT_ORDER if variant in drawn
         for label, color, marker, linestyle in [VARIANT_STYLES[variant]]
     ]
-    figure.suptitle(title, fontsize=15, fontweight="bold", y=0.99)
-    figure.legend(handles=handles, loc="upper center", ncol=len(handles),
-                  frameon=False, bbox_to_anchor=(0.5, 0.955))
-    figure.tight_layout(rect=(0, 0, 1, 0.91), h_pad=1.35, w_pad=1.0)
+    figure.tight_layout(rect=(0, 0, 1, draw_header(figure, handles, title,
+                                                    len(benchmarks) == 1)),
+                        h_pad=1.35, w_pad=1.0)
     figure.savefig(output)
     plt.close(figure)
 
@@ -221,7 +237,6 @@ def write_summary(points):
 
 
 def main():
-    RESULTS.mkdir(parents=True, exist_ok=True)
     selections, latest = load_trials()
     points, benchmarks = aggregate(latest, selections)
     if not benchmarks:
