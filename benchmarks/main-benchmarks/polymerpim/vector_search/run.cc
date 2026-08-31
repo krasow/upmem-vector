@@ -22,7 +22,7 @@ static vector_search_result_t cpu_best(const std::vector<T> &query) {
     for (uint64_t i = 0; i < N; ++i) {
       int32_t score = 0;
       for (uint32_t d = 0; d < DIM; ++d) {
-        score += vector_search_dataset_value(seed, i, d, DIM) + query[d];
+        score += vector_search_dataset_value(seed, i, d, DIM) * query[d];
       }
       vector_search_result_insert(&local, score, (uint32_t)i);
     }
@@ -105,7 +105,7 @@ int main() {
         bench_stage_begin(&query_stages, BENCH_STAGE_KERNEL);
         DPUVector<T> score(columns[0].size());
         for (uint32_t d = 0; d < DIM; ++d) {
-          score = score + columns[d] + query[d];
+          score = score + columns[d] * query[d];
         }
         pending.push_back(argmax(score));
         bench_stage_end(&query_stages);

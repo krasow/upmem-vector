@@ -23,7 +23,7 @@ static vector_search_result_t cpu_best(const T *records, const T *query) {
       const T *row = records + i * (DIM + 1);
       int32_t score = 0;
       for (uint32_t d = 0; d < DIM; ++d) {
-        score += row[d] + query[d];
+        score += row[d] * query[d];
       }
       vector_search_result_insert(&local, score, (uint32_t)row[DIM]);
     }

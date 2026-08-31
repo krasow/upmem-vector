@@ -26,7 +26,7 @@ void map_to_val_func(void *input, void *output, uint32_t *key) {
   T *record = (T *)input;
   int32_t score = 0;
   for (uint32_t d = 0; d < DIM; ++d) {
-    score += record[d] + query_buf[d];
+    score += record[d] * query_buf[d];
   }
 
   vector_search_result_t *candidate = (vector_search_result_t *)output;

@@ -5,10 +5,10 @@
 #include <stdint.h>
 
 /*
- * Dataset and query entries are random bipolar values.  This experimental
- * variant scores each dimension by addition instead of multiplication.  The
- * counter-based generator makes the dataset reproducible without storing a
- * second reference copy on disk.
+ * Dataset and query entries are random bipolar values, scored by dot product:
+ * for +/-1 vectors that is DIM - 2 * hamming(row, query), so argmax finds the
+ * nearest neighbour.  The counter-based generator makes the dataset
+ * reproducible without storing a second reference copy on disk.
  */
 static inline uint64_t vector_search_mix64(uint64_t x) {
   x += UINT64_C(0x9e3779b97f4a7c15);
