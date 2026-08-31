@@ -38,7 +38,10 @@ VENDORED_SCC = REPO_ROOT / "opt" / "scc" / "bin" / "scc"
 # The six the original comparison covered, kept as a named subset so the
 # earlier figure stays reproducible after the suite grew.
 LEGACY_BENCHMARKS = ("elementwise", "hist", "red", "linreg", "knn", "kmeans")
-BENCHMARK_ORDER = LEGACY_BENCHMARKS + ("vector_search", "multitask_classifier")
+# multitask_classifier is not part of the paper, so it is selectable but not
+# counted by default.
+BENCHMARK_ORDER = LEGACY_BENCHMARKS + ("vector_search",)
+ALL_BENCHMARKS = BENCHMARK_ORDER + ("multitask_classifier",)
 
 VARIANT_ORDER = ("julia", "polymerpim", "simplepim", "baseline")
 VARIANT_SUFFIX = {
@@ -87,6 +90,10 @@ COLUMNS = (
     Column("Uloc", "scc_uloc", "ULOC"),
 )
 SCC_COLUMNS = tuple(column for column in COLUMNS if column.scc_key)
+# scc SLOC repeats Logical LOC; Lines/Comment/Blank are not quoted anywhere.
+REPORT_COLUMNS = tuple(column for column in COLUMNS
+                       if column.name in ('logical_loc', 'scc_complexity',
+                                          'scc_cognitive', 'scc_uloc'))
 
 
 class MetricView(NamedTuple):
@@ -105,6 +112,8 @@ VIEWS = (
     MetricView("scc_code", "scc_sloc_", "scc SLOC"),
     MetricView("scc_uloc", "scc_uloc_", "scc ULOC (distinct lines)"),
 )
+# The report shows only the two that differ; the CSVs still carry all three.
+REPORT_VIEWS = (VIEWS[0], VIEWS[2])
 
 
 def ref_path(benchmark: str, variant: str) -> str:
@@ -122,7 +131,7 @@ def parse_args():
     parser.add_argument(
         "--benchmarks",
         nargs="+",
-        choices=BENCHMARK_ORDER,
+        choices=ALL_BENCHMARKS,
         default=BENCHMARK_ORDER,
         help="Subset of benchmarks to analyze.",
     )
@@ -442,23 +451,21 @@ def build_report(rows, benchmarks, version) -> str:
 
     blocks = [REPORT_HEADER, SCC_NOTE.format(version=version),
               agreement_line(rows), "## Overall"]
-    for view in VIEWS:
+    # scc SLOC is omitted: the agreement line above states it equals logical
+    # LOC, so its table would repeat the first one verbatim.
+    for view in REPORT_VIEWS:
         blocks.append(metric_table(
             f"{view.title}, all {len(selected)} benchmarks",
             aggregate(rows, selected, view), view))
-        if legacy and len(legacy) != len(selected):
-            blocks.append(metric_table(
-                f"{view.title}, original {len(legacy)} benchmarks",
-                aggregate(rows, legacy, view), view))
 
-    headings = ["Variant", *(column.heading for column in COLUMNS),
+    headings = ["Variant", *(column.heading for column in REPORT_COLUMNS),
                 "Reference file"]
     for benchmark in benchmarks:
         variants = by_variant(rows, benchmark)
         if not variants:
             continue
         table = [[variant, *(variants[variant][column.name]
-                             for column in COLUMNS),
+                             for column in REPORT_COLUMNS),
                   f"`{variants[variant]['path']}`"]
                  for variant in VARIANT_ORDER if variant in variants]
         blocks.append(f"## {benchmark}\n\n" + md_table(headings, table))

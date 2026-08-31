@@ -25,6 +25,13 @@ void map_to_val_func(void* input, void* grads, uint32_t* key) {
     *key = 0;
 }
 
+void init_func(uint32_t size, void* ptr) {
+    char* casted_value_ptr = (char*)ptr;
+    for (int i = 0; i < size; i++) {
+        casted_value_ptr[i] = 0;
+    }
+}
+
 void combine_func(void* dest, void* src) {
     RED_T* a = (RED_T*)dest;
     RED_T* b = (RED_T*)src;

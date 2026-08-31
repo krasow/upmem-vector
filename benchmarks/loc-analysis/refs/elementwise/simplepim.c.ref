@@ -1,17 +1,4 @@
-static void rescatter_to_existing(const char* table_id, void* elements,
-                                  simplepim_management_t* mgmt) {
-    table_host_t* t = lookup_table(table_id, mgmt);
-    uint32_t len_per_dpu_in_byte = t->end - t->start;
-    struct dpu_set_t dpu;
-    int i;
-    DPU_FOREACH(mgmt->set, dpu, i) {
-        DPU_ASSERT(dpu_prepare_xfer(
-            dpu, &((char*)elements)[(uint64_t)i * len_per_dpu_in_byte]));
-    }
-    DPU_ASSERT(dpu_push_xfer(mgmt->set, DPU_XFER_TO_DPU,
-                             DPU_MRAM_HEAP_POINTER_NAME, t->start,
-                             len_per_dpu_in_byte, DPU_XFER_DEFAULT));
-}
+void start_func(map_arguments_t* args) {}
 
 void map_func(void* input, void* res) {
     *(T*)res = OPERATION(((T*)input)[0], ((T*)input)[1]);
@@ -22,8 +9,6 @@ T* run_elementwise(T* A, T* B, simplepim_management_t* mgmt,
     simplepim_scatter("t1", A, nr_elements, sizeof(T), mgmt);
     simplepim_scatter("t2", B, nr_elements, sizeof(T), mgmt);
     table_zip("t1", "t2", "t3", zip_handle, mgmt);
-    rescatter_to_existing("t1", A, mgmt);
-    rescatter_to_existing("t2", B, mgmt);
     table_map("t3", "t4", sizeof(T), add_handle, mgmt, 0);
     return simplepim_gather("t4", mgmt);
 }
