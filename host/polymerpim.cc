@@ -257,12 +257,14 @@ bool can_interpret(const std::vector<uint8_t>& ops) {
 }
 #endif
 
-// No device-side fill exists, so stage it.  from_cpu queues against `buffer`,
-// which dies here, hence the fence.
+// Filled on the DPUs.  Staging it from the host instead would cost a
+// full-length buffer and one host-to-DPU transfer of the whole vector.
 BackendVector fill_vector(T value, size_t length, std::string_view name = "") {
-  std::vector<T> buffer(length, value);
-  BackendVector vec = BackendVector::from_cpu(buffer, name);
-  vec.add_fence();
+  BackendVector vec(length);
+  if (!name.empty()) vec.data_desc_ref()->debug_name = name.data();
+  uint32_t bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  ::detail::launch_fill(vec.data_desc_ref(), bits, OpInfo<T>::fill);
   return vec;
 }
 

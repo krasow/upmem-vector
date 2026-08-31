@@ -351,6 +351,7 @@ void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
   if (e->op != Event::OperationType::COMPUTE || e->is_locked_for_jit ||
       !e->jit_binary_path.empty())
     return;
+  if (e->inputs.empty()) return;  // no input: no RPN form (e.g. a fill)
   e->is_locked_for_jit = true;
 
   if (e->rpn_ops.empty()) {

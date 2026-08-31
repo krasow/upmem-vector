@@ -170,6 +170,9 @@ bool EventQueue::try_fuse(std::shared_ptr<Event> last,
       e->op != Event::OperationType::COMPUTE || last->output == nullptr)
     return false;
   if (last->is_locked_for_jit || e->is_locked_for_jit) return false;
+  // A fill has no vector input, so it has no RPN form: every program starts
+  // with OP_PUSH_INPUT.
+  if (last->inputs.empty() || e->inputs.empty()) return false;
 
   bool dependent = false;
   for (const auto& in : e->inputs) {

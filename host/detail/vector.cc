@@ -128,6 +128,46 @@ void internal_launch_binary_scalar(VectorDescRef res, VectorDescRef lhs,
   CHECK_UPMEM(dpu_launch(dpu_set, DPU_ASYNCHRONOUS));
 }
 
+void internal_launch_fill(VectorDescRef res, uint32_t value,
+                          KernelID kernel_id) {
+  auto& runtime = DpuRuntime::get();
+  runtime.get_allocator().realize_allocation(res);
+
+  uint32_t nr_of_dpus = runtime.num_dpus();
+  DPU_LAUNCH_ARGS args[nr_of_dpus] = {};
+
+  for (uint32_t i = 0; i < nr_of_dpus; i++) {
+    args[i].kernel = static_cast<uint32_t>(kernel_id);
+    args[i].ktype = static_cast<uint8_t>(KERNEL_FILL);
+    args[i].num_elements = res->desc[i].size_bytes / res->element_size;
+    args[i].size_type = res->element_size;
+    args[i].binary_scalar.lhs_offset = 0;
+    args[i].binary_scalar.rhs_scalar = value;
+    args[i].binary_scalar.res_offset = (res->desc[i].ptr);
+  }
+
+#if ENABLE_DPU_LOGGING >= 1
+  Logger& logger = DpuRuntime::get().get_logger();
+  log_dpu_launch_args(logger, args, nr_of_dpus);
+#endif
+
+  dpu_set_t& dpu_set = runtime.dpu_set();
+  dpu_set_t dpu;
+  uint32_t idx_dpu = 0;
+
+  if (all_identical(args, nr_of_dpus)) {
+    CHECK_UPMEM(dpu_broadcast_to(dpu_set, "args", 0, &args[0], sizeof(args[0]),
+                                 DPU_XFER_DEFAULT));
+  } else {
+    DPU_FOREACH(dpu_set, dpu, idx_dpu) {
+      CHECK_UPMEM(dpu_prepare_xfer(dpu, &args[idx_dpu]));
+    }
+    CHECK_UPMEM(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "args", 0,
+                              sizeof(args[0]), DPU_XFER_DEFAULT));
+  }
+  CHECK_UPMEM(dpu_launch(dpu_set, DPU_ASYNCHRONOUS));
+}
+
 void internal_launch_binary(VectorDescRef res, VectorDescRef lhs,
                             VectorDescRef rhs, KernelID kernel_id) {
   auto& runtime = DpuRuntime::get();
@@ -474,6 +514,20 @@ void launch_binary(VectorDescRef res, VectorDescRef lhs, VectorDescRef rhs,
       << "type=COMPUTE (binary) kernel=" << kernel_id_to_string(kernel_id)
       << std::endl;
 #endif
+}
+
+void launch_fill(VectorDescRef res, uint32_t value, KernelID kernel_id) {
+  auto& runtime = DpuRuntime::get();
+  auto& event_queue = runtime.get_event_queue();
+
+  auto bound_cb = std::bind(internal_launch_fill, res, value, kernel_id);
+  std::shared_ptr<Event> e =
+      std::make_shared<Event>(Event::OperationType::COMPUTE, bound_cb);
+  // Left with no inputs on purpose: that is what keeps the fill out of
+  // fusion and JIT promotion, neither of which can express it.
+  e->scalar_value = value;
+  e->output = res;
+  event_queue.submit(e);
 }
 
 void launch_binary_scalar(VectorDescRef res, VectorDescRef lhs, uint32_t scalar,

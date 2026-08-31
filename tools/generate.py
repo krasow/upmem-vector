@@ -42,6 +42,16 @@ class DPUUnaryOp(DPUOp):
         return lambda type, kid: DPUUnaryOp(name, symbol, type, kid)
 
 
+class DPUFillOp(DPUOp):
+    def generate_macro(self, out):
+        out.write(f"DEFINE_FILL_KERNEL({self.type})\n")
+    def kernel_name(self):
+        return f"fill_{self.type}"
+    @staticmethod
+    def make(name, symbol):
+        return lambda type, kid: DPUFillOp(name, symbol, type, kid)
+
+
 class DPUReduceOp(DPUOp):
     def generate_macro(self, out):
         out.write(f"DEFINE_REDUCTION_KERNEL({self.type}, {self.name}, {self.symbol})\n")
@@ -54,7 +64,7 @@ class DPUReduceOp(DPUOp):
 def declare_unary_op(name, symbol):
     return lambda type, kid: DPUUnaryOp(name, symbol, type, kid)
 
-categories = ['Binary', 'Unary', 'Reduction', 'BinaryScalar']
+categories = ['Binary', 'Unary', 'Reduction', 'BinaryScalar', 'Fill']
 
 ops = [
     DPUBinaryOp.make('add', '+'),
@@ -88,6 +98,11 @@ types = [
 # Experimental Universal Pipeline
 universal_pipeline_ops = [
     DPUUnaryOp.make('universal_pipeline', 'universal_pipeline')
+]
+
+# Device-side constant fill.  Appended last so existing kernel ids are stable.
+fill_ops = [
+    DPUFillOp.make('fill', 'FILL')
 ]
 
 all_ops = [] # :: (KernelID, OpClass)
@@ -141,6 +156,13 @@ for type in types:
              all_ops.append((kernel_id, op_instance))
              group.append(op_instance)
              kernel_id += 1
+
+    # Fill Op (appended last: keeps every existing kernel id stable)
+    for op in fill_ops:
+        op_instance = op(type, kernel_id)
+        all_ops.append((kernel_id, op_instance))
+        group.append(op_instance)
+        kernel_id += 1
 
     grouped_ops.append((type, group))
 
@@ -286,6 +308,7 @@ with open("dpu/kernels.h", "w") as out:
     out.write('#include "./binary.inl"\n')
     out.write('#include "./reduce.inl"\n')
     out.write('#include "./unary.inl"\n')
+    out.write('#include "./fill.inl"\n')
     out.write('#if PIPELINE\n')
     out.write('#include "./pipeline.inl"\n')
     out.write('#endif\n')
@@ -364,6 +387,7 @@ with open("host/kernelids.h", "w") as out:
             fake = op('float', 0)
             out.write(f"    KERNEL_OP_{fake.name.upper()}_SCALAR,\n")
     out.write(f"    KERNEL_OP_PIPELINE,\n")
+    out.write(f"    KERNEL_OP_FILL,\n")
     out.write("};\n")
 
     out.write('struct KernelInfo {\n')
@@ -386,6 +410,9 @@ with open("host/kernelids.h", "w") as out:
         elif isinstance(op, DPUReduceOp):
             category = 'KERNEL_REDUCTION'
             op_enum = f'KERNEL_OP_{op.name.upper()}'
+        elif isinstance(op, DPUFillOp):
+            category = 'KERNEL_FILL'
+            op_enum = 'KERNEL_OP_FILL'
         elif isinstance(op, DPUBinaryScalarOp):
             category = 'KERNEL_BINARY_SCALAR'
             op_enum = f'KERNEL_OP_{op.name.upper()}'
