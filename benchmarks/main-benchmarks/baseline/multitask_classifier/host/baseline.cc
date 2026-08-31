@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dpu>
+#include <memory>
 #include <vector>
 
 #include "../../../multitask_classifier_common.h"
@@ -60,16 +61,16 @@ int main() {
     args[i].classifier = 0;
   }
 
-  std::vector<T> rows;
+  std::unique_ptr<T[]> rows;
   bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
-  rows.resize((uint64_t)N * FLOW_ROW_WORDS);
+  rows.reset(new T[(uint64_t)N * FLOW_ROW_WORDS]);
   bench_stage_end(&stages);
 
   bench_stage_begin(&stages, BENCH_STAGE_LOAD);
   if (load_ref) {
     char path[512];
     snprintf(path, sizeof(path), "%s/AoS/rows.bin", ref_path);
-    bench_load_bin(path, rows.data(), rows.size() * sizeof(T));
+    bench_load_bin(path, rows.get(), (uint64_t)N * FLOW_ROW_WORDS * sizeof(T));
   } else {
     for (uint64_t i = 0; i < N; i++) {
       for (uint32_t d = 0; d < FEATURES; d++) {
