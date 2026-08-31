@@ -519,7 +519,15 @@ void EventQueue::await_jit_binary(const std::shared_ptr<Event>& e) {
   }
 #endif
   log_jit_wait(e);
-  e->jit_binary_path = e->jit_future.get();
+  try {
+    e->jit_binary_path = e->jit_future.get();
+  } catch (const std::exception&) {
+    // The batch did not fit IRAM; link this kernel on its own.
+    Signature sig = detail::event_kernel_signature(e);
+    e->jit_kernel_hash = jit_signature_hash(sig);
+    e->jit_binary_path = jit_compile({sig});
+    e->jit_sub_kernel_idx = 0;
+  }
 #else
   (void)e;
 #endif

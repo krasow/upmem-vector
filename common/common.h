@@ -34,10 +34,10 @@ enum KernelCategory {
 #define MAX_VFUSE_INPUTS 11
 #endif
 #ifdef __cplusplus
-static_assert(OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1 <= OP_PUSH_OPERAND_10,
+static_assert(OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1 <= OP_PUSH_OPERAND_15,
               "MAX_VFUSE_INPUTS exceeds the reserved operand opcode range");
 #else
-_Static_assert(OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1 <= OP_PUSH_OPERAND_10,
+_Static_assert(OP_PUSH_OPERAND_0 + MAX_VFUSE_INPUTS - 1 <= OP_PUSH_OPERAND_15,
                "MAX_VFUSE_INPUTS exceeds the reserved operand opcode range");
 #endif
 #ifndef MAX_PIPELINE_STACK_DEPTH

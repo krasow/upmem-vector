@@ -37,6 +37,10 @@ struct Node {
   ExprOp op;
   BackendVector input;
   T scalar = 0;
+  // True only for a fill's own constant.  A runtime scalar must not be folded
+  // on its value: that would make the program shape depend on the data and
+  // force a JIT recompile whenever the value changes.
+  bool structural = false;
   std::vector<std::shared_ptr<Node>> children;
 };
 
@@ -49,9 +53,10 @@ NodeRef node(ExprOp op, std::vector<NodeRef> children = {}) {
   return result;
 }
 
-NodeRef scalar_node(T value) {
+NodeRef scalar_node(T value, bool structural = false) {
   auto result = node(ExprOp::scalar);
   result->scalar = value;
+  result->structural = structural;
   return result;
 }
 
@@ -59,7 +64,7 @@ NodeRef scalar_node(T value) {
 // first use.
 NodeRef fold_binary(ExprOp op, const NodeRef& lhs, const NodeRef& rhs) {
   auto is_value = [](const NodeRef& n, T value) {
-    return n && n->op == ExprOp::scalar && n->scalar == value;
+    return n && n->op == ExprOp::scalar && n->structural && n->scalar == value;
   };
   switch (op) {
     case ExprOp::add:
@@ -495,8 +500,8 @@ DPUVector<T>::DPUVector(size_t count, std::string_view name)
 
 DPUVector<T>::DPUVector(size_t count, T value, std::string_view name)
 #if PIPELINE
-    : impl_(std::make_shared<Impl>(scalar_node(value), count,
-                                   std::string(name))) {
+    : impl_(std::make_shared<Impl>(scalar_node(value, /*structural=*/true),
+                                   count, std::string(name))) {
 }
 #else
     // without fusion we can't do this scalar impl
