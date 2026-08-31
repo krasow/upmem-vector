@@ -164,7 +164,13 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
     from matplotlib.lines import Line2D
 
     rows, columns = grid_shape(len(benchmarks))
-    size = (7, 4.6) if len(benchmarks) == 1 else (10, rows * 2.75)
+    # A single row of panels needs real height, not the multi-row slice.
+    if len(benchmarks) == 1:
+        size = (7, 4.6)
+    elif rows == 1:
+        size = (min(4.7 * columns, 11), 4.3)
+    else:
+        size = (10, rows * 2.75)
     figure, axes = plt.subplots(rows, columns, figsize=size, squeeze=False)
     flat_axes = axes.ravel()
 
