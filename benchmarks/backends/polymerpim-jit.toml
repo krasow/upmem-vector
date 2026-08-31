@@ -7,6 +7,5 @@ setup = [
 build = ["make clean", "make"]
 run = "./run"
 timing_label = "polymerpim"
-# Modes are compared at one fixed configuration: a JIT-tuned profile
-# would cap can_interpret() and silently make the interpreter run eagerly.
+# Fixed config across modes: a tuned profile can cap can_interpret().
 use_profile = false

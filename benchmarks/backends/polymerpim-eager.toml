@@ -7,4 +7,5 @@ setup = [
 build = ["make clean", "make"]
 run = "./run"
 timing_label = "polymerpim"
+# Fixed config across modes: a tuned profile can cap can_interpret().
 use_profile = false
