@@ -250,6 +250,6 @@ def benchmark_title(name, elements_per_dpu):
             f"{format_elements(elements_per_dpu)} elements/DPU")
 
 
-def grid_shape(count, max_columns=3):
+def grid_shape(count, max_columns=2):
     columns = min(max_columns, count)
     return math.ceil(count / columns), columns

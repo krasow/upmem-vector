@@ -2,7 +2,7 @@
 
 import csv
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from _plot_common import (
     BENCHMARK_ORDER,
@@ -20,6 +20,7 @@ from _plot_common import (
 SUMMARY_CSV = VIEW.path("weak-scaling-summary", ".csv")
 ITERATION_FIGURE = VIEW.path("weak-scaling-mean-iteration", ".pdf")
 RUNTIME_FIGURE = VIEW.path("weak-scaling-total-runtime", ".pdf")
+NORMALIZED_FIGURE = VIEW.path("weak-scaling-mean-iteration-normalized", ".pdf")
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,26 @@ class Point:
     iteration_stddev_ms: float
     mean_runtime_s: float
     runtime_stddev_s: float
+
+
+def normalize_to_baseline(points, value, error):
+    """Points rescaled so the hand-tuned baseline is 1.0 at every DPU count."""
+    reference = {
+        (point.benchmark, point.dpus): getattr(point, value)
+        for point in points if point.variant == "baseline"
+    }
+    scaled = []
+    for point in points:
+        if point.variant == "baseline":
+            continue
+        divisor = reference.get((point.benchmark, point.dpus))
+        if not divisor:
+            continue
+        scaled.append(replace(point, **{
+            value: getattr(point, value) / divisor,
+            error: getattr(point, error) / divisor,
+        }))
+    return scaled
 
 
 def aggregate(latest, selections):
@@ -145,10 +166,13 @@ def configure_dpu_axis(axis, dpus):
     axis.grid(True, color="#d8d8d8", linewidth=0.8, alpha=0.8)
 
 
-def draw_header(figure, handles, title, single):
+def draw_header(figure, handles, title, single, with_legend=True):
     """Title above a legend, wrapped if narrow; returns the top for the axes."""
-    # One panel is too narrow to fit every label on a single row.
-    columns = min(len(handles), 3) if single else len(handles)
+    if not with_legend:
+        figure.suptitle(title, fontsize=15, fontweight="bold", y=0.995)
+        return 0.99
+    # Three labels is what the narrowest figure fits on one row.
+    columns = min(len(handles), 3)
     rows = -(-len(handles) // columns)
     top = 0.99 - 0.05 * (rows - 1)
     figure.suptitle(title, fontsize=15, fontweight="bold", y=top)
@@ -157,24 +181,29 @@ def draw_header(figure, handles, title, single):
     return 0.91 - 0.06 * (rows - 1)
 
 
-def plot_grid(points, benchmarks, value, error, ylabel, title, output):
+def plot_grid(points, benchmarks, value, error, ylabel, title, output,
+              baseline_at_one=False):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
-    rows, columns = grid_shape(len(benchmarks))
+    # The legend takes the second slot, so the first panel keeps top-left.
+    legend_index = 1 if len(benchmarks) > 1 else None
+    rows, columns = grid_shape(len(benchmarks) + (legend_index is not None))
     # A single row of panels needs real height, not the multi-row slice.
     if len(benchmarks) == 1:
         size = (7, 4.6)
     elif rows == 1:
         size = (min(4.7 * columns, 11), 4.3)
     else:
-        size = (10, rows * 2.75)
+        size = (3.5 * columns, rows * 2.35)
     figure, axes = plt.subplots(rows, columns, figsize=size, squeeze=False)
     flat_axes = axes.ravel()
 
-    for index, (axis, benchmark) in enumerate(zip(flat_axes, benchmarks)):
+    slots = [j for j in range(rows * columns) if j != legend_index]
+    for slot, benchmark in zip(slots, benchmarks):
+        axis = flat_axes[slot]
         selected = [point for point in points if point.benchmark == benchmark]
         dpus = sorted({point.dpus for point in selected})
         elements_per_dpu = selected[0].elements_per_dpu
@@ -206,12 +235,15 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
         if VIEW.log_y:
             axis.set_yscale("log")
         axis.set_xlabel("DPUs")
-        if index % columns == 0:
+        if baseline_at_one:
+            axis.axhline(1.0, color="#3b8f5a", linestyle="--", linewidth=1.2,
+                         zorder=1)
+        if slot % columns == 0:
             axis.set_ylabel(ylabel)
         axis.margins(y=0.12)
 
-    for axis in flat_axes[len(benchmarks):]:
-        axis.set_visible(False)
+    for slot in slots[len(benchmarks):]:
+        flat_axes[slot].set_visible(False)
 
     drawn = {point.variant for point in points}
     handles = [
@@ -220,9 +252,23 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output):
         for variant in VARIANT_ORDER if variant in drawn
         for label, color, marker, linestyle in [VARIANT_STYLES[variant]]
     ]
+    if baseline_at_one:
+        handles.append(Line2D([0], [0], color="#3b8f5a", linestyle="--",
+                              linewidth=1.2, label="Hand-tuned baseline"))
+    inset = flat_axes[legend_index] if legend_index is not None else None
+    if inset is not None:
+        inset.axis("off")
+        # Anchored above the axes box so it sits level with the panel titles
+        # rather than the plot areas.
+        inset.legend(handles=handles, loc="upper left", frameon=False, ncol=1,
+                     fontsize=10, bbox_to_anchor=(0.0, 1.13))
+    # Tick label widths differ per row, so the y-labels land at different x
+    # unless they are aligned explicitly.
+    figure.align_ylabels()
     figure.tight_layout(rect=(0, 0, 1, draw_header(figure, handles, title,
-                                                    len(benchmarks) == 1)),
-                        h_pad=1.35, w_pad=1.0)
+                                                    len(benchmarks) == 1,
+                                                    inset is None)),
+                        h_pad=0.85, w_pad=0.9)
     figure.savefig(output)
     plt.close(figure)
 
@@ -266,12 +312,24 @@ def main():
         "Mean process runtime (s)",
         "Weak scaling: end-to-end runtime", RUNTIME_FIGURE,
     )
+    normalized = normalize_to_baseline(
+        points, "mean_iteration_ms", "iteration_stddev_ms")
+    if normalized:
+        plot_grid(
+            normalized, benchmarks, "mean_iteration_ms",
+            "iteration_stddev_ms",
+            "Relative to baseline",
+            "Weak scaling: mean iteration time, normalized",
+            NORMALIZED_FIGURE, baseline_at_one=True,
+        )
     print(f"Averaged {points[0].ntrials} trials per data point")
     print(f"Benchmarks: {', '.join(benchmarks)}")
     print_speedups(points, "mean_iteration_ms", "Mean iteration speedup")
     print_speedups(points, "mean_runtime_s", "End-to-end runtime speedup")
     print(f"Wrote {SUMMARY_CSV}")
     print(f"Wrote {ITERATION_FIGURE}")
+    if normalized:
+        print(f"Wrote {NORMALIZED_FIGURE}")
     print(f"Wrote {RUNTIME_FIGURE}")
 
 
