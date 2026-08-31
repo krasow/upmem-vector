@@ -84,6 +84,9 @@ int g_binary_counter = 0;
 
 // The DPU IRAM cannot hold an unbounded batch, so cap how many kernels share a
 // binary regardless of JIT_BATCH_SIZE.
+// Count is not enough: six long kernels overflow where six short ones fit.
+constexpr size_t kJitBatchOpsBudget = 64;
+
 size_t jit_link_batch_limit() {
   constexpr size_t kIramSafeLinkBatch = 6;
   return JIT_BATCH_SIZE < kIramSafeLinkBatch ? JIT_BATCH_SIZE
@@ -402,7 +405,10 @@ void EventQueue::lock_for_jit(std::shared_ptr<Event> e) {
   }
 #endif
 
-  if (pending_unique_kernels_.size() >= jit_link_batch_limit())
+  size_t batch_ops = 0;
+  for (const auto& k : pending_unique_kernels_) batch_ops += k.first.size();
+  if (pending_unique_kernels_.size() >= jit_link_batch_limit() ||
+      (batch_ops && batch_ops + e->rpn_ops.size() > kJitBatchOpsBudget))
     flush_jit_batch();
 
   e->jit_sub_kernel_idx = pending_unique_kernels_.size();

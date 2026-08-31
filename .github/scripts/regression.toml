@@ -1,7 +1,7 @@
 [runner]
 benchmark_root = "main-benchmarks"
 dpus = [64]
-warmup = 0
+warmup = 3  # excludes the first iteration's JIT compile
 iterations = 20
 ntrials = 1
 seed = 1
