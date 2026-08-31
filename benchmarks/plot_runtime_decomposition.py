@@ -32,7 +32,6 @@ OUTPUT_DIR = RESULTS / "runtime-decomposition"
 STAGES = (
     "alloc",
     "load",
-    "transpose",
     "init",
     "write",
     "kernel",
@@ -45,7 +44,6 @@ STAGES = (
 STAGE_STYLES = {
     "alloc": ("Allocation", "#aec7e8"),
     "load": ("Input load", "#17becf"),
-    "transpose": ("Transpose", "#e377c2"),
     "init": ("DPU initialization", "#7f7f7f"),
     "write": ("Host → DPU", "#1f77b4"),
     "kernel": ("DPU kernel", "#2ca02c"),
@@ -195,13 +193,18 @@ def plot_dpu_grid(points, dpus, output):
     if not benchmarks:
         return False
 
-    rows, columns = grid_shape(len(benchmarks))
+    # The legend takes the second slot, so the first panel keeps top-left.
+    legend_index = 1 if len(benchmarks) > 1 else None
+    rows, columns = grid_shape(len(benchmarks) + (legend_index is not None))
     figure, axes = plt.subplots(
-        rows, columns, figsize=(10.2, rows * 2.55 + 0.7), squeeze=False,
+        rows, columns, figsize=(3.4 * columns, rows * 2.25 + 0.5),
+        squeeze=False,
     )
     flat_axes = axes.ravel()
 
-    for index, (axis, benchmark) in enumerate(zip(flat_axes, benchmarks)):
+    slots = [j for j in range(rows * columns) if j != legend_index]
+    for slot, benchmark in zip(slots, benchmarks):
+        axis = flat_axes[slot]
         selected = {
             point.variant: point for point in points
             if point.dpus == dpus and point.benchmark == benchmark
@@ -260,15 +263,15 @@ def plot_dpu_grid(points, dpus, output):
             [VARIANT_STYLES[variant][0] for variant in variants],
             rotation=18, ha="right", fontsize=8,
         )
-        if index % columns == 0:
+        if slot % columns == 0:
             axis.set_ylabel("End-to-end time (ms)")
         axis.set_ylim(bottom=0)
         axis.margins(y=0.08)
         axis.grid(axis="y", color="#d8d8d8", linewidth=0.7, alpha=0.75)
         axis.set_axisbelow(True)
 
-    for axis in flat_axes[len(benchmarks):]:
-        axis.set_visible(False)
+    for slot in slots[len(benchmarks):]:
+        flat_axes[slot].set_visible(False)
 
     stage_handles = [
         Patch(facecolor=color, edgecolor="black", linewidth=0.3, label=label)
@@ -292,12 +295,22 @@ def plot_dpu_grid(points, dpus, output):
         f"End-to-end runtime decomposition — {dpus} DPUs",
         fontsize=14, fontweight="bold", y=0.995,
     )
-    figure.legend(
-        handles=stage_handles, loc="upper center", ncol=6, frameon=False,
-        bbox_to_anchor=(0.5, 0.958), fontsize=7.8,
-        columnspacing=1.15, handlelength=1.7,
-    )
-    figure.tight_layout(rect=(0.01, 0.01, 0.99, 0.87), h_pad=1.0, w_pad=0.8)
+    if legend_index is not None:
+        legend_axis = flat_axes[legend_index]
+        legend_axis.axis("off")
+        legend_axis.legend(handles=stage_handles, loc="upper left", ncol=1,
+                           frameon=False, fontsize=8.5, handlelength=1.7,
+                           bbox_to_anchor=(0.0, 1.13))
+    else:
+        figure.legend(
+            handles=stage_handles, loc="upper center", ncol=4, frameon=False,
+            bbox_to_anchor=(0.5, 0.958), fontsize=7.8,
+            columnspacing=1.15, handlelength=1.7,
+        )
+    figure.align_ylabels()
+    # The header only needs room for the title once the legend moves inline.
+    top = 0.99 if legend_index is not None else 0.87
+    figure.tight_layout(rect=(0.01, 0.01, 0.99, top), h_pad=0.8, w_pad=0.7)
     figure.savefig(output)
     plt.close(figure)
     return True
