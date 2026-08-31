@@ -196,10 +196,15 @@ pipeline_ops = [
     ('push_operand_7', 'PUSH_OPERAND_7'),
     ('push_operand_8', 'PUSH_OPERAND_8'),
     ('push_operand_9', 'PUSH_OPERAND_9'),
-    # MAX_VFUSE_INPUTS defaults to 11, so reserve an opcode for every
-    # operand slot. Without operand 10, OP_PUSH_OPERAND_0 + 10 aliases
-    # OP_ADD_SCALAR_VAR and the JIT decodes scalar additions as input loads.
+    # One opcode per operand slot, up to MAX_VFUSE_INPUTS' ceiling of 16.
+    # A slot without its own opcode aliases OP_ADD_SCALAR_VAR, and the JIT
+    # then decodes scalar additions as input loads.
     ('push_operand_10', 'PUSH_OPERAND_10'),
+    ('push_operand_11', 'PUSH_OPERAND_11'),
+    ('push_operand_12', 'PUSH_OPERAND_12'),
+    ('push_operand_13', 'PUSH_OPERAND_13'),
+    ('push_operand_14', 'PUSH_OPERAND_14'),
+    ('push_operand_15', 'PUSH_OPERAND_15'),
     ('add_scalar_var', 'ADD_SCALAR_VAR'),
     ('sub_scalar_var', 'SUB_SCALAR_VAR'),
     ('mul_scalar_var', 'MUL_SCALAR_VAR'),
