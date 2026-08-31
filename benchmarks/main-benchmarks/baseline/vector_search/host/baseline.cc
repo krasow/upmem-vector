@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dpu>
+#include <memory>
 #include <vector>
 
 #include "../Param.h"
@@ -66,20 +67,20 @@ int main() {
   CHECK(dpu_load(dpu_set, "./bin/baseline.dpu", NULL));
   bench_stage_end(&stages);
 
-  std::vector<T> data;
+  std::unique_ptr<T[]> data;
   std::vector<T> query((query_bytes / sizeof(T)), 0);
   std::vector<vector_search_result_t> local_results(nr_dpus);
   std::vector<DPU_LAUNCH_ARGS> args(nr_dpus);
 
   bench_stage_begin(&stages, BENCH_STAGE_ALLOC);
-  data.resize(N * DIM);
+  data.reset(new T[(size_t)N * DIM]);
   bench_stage_end(&stages);
 
   bench_stage_begin(&stages, BENCH_STAGE_LOAD);
   if (load_ref) {
     char path[1024];
     std::snprintf(path, sizeof(path), "%s/AoS/rows.bin", ref_path);
-    bench_load_bin(path, data.data(), (size_t)N * DIM * sizeof(T));
+    bench_load_bin(path, data.get(), (size_t)N * DIM * sizeof(T));
   } else {
 #pragma omp parallel for
     for (uint64_t i = 0; i < N; ++i) {
@@ -170,7 +171,7 @@ int main() {
   bench_stages_report("baseline_cold", &warm_stages);
 
   if (check_correctness && iterations) {
-    vector_search_result_t expected = cpu_best(data.data(), query.data());
+    vector_search_result_t expected = cpu_best(data.get(), query.data());
     bool ok = result.score == expected.score && result.index == expected.index;
     if (ok) {
       std::printf("the result is correct\n");
