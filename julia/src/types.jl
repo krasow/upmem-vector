@@ -78,8 +78,20 @@ Base.eltype(::DpuZeros) = Int32
 Base.broadcasted(::typeof(+), ::DpuZeros, x) = x
 Base.broadcasted(::typeof(+), x, ::DpuZeros) = x
 
+"""
+    PolymerPIM.fill(Int32, n, value) -> DPUVector
+
+`n` copies of `value`, written by the DPUs rather than staged through a host
+buffer.
+"""
+function fill(::Type{Int32}, n::Integer, value::Integer)
+    n >= 0 || throw(ArgumentError("length must be non-negative, got $n"))
+    handle = retry_on_oom(() -> PolymerPIM.fill_int32(Int64(n), Int32(value)))
+    return DPUVector(handle)
+end
+
 # Reading them is what materialises them.
-DPUVector(z::DpuZeros) = DPUVector(Base.zeros(Int32, z.length))
+DPUVector(z::DpuZeros) = fill(Int32, z.length, Int32(0))
 
 # Only `+` can drop the zeros for free, so every other use materialises rather
 # than failing on a type that has no storage.

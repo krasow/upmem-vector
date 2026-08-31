@@ -14,7 +14,8 @@ enum KernelCategory {
   KERNEL_BINARY = 1,
   KERNEL_REDUCTION = 2,
   KERNEL_BINARY_SCALAR = 3,
-  KERNEL_PIPELINE = 4
+  KERNEL_PIPELINE = 4,
+  KERNEL_FILL = 5
 };
 
 #include "config.h"

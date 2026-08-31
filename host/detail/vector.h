@@ -530,6 +530,7 @@ void launch_binary(VectorDescRef res, VectorDescRef lhs, VectorDescRef rhs,
 void launch_binary_scalar(VectorDescRef res, VectorDescRef lhs, uint32_t scalar,
                           KernelID kernel_id, uint8_t opcode,
                           KernelID pipeline_kid);
+void launch_fill(VectorDescRef res, uint32_t value, KernelID kernel_id);
 void launch_unary(VectorDescRef res, VectorDescRef rhs, KernelID kernel_id,
                   uint8_t opcode, KernelID pipeline_kid);
 void launch_reduction(VectorDescRef buf, VectorDescRef rhs, KernelID kernel_id,

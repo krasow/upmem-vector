@@ -142,6 +142,59 @@ TEST(public_api, sized_constructor_is_a_free_zero_fill) {
   CHECK_VEC_EQ(sevens.to_cpu(), std::vector<T>(n, (T)7));
 }
 
+// Ragged tails exercise the kernel's block loop and its 8-byte DMA rounding.
+TEST(public_api, device_fill_covers_ragged_lengths) {
+  const uint32_t dpus = tf::dpus();
+  const size_t lengths[] = {
+      1,
+      2,
+      7,
+      8,
+      9,
+      15,
+      16,
+      17,
+      63,
+      64,
+      65,
+      (size_t)dpus - 1,
+      (size_t)dpus,
+      (size_t)dpus + 1,
+      (size_t)dpus * 16 + 3,
+      4099,
+  };
+  for (size_t n : lengths) {
+    if (n == 0) continue;
+    DPUVector<T> filled(n, (T)-3, "ragged");
+    CHECK_VEC_EQ(filled.to_cpu(), std::vector<T>(n, (T)-3));
+  }
+}
+
+// The value round-trips through a uint32_t argument slot.
+TEST(public_api, device_fill_preserves_the_value) {
+  const size_t n = tf::elements();
+  const T values[] = {0, 1, -1, 7, -3, 2147483647, -2147483648};
+  for (T v : values) {
+    DPUVector<T> filled(n, v, "value");
+    CHECK_VEC_EQ(filled.to_cpu(), std::vector<T>(n, v));
+  }
+}
+
+// A fill has no input, so fusing it would build a program around one that
+// isn't there and yield the wrong constant.
+TEST(public_api, device_fill_is_not_fused_into_its_consumer) {
+  const size_t n = tf::elements();
+  std::vector<T> host = tf::random_vector<T>(n, -20, 20);
+  DPUVector<T> input(host);
+  sync();
+
+  DPUVector<T> filled(n, (T)5, "five");
+  auto actual = (filled + input).to_cpu();
+  std::vector<T> expected(n);
+  for (size_t i = 0; i < n; ++i) expected[i] = (T)(host[i] + 5);
+  CHECK_VEC_EQ(actual, expected);
+}
+
 TEST(public_api, zero_fill_folds_out_of_its_first_use) {
 #if !PIPELINE
   SKIP("requires PIPELINE=1");

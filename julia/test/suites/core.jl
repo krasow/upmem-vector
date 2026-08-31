@@ -81,3 +81,22 @@ end
     # sync() must be safe even with nothing submitted
     @test PolymerPIM.sync() === nothing
 end
+
+@testset "device-side fill" begin
+    # Ragged lengths exercise the kernel's block loop and its 8-byte DMA
+    # rounding; the values round-trip through a uint32 argument slot.
+    for n in (1, 7, 16, 17, ndpus() - 1, ndpus() + 1, N, N + 3)
+        for v in (Int32(0), Int32(-3), Int32(7), typemax(Int32), typemin(Int32))
+            got = Array(PolymerPIM.fill(Int32, n, v))
+            @test length(got) == n
+            @test all(==(v), got)
+        end
+    end
+    @test_throws ArgumentError PolymerPIM.fill(Int32, -1, Int32(0))
+
+    # zeros() materialises through the same kernel rather than a host buffer.
+    @test Array(DPUVector(PolymerPIM.zeros(Int32, N))) == zeros(Int32, N)
+
+    @test @inferred(PolymerPIM.fill(Int32, 16, Int32(1))) isa DPUVector
+    @test @inferred(DPUVector(PolymerPIM.zeros(Int32, 16))) isa DPUVector
+end
