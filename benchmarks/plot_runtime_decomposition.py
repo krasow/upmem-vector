@@ -193,9 +193,10 @@ def plot_dpu_grid(points, dpus, output):
     if not benchmarks:
         return False
 
-    # The legend takes the second slot, so the first panel keeps top-left.
-    legend_index = 1 if len(benchmarks) > 1 else None
-    rows, columns = grid_shape(len(benchmarks) + (legend_index is not None))
+    # Only claim a slot for the legend when the grid leaves one empty anyway;
+    # otherwise it goes above the panels.
+    rows, columns = grid_shape(len(benchmarks))
+    legend_index = 1 if rows * columns > len(benchmarks) else None
     figure, axes = plt.subplots(
         rows, columns, figsize=(3.4 * columns, rows * 2.25 + 0.5),
         squeeze=False,

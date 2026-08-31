@@ -188,9 +188,10 @@ def plot_grid(points, benchmarks, value, error, ylabel, title, output,
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
-    # The legend takes the second slot, so the first panel keeps top-left.
-    legend_index = 1 if len(benchmarks) > 1 else None
-    rows, columns = grid_shape(len(benchmarks) + (legend_index is not None))
+    # Only claim a slot for the legend when the grid leaves one empty anyway;
+    # otherwise it goes above the panels.
+    rows, columns = grid_shape(len(benchmarks))
+    legend_index = 1 if rows * columns > len(benchmarks) else None
     # A single row of panels needs real height, not the multi-row slice.
     if len(benchmarks) == 1:
         size = (7, 4.6)

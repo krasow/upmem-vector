@@ -8,10 +8,6 @@ seed = 1
 variants = ["polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"]
 group_by_variant = true
 
-[[elementwise]]
-elements_per_dpu = [2097152]
-operation = "-abs(((a) + (b)) - (a))"
-
 [[knn]]
 elements_per_dpu = [262144]
 iterations = 20
