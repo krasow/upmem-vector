@@ -35,12 +35,10 @@ DEFAULT_OUTPUT_DIR = BENCHMARK_DIR / "results" / "loc-analysis"
 # repo; anything already on PATH is the fallback.
 VENDORED_SCC = REPO_ROOT / "opt" / "scc" / "bin" / "scc"
 
-# The six the original comparison covered, kept as a named subset so the
-# earlier figure stays reproducible after the suite grew.
-LEGACY_BENCHMARKS = ("elementwise", "hist", "red", "linreg", "knn", "kmeans")
 # multitask_classifier is not part of the paper, so it is selectable but not
 # counted by default.
-BENCHMARK_ORDER = LEGACY_BENCHMARKS + ("vector_search",)
+BENCHMARK_ORDER = ("elementwise", "hist", "red", "linreg", "knn", "kmeans",
+                   "vector_search")
 ALL_BENCHMARKS = BENCHMARK_ORDER + ("multitask_classifier",)
 
 VARIANT_ORDER = ("julia", "polymerpim", "simplepim", "baseline")
@@ -399,8 +397,8 @@ def metric_table(title: str, metrics: dict, view: MetricView) -> str:
         key = view.key(f"total_{variant}_loc")
         if key in metrics:
             table.append((f"Total {variant}", metrics[key]))
-    for stat, label in (("mean", "Mean per-benchmark"),
-                        ("total", "Pooled-total")):
+    # Only the per-benchmark mean is quoted; the pooled figure stays in the CSV.
+    for stat, label in (("mean", "Mean per-benchmark"),):
         for subject, reference in COMPARISONS:
             key = view.key(f"{stat}_{subject}_vs_{reference}_pct")
             if key in metrics:
@@ -447,7 +445,6 @@ copy-pasted transfer and kernel boilerplate the lower-level models repeat."""
 
 def build_report(rows, benchmarks, version) -> str:
     selected = selected_benchmarks(rows, benchmarks)
-    legacy = [b for b in selected if b in LEGACY_BENCHMARKS]
 
     blocks = [REPORT_HEADER, SCC_NOTE.format(version=version),
               agreement_line(rows), "## Overall"]
@@ -505,15 +502,12 @@ def main():
     write_csv(output_dir / "summary.csv", rows,
               ["benchmark", "variant", "path",
                *(column.name for column in COLUMNS)])
-    for name, subset in (("overall_metrics.csv", selected),
-                         ("overall_metrics_legacy_six.csv",
-                          [b for b in selected if b in LEGACY_BENCHMARKS])):
-        if not subset:
-            continue
+    if selected:
         metrics = {}
         for view in VIEWS:
-            metrics.update(aggregate(rows, subset, view))
-        write_csv(output_dir / name, [metrics], list(metrics.keys()))
+            metrics.update(aggregate(rows, selected, view))
+        write_csv(output_dir / "overall_metrics.csv", [metrics],
+                  list(metrics.keys()))
 
     (output_dir / "report.md").write_text(
         build_report(rows, args.benchmarks, version), encoding="utf-8")
