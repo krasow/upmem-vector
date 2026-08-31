@@ -6,6 +6,7 @@
 #include <detail/vector.h>
 #include <jit.h>
 #include <logger.h>
+#include <opinfo.h>
 #include <stats.h>
 
 // The Julia package targets the configuration the library is meant to be used
@@ -15,6 +16,7 @@
 #error "PolymerPIM.jl requires libpolymerpim built with PIPELINE=1 JIT=1"
 #endif
 
+#include <cstring>
 #include <jlcxx/array.hpp>
 #include <jlcxx/jlcxx.hpp>
 #include <jlcxx/stl.hpp>
@@ -173,6 +175,16 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
     // it.
     Vec result = Vec::from_cpu(arr.data(), arr.size());
     result.add_fence();  // the Julia array may be collected right after
+    return result;
+  });
+
+  // Filled on the DPUs: staging it from the host would cost a full-length
+  // buffer and one transfer of the whole vector.
+  mod.method("fill_int32", [](int64_t n, int32_t value) {
+    Vec result((size_t)n);
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    ::detail::launch_fill(result.data_desc_ref(), bits, OpInfo<int32_t>::fill);
     return result;
   });
 
