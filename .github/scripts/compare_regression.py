@@ -19,30 +19,24 @@ KEY_FIELDS = (
 
 def load_runs(path):
     runs = {}
+    failed = set()
     with open(path, newline="", encoding="utf-8") as source:
         for row in csv.DictReader(source):
             if row["variant"] not in VARIANTS:
                 continue
-            if row["status"] != "complete":
-                raise ValueError(
-                    f"{path}: {row['benchmark']}/{row['variant']} is {row['status']}"
-                )
             key = tuple(row[field] for field in KEY_FIELDS)
-            if key in runs:
-                raise ValueError(f"{path}: duplicate result for {'/'.join(key)}")
+            if row["status"] != "complete" or not row["time"]:
+                failed.add(key)
+                continue
             runs[key] = float(row["time"])
-    return runs
+    return runs, failed - set(runs)
 
 
 def report(base_path, candidate_path, threshold):
-    base = load_runs(base_path)
-    candidate = load_runs(candidate_path)
+    base, _ = load_runs(base_path)
+    candidate, candidate_failed = load_runs(candidate_path)
+    # Not fatal: a PR that fixes a crash on base would always fail here.
     missing = sorted(set(candidate) - set(base))
-    if missing:
-        raise ValueError(
-            "base results are missing: "
-            + ", ".join(f"{key[0]}/{key[1]}" for key in missing)
-        )
 
     lines = [
         "## Benchmark regression",
@@ -52,6 +46,8 @@ def report(base_path, candidate_path, threshold):
     ]
     regressions = []
     for key in sorted(candidate):
+        if key not in base:
+            continue
         before = base[key]
         after = candidate[key]
         change = 100.0 * (after / before - 1.0)
@@ -61,6 +57,11 @@ def report(base_path, candidate_path, threshold):
         if change > threshold:
             regressions.append((key, change))
 
+    for label, keys in (("Failed on this PR", candidate_failed),
+                       ("Not compared (no base result)", missing)):
+        if keys:
+            lines.extend(["", f"{label}:"])
+            lines.extend(f"- {key[0]}/{key[1]}" for key in sorted(keys))
     lines.extend(
         ["", f"Failure threshold: more than {threshold:.0f}% slower than the base branch."]
     )
@@ -71,14 +72,11 @@ def report(base_path, candidate_path, threshold):
         with open(summary, "a", encoding="utf-8") as output:
             output.write(text)
 
-    if regressions:
-        for key, change in regressions:
-            print(
-                f"regression: {key[0]}/{key[1]} is {change:.1f}% slower",
-                file=sys.stderr,
-            )
-        return 1
-    return 0
+    for key in sorted(candidate_failed):
+        print(f"failed on this PR: {key[0]}/{key[1]}", file=sys.stderr)
+    for key, change in regressions:
+        print(f"regression: {key[0]}/{key[1]} is {change:.1f}% slower", file=sys.stderr)
+    return 1 if (regressions or candidate_failed) else 0
 
 
 def main():

@@ -83,6 +83,9 @@ jobs:
           echo "$JULIA_BIN_DIR" >> "$GITHUB_PATH"
 
       - name: Run base benchmarks
+        # Base is the pre-merge code, so a crash it already had must not block
+        # the PR that fixes it; uncompared cells are reported instead.
+        continue-on-error: true
         working-directory: base/benchmarks
         run: |
           ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression.toml" \
