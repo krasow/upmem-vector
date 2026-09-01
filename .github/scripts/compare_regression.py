@@ -17,8 +17,12 @@ KEY_FIELDS = (
 )
 
 
+COUNTER = "jit_kernel_compiles"
+
+
 def load_runs(path):
     runs = {}
+    counters = {}
     failed = set()
     with open(path, newline="", encoding="utf-8") as source:
         for row in csv.DictReader(source):
@@ -29,12 +33,20 @@ def load_runs(path):
                 failed.add(key)
                 continue
             runs[key] = float(row["time"])
-    return runs, failed - set(runs)
+            if row.get(COUNTER):
+                counters[key] = float(row[COUNTER])
+    return runs, counters, failed - set(runs)
 
 
 def report(base_path, candidate_path, threshold):
-    base, _ = load_runs(base_path)
-    candidate, candidate_failed = load_runs(candidate_path)
+    base, base_counters, _ = load_runs(base_path)
+    candidate, candidate_counters, candidate_failed = load_runs(candidate_path)
+    # Deterministic, so any increase is a real change -- no threshold needed.
+    recompiles = [
+        (key, base_counters[key], candidate_counters[key])
+        for key in sorted(candidate_counters)
+        if key in base_counters and candidate_counters[key] > base_counters[key]
+    ]
     # Not fatal: a PR that fixes a crash on base would always fail here.
     missing = sorted(set(candidate) - set(base))
 
@@ -57,6 +69,10 @@ def report(base_path, candidate_path, threshold):
         if change > threshold:
             regressions.append((key, change))
 
+    if recompiles:
+        lines.extend(["", "**More JIT kernels compiled than base:**"])
+        lines.extend(f"- {k[0]}/{k[1]}: {int(b)} -> {int(c)}"
+                     for k, b, c in recompiles)
     for label, keys in (("Failed on this PR", candidate_failed),
                        ("Not compared (no base result)", missing)):
         if keys:
@@ -76,7 +92,10 @@ def report(base_path, candidate_path, threshold):
         print(f"failed on this PR: {key[0]}/{key[1]}", file=sys.stderr)
     for key, change in regressions:
         print(f"regression: {key[0]}/{key[1]} is {change:.1f}% slower", file=sys.stderr)
-    return 1 if (regressions or candidate_failed) else 0
+    for key, b, c in recompiles:
+        print(f"more JIT compiles: {key[0]}/{key[1]} {int(b)} -> {int(c)}",
+              file=sys.stderr)
+    return 1 if (regressions or candidate_failed or recompiles) else 0
 
 
 def main():
