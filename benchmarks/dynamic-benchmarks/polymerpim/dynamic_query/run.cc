@@ -80,12 +80,12 @@ static std::vector<QueryPlan> load_queries(const char* path) {
   return queries;
 }
 
-static auto project(const QueryPlan& plan, uint32_t projection,
+static auto project(const QueryPlan& plan,
                     const std::vector<DPUVector<T>>& input) {
   using Expression = decltype(input[0] + (T)0);
-  Expression value = input[projection % columns];
+  Expression value = input[0];
   for (const QueryStep& step : plan) {
-    const auto& operand = input[(step.column + projection) % columns];
+    const auto& operand = input[step.column % columns];
     switch (step.op) {
       case QueryOp::ADD:
         value = value + operand;
@@ -101,16 +101,13 @@ static auto project(const QueryPlan& plan, uint32_t projection,
         break;
     }
   }
-  const auto& lhs = input[projection % columns];
-  const auto& rhs = input[(projection + 1) % columns];
-  return value * (lhs < rhs);
+  return value * (input[0] < input[1]);
 }
 
-static T project_cpu(const QueryPlan& plan, uint32_t projection,
-                     uint64_t index) {
-  T value = column_value(index, projection % columns);
+static T project_cpu(const QueryPlan& plan, uint64_t index) {
+  T value = column_value(index, 0);
   for (const QueryStep& step : plan) {
-    T operand = column_value(index, (step.column + projection) % columns);
+    T operand = column_value(index, step.column % columns);
     switch (step.op) {
       case QueryOp::ADD:
         value += operand;
@@ -126,17 +123,15 @@ static T project_cpu(const QueryPlan& plan, uint32_t projection,
         break;
     }
   }
-  T lhs = column_value(index, projection % columns);
-  T rhs = column_value(index, (projection + 1) % columns);
-  return lhs < rhs ? value : 0;
+  return column_value(index, 0) < column_value(index, 1) ? value : 0;
 }
 
-static QueryResult expected_max(const QueryPlan& plan, uint32_t projection) {
+static QueryResult expected_max(const QueryPlan& plan) {
   T result = std::numeric_limits<T>::lowest();
   const uint64_t period = std::min<uint64_t>(N, 251);
 #pragma omp parallel for reduction(max : result)
   for (uint64_t i = 0; i < period; ++i) {
-    result = std::max(result, project_cpu(plan, projection, i));
+    result = std::max(result, project_cpu(plan, i));
   }
   return (QueryResult)result;
 }
@@ -147,12 +142,11 @@ int main() {
       std::cerr << "dynamic_query requires warmup=0" << std::endl;
       return 2;
     }
-    if (columns < 2 || projections == 0 || projections > columns ||
-        batches_per_query == 0 || iterations == 0 || query_ops == 0) {
-      std::cerr
-          << "dynamic_query requires columns>=2, 1<=projections<=columns, "
-             "batches_per_query>0, iterations>0, and query_ops>0"
-          << std::endl;
+    if (columns < 2 || batches_per_query == 0 || iterations == 0 ||
+        query_ops == 0) {
+      std::cerr << "dynamic_query requires columns>=2, batches_per_query>0, "
+                   "iterations>0, and query_ops>0"
+                << std::endl;
       return 2;
     }
 
@@ -210,37 +204,26 @@ int main() {
       const QueryPlan& plan = queries[query];
       std::vector<QueryResult> checked_results;
       if (check_correctness) {
-        checked_results.reserve(batches_per_query * projections);
+        checked_results.reserve(batches_per_query);
       }
       bench_start(&timer, 0);
 
       for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
         bench_start(&batch_timer, 0);
         bench_stage_begin(&stages, BENCH_STAGE_KERNEL);
-        std::vector<DpuFuture<T>> pending;
-        pending.reserve(projections);
-        for (uint32_t projection = 0; projection < projections; ++projection) {
-          pending.push_back(maximum(project(plan, projection, input)));
-        }
+        DpuFuture<T> pending = maximum(project(plan, input));
         sync();
         bench_stage_end(&stages);
 
         bench_stage_begin(&stages, BENCH_STAGE_READ);
-        std::vector<QueryResult> results;
-        results.reserve(projections);
-        for (auto& future : pending) {
-          results.push_back(future.get());
-        }
+        QueryResult result = pending.get();
         bench_stage_end(&stages);
 
         if (check_correctness) {
-          checked_results.insert(checked_results.end(), results.begin(),
-                                 results.end());
+          checked_results.push_back(result);
         }
 
-        for (QueryResult result : results) {
-          checksum = checksum * UINT64_C(1099511628211) ^ (uint64_t)result;
-        }
+        checksum = checksum * UINT64_C(1099511628211) ^ (uint64_t)result;
 
         bench_stop(&batch_timer, 0);
         bench_stats_update(batch == 0 ? &first_batch_stats : &reuse_batch_stats,
@@ -251,17 +234,13 @@ int main() {
       bench_stats_update(&stats, timer.time[0]);
 
       if (check_correctness) {
-        for (uint32_t projection = 0; projection < projections; ++projection) {
-          QueryResult expected = expected_max(plan, projection);
-          for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
-            QueryResult actual =
-                checked_results[batch * projections + projection];
-            if (actual != expected) {
-              std::cerr << "Mismatch in query " << query << ", batch " << batch
-                        << ", projection " << projection << ": got " << actual
-                        << ", expected " << expected << std::endl;
-              return 1;
-            }
+        QueryResult expected = expected_max(plan);
+        for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
+          if (checked_results[batch] != expected) {
+            std::cerr << "Mismatch in query " << query << ", batch " << batch
+                      << ": got " << checked_results[batch] << ", expected "
+                      << expected << std::endl;
+            return 1;
           }
         }
       }
@@ -291,8 +270,7 @@ int main() {
     std::cout << "dynamic_query: queries=" << iterations
               << " trace_queries=" << queries.size()
               << " batches_per_query=" << batches_per_query
-              << " query_ops=" << query_ops << " projections=" << projections
-              << " checksum=" << checksum
+              << " query_ops=" << query_ops << " checksum=" << checksum
               << " compute_launches=" << runtime_stats.compute_launches
               << " vertical_fusions=" << runtime_stats.vertical_fusions
               << " horizontal_fusions=" << runtime_stats.horizontal_fusions

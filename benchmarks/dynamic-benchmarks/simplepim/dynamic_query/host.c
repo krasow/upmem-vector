@@ -88,12 +88,10 @@ static query_plan_t* load_queries(uint32_t* count) {
   return queries;
 }
 
-static T project_cpu(const query_plan_t* plan, uint32_t projection,
-                     uint64_t index) {
-  T value = column_value(index, projection % columns);
+static T project_cpu(const query_plan_t* plan, uint64_t index) {
+  T value = column_value(index, 0);
   for (uint32_t i = 0; i < plan->count; ++i) {
-    T operand =
-        column_value(index, (plan->steps[i].column + projection) % columns);
+    T operand = column_value(index, plan->steps[i].column % columns);
     switch (plan->steps[i].op) {
       case QUERY_ADD:
         value += operand;
@@ -109,18 +107,15 @@ static T project_cpu(const query_plan_t* plan, uint32_t projection,
         break;
     }
   }
-  return column_value(index, projection % columns) <
-                 column_value(index, (projection + 1) % columns)
-             ? value
-             : 0;
+  return column_value(index, 0) < column_value(index, 1) ? value : 0;
 }
 
-static T expected_max(const query_plan_t* plan, uint32_t projection) {
+static T expected_max(const query_plan_t* plan) {
   T result = INT32_MIN;
   uint64_t period = nr_elements < 251 ? nr_elements : 251;
 #pragma omp parallel for reduction(max : result)
   for (uint64_t i = 0; i < period; ++i) {
-    T value = project_cpu(plan, projection, i);
+    T value = project_cpu(plan, i);
     if (value > result) {
       result = value;
     }
@@ -142,8 +137,8 @@ int main(void) {
     fprintf(stderr, "dynamic_query requires warmup=0\n");
     return 2;
   }
-  if (columns != QUERY_COLUMNS || projections == 0 || projections > columns ||
-      batches_per_query == 0 || query_ops == 0 || iterations == 0) {
+  if (columns != QUERY_COLUMNS || batches_per_query == 0 || query_ops == 0 ||
+      iterations == 0) {
     fprintf(stderr, "invalid dynamic_query parameters\n");
     return 2;
   }
@@ -200,7 +195,7 @@ int main(void) {
     char functions[64];
     snprintf(functions, sizeof(functions), "query_%03u_funcs", query);
     handle_t* handle = NULL;
-    T checked_results[batches_per_query * projections];
+    T checked_results[batches_per_query];
     bench_start(&query_timer, 0);
     for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
       bench_start(&batch_timer, 0);
@@ -208,23 +203,16 @@ int main(void) {
       if (batch == 0) {
         handle = create_handle(functions, REDUCE);
       }
-      T results[QUERY_COLUMNS];
-      for (uint32_t projection = 0; projection < projections; ++projection) {
-        T* result = table_gen_red("query_rows", "query_result", sizeof(T), 1,
-                                  handle, management, projection);
-        results[projection] = result[0];
-        free(result);
-      }
+      T* result = table_gen_red("query_rows", "query_result", sizeof(T), 1,
+                                handle, management, 0);
+      T value = result[0];
+      free(result);
       bench_stage_end(&stages);
 
       if (check_correctness) {
-        memcpy(&checked_results[batch * projections], results,
-               projections * sizeof(T));
+        checked_results[batch] = value;
       }
-      for (uint32_t projection = 0; projection < projections; ++projection) {
-        checksum =
-            checksum * UINT64_C(1099511628211) ^ (uint64_t)results[projection];
-      }
+      checksum = checksum * UINT64_C(1099511628211) ^ (uint64_t)value;
       bench_stop(&batch_timer, 0);
       bench_stats_update(batch == 0 ? &first_stats : &reuse_stats,
                          batch_timer.time[0]);
@@ -233,17 +221,14 @@ int main(void) {
     bench_stats_update(&stats, query_timer.time[0]);
 
     if (check_correctness) {
-      for (uint32_t projection = 0; projection < projections; ++projection) {
-        T expected = expected_max(&queries[query], projection);
-        for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
-          T actual = checked_results[batch * projections + projection];
-          if (actual != expected) {
-            fprintf(stderr,
-                    "Mismatch in query %u, batch %u, projection %u: got %d, "
-                    "expected %d\n",
-                    query, batch, projection, actual, expected);
-            return 1;
-          }
+      T expected = expected_max(&queries[query]);
+      for (uint32_t batch = 0; batch < batches_per_query; ++batch) {
+        if (checked_results[batch] != expected) {
+          fprintf(stderr,
+                  "Mismatch in query %u, batch %u: got %d, "
+                  "expected %d\n",
+                  query, batch, checked_results[batch], expected);
+          return 1;
         }
       }
     }
@@ -268,8 +253,8 @@ int main(void) {
          reuse_stats.count ? reuse_stats.mean / 1000.0 : 0.0);
   printf(
       "dynamic_query: queries=%u trace_queries=%u batches_per_query=%u "
-      "query_ops=%u projections=%u checksum=%llu\n",
-      iterations, trace_queries, batches_per_query, query_ops, projections,
+      "query_ops=%u checksum=%llu\n",
+      iterations, trace_queries, batches_per_query, query_ops,
       (unsigned long long)checksum);
   if (check_correctness) {
     printf("All results match after %u queries.\n", iterations);
