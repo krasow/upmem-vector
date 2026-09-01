@@ -103,6 +103,15 @@ uint8_t binary_opcode(ExprOp op) {
   }
 }
 
+// Ops a pending expression contributes to a fused program.
+size_t expression_ops(const NodeRef& value) {
+  if (!value) return 0;
+  size_t total =
+      (value->op == ExprOp::input || value->op == ExprOp::scalar) ? 0 : 1;
+  for (const auto& child : value->children) total += expression_ops(child);
+  return total;
+}
+
 uint8_t scalar_opcode(ExprOp op) {
   switch (op) {
     case ExprOp::add:
@@ -578,7 +587,10 @@ size_t DPUVector<T>::size() const { return impl_ ? impl_->size() : 0; }
 
 DPUVector<T>::operator DpuLazy<T>() const {
   if (!impl_) return {};
-  if (impl_->pending && !impl_->consumed) {
+  // Past the cap the chain cannot fuse into one kernel, so extending it only
+  // mints another program shape for the JIT to compile.
+  if (impl_->pending && !impl_->consumed &&
+      expression_ops(impl_->pending) < MAX_VFUSE_OPS) {
     impl_->consumed = true;
     return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(impl_->pending));
   }

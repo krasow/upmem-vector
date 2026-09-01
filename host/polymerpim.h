@@ -261,6 +261,9 @@ void init(uint32_t dpus);
 uint32_t ndpus();
 uint32_t ntasklets();
 void sync();
+// sync() drains queued work; it does not materialise a vector's pending
+// expression.  `x = f(x)` in a loop therefore extends one chain, and each depth
+// is a distinct JIT kernel -- fence(x) per iteration keeps it to one.
 void fence(DPUVector<int32_t>& vector);
 void shutdown();
 
