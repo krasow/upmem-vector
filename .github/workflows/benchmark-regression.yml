@@ -92,6 +92,10 @@ jobs:
             --default-params --runner \
             --state "$RUNNER_TEMP/benchmark-regression/base/state.toml" \
             --csv "$RUNNER_TEMP/benchmark-regression/base/runs.csv"
+          ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression-dynamic.toml" \
+            --default-params --runner \
+            --state "$RUNNER_TEMP/benchmark-regression/base/state-dynamic.toml" \
+            --csv "$RUNNER_TEMP/benchmark-regression/base/runs.csv"
 
       - name: Run candidate benchmarks
         working-directory: candidate/benchmarks
@@ -99,6 +103,10 @@ jobs:
           ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression.toml" \
             --default-params --check --runner \
             --state "$RUNNER_TEMP/benchmark-regression/candidate/state.toml" \
+            --csv "$RUNNER_TEMP/benchmark-regression/candidate/runs.csv"
+          ./run.sh --config "$GITHUB_WORKSPACE/candidate/.github/scripts/regression-dynamic.toml" \
+            --default-params --runner \
+            --state "$RUNNER_TEMP/benchmark-regression/candidate/state-dynamic.toml" \
             --csv "$RUNNER_TEMP/benchmark-regression/candidate/runs.csv"
 
       - name: Compare performance

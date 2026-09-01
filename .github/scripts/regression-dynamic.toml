@@ -1,0 +1,25 @@
+# Dynamic suite: separate config because benchmark_root is global per config.
+# Rows append to the same CSVs as regression.toml, so one comparison covers both.
+[runner]
+benchmark_root = "dynamic-benchmarks"
+dpus = [64]
+warmup = 0  # dynamic workloads recompile; cold start is the measurement
+iterations = 20
+ntrials = 1
+seed = 1
+variants = ["polymerpim"]
+
+[setup]
+variants = ["polymerpim"]
+commands = [
+  "make -C \"{repo}\" install DESTDIR=\"{install}\" PIPELINE=1 JIT=1 LOGGING=3 TRACE=0 JULIA=\"{julia}\" {fusion_flags}",
+]
+
+[[adaptive_image]]
+elements_per_dpu = [262144]
+parameters = { channels = 4, check_interval = 2, tolerance = 2 }
+
+[[dynamic_query]]
+iterations = 10
+elements_per_dpu = [16384]
+parameters = { columns = 4, projections = 4, batches_per_query = 5, query_ops = 6 }

@@ -41,6 +41,8 @@ struct Node {
   // on its value: that would make the program shape depend on the data and
   // force a JIT recompile whenever the value changes.
   bool structural = false;
+  // Cached subtree op count; the deferral cap reads it once per op.
+  size_t ops = 0;
   std::vector<std::shared_ptr<Node>> children;
 };
 
@@ -49,6 +51,10 @@ using NodeRef = std::shared_ptr<Node>;
 NodeRef node(ExprOp op, std::vector<NodeRef> children = {}) {
   auto result = std::make_shared<Node>();
   result->op = op;
+  result->ops = (op == ExprOp::input || op == ExprOp::scalar) ? 0 : 1;
+  for (const auto& child : children) {
+    if (child) result->ops += child->ops;
+  }
   result->children = std::move(children);
   return result;
 }
@@ -102,6 +108,9 @@ uint8_t binary_opcode(ExprOp op) {
       throw std::logic_error("invalid binary expression");
   }
 }
+
+// Ops a pending expression contributes to a fused program.
+size_t expression_ops(const NodeRef& value) { return value ? value->ops : 0; }
 
 uint8_t scalar_opcode(ExprOp op) {
   switch (op) {
@@ -578,7 +587,10 @@ size_t DPUVector<T>::size() const { return impl_ ? impl_->size() : 0; }
 
 DPUVector<T>::operator DpuLazy<T>() const {
   if (!impl_) return {};
-  if (impl_->pending && !impl_->consumed) {
+  // Past the cap the chain cannot fuse into one kernel, so extending it only
+  // mints another program shape for the JIT to compile.
+  if (impl_->pending && !impl_->consumed &&
+      expression_ops(impl_->pending) < MAX_VFUSE_OPS) {
     impl_->consumed = true;
     return DpuLazy<T>(std::make_shared<DpuLazy<T>::Impl>(impl_->pending));
   }

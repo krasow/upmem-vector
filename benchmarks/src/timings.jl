@@ -2,9 +2,12 @@ const APP_TIME_FORMAT = "APP_TIME real=%e user=%U sys=%S maxrss=%M"
 const APP_TIME_RE = r"APP_TIME real=([\d.]+) user=([\d.]+) sys=([\d.]+) maxrss=(\d+)"
 const STAGE_NAMES = ("alloc", "load", "transpose", "init", "write", "kernel",
                      "read", "merge", "query_first", "query_reuse")
+const RUNTIME_COUNTERS = ("compute_launches", "jit_kernel_compiles",
+                         "binary_switches")
 const MEASURE_COLUMNS = [
     "time", "stddev", "min", "max", "warmup_ms",
     "real_s", "user_s", "sys_s", "max_rss_kb",
+    RUNTIME_COUNTERS...,
 ]
 const RUN_COLUMNS = [
     "timestamp", "invocation", "benchmark", "variant", "phase", "status",
@@ -114,6 +117,10 @@ function parse_timings(label::AbstractString, out::AbstractString,
             Regex("$(escaped)_stage_$stage\\s*\\(ms\\):\\s*([0-9.]+)"), out)
         values["$(stage)_cold_ms"] = parsed_value(
             Regex("$(escaped)_cold_stage_$stage\\s*\\(ms\\):\\s*([0-9.]+)"), out)
+    end
+    # Deterministic run-to-run, unlike the timings, so a change here is signal.
+    for counter in RUNTIME_COUNTERS
+        values[counter] = parsed_value(Regex("\\b$counter=([0-9]+)"), out)
     end
     return values
 end
