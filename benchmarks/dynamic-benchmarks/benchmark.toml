@@ -27,4 +27,4 @@ variants = [
   "polymerpim-pipeline",
   "simplepim",
 ]
-parameters = { columns = 4, projections = 4, batches_per_query = 5, query_ops = 6 }
+parameters = { columns = 4, batches_per_query = 5, query_ops = 6 }

@@ -22,4 +22,4 @@ parameters = { channels = 4, check_interval = 2, tolerance = 2 }
 [[dynamic_query]]
 iterations = 10
 elements_per_dpu = [16384]
-parameters = { columns = 4, projections = 4, batches_per_query = 5, query_ops = 6 }
+parameters = { columns = 4, batches_per_query = 5, query_ops = 6 }

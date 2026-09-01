@@ -16,7 +16,6 @@ const uint32_t check_correctness = 0;
 const uint32_t load_ref = 0;
 const uint32_t seed = 1;
 const uint32_t columns = 4;
-const uint32_t projections = 4;
 const uint32_t batches_per_query = 5;
 const uint32_t query_ops = 6;
 const char* query_trace = "../../dynamic_query.csv";
