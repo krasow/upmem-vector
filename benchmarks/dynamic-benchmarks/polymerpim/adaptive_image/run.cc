@@ -73,6 +73,8 @@ int main() {
     BenchTimer timer;
     bench_stats_init(&stats);
     uint32_t fine_updates = 0;
+    std::vector<double> iteration_ms;
+    iteration_ms.reserve(iterations);
     std::vector<T> last_errors(channels, 0);
     RuntimeStatistics runtime_before = statistics();
 
@@ -115,7 +117,15 @@ int main() {
 
       bench_stop(&timer, 0);
       bench_stats_update(&stats, timer.time[0]);
+      iteration_ms.push_back(timer.time[0] / 1000.0);
     }
+
+    // Per-iteration trace: check_interval spikes dominate min/max.
+    std::cout << "iteration_ms=";
+    for (size_t i = 0; i < iteration_ms.size(); ++i) {
+      std::cout << (i != 0 ? ";" : "") << iteration_ms[i];
+    }
+    std::cout << std::endl;
 
     std::vector<T> expected;
     std::vector<T> target;
