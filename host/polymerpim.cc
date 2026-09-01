@@ -41,6 +41,8 @@ struct Node {
   // on its value: that would make the program shape depend on the data and
   // force a JIT recompile whenever the value changes.
   bool structural = false;
+  // Cached subtree op count; the deferral cap reads it once per op.
+  size_t ops = 0;
   std::vector<std::shared_ptr<Node>> children;
 };
 
@@ -49,6 +51,10 @@ using NodeRef = std::shared_ptr<Node>;
 NodeRef node(ExprOp op, std::vector<NodeRef> children = {}) {
   auto result = std::make_shared<Node>();
   result->op = op;
+  result->ops = (op == ExprOp::input || op == ExprOp::scalar) ? 0 : 1;
+  for (const auto& child : children) {
+    if (child) result->ops += child->ops;
+  }
   result->children = std::move(children);
   return result;
 }
@@ -104,13 +110,7 @@ uint8_t binary_opcode(ExprOp op) {
 }
 
 // Ops a pending expression contributes to a fused program.
-size_t expression_ops(const NodeRef& value) {
-  if (!value) return 0;
-  size_t total =
-      (value->op == ExprOp::input || value->op == ExprOp::scalar) ? 0 : 1;
-  for (const auto& child : value->children) total += expression_ops(child);
-  return total;
-}
+size_t expression_ops(const NodeRef& value) { return value ? value->ops : 0; }
 
 uint8_t scalar_opcode(ExprOp op) {
   switch (op) {
