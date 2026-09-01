@@ -53,7 +53,7 @@
 
     modes = load_config(joinpath(
         BENCHMARKS, "main-benchmarks", "polymerpim-modes.toml"))
-    @test modes.benchmark_names == ["elementwise", "knn", "linreg"]
+    @test modes.benchmark_names == ["knn", "linreg"]
     @test modes.defaults.variants ==
           ["polymerpim-jit", "polymerpim-pipeline", "polymerpim-eager"]
     @test modes.defaults.group_by_variant

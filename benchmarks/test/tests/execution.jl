@@ -75,7 +75,7 @@ end
 @testset "mode suite groups setup" begin
     text = captured_output() do
         run_cli([
-            "elementwise", "--config",
+            "knn", "--config",
             joinpath(BENCHMARKS, "main-benchmarks", "polymerpim-modes.toml"),
             "--dpus", "2", "--elements-per-dpu", "64,128",
             "--warmup", "0", "--iterations", "1", "--ntrials", "1",
