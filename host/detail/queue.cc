@@ -508,6 +508,7 @@ void EventQueue::await_jit_binary(const std::shared_ptr<Event>& e) {
       std::future_status::ready) {
     if (detail::pipeline_can_interpret(e->rpn_ops)) {
       e->jit_pipeline_fallback = true;
+      ++unused_compiles_;
       VECTORDPU_NOTE(jit_pipeline_fallbacks);
       return;
     }
